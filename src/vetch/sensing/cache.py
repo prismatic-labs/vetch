@@ -11,6 +11,7 @@ Supports:
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import json
 import logging
@@ -361,7 +362,7 @@ def _cleanup_stale_locks() -> None:
         # Only clean the default cache dir
         if not DEFAULT_CACHE_DIR.exists():
             return
-            
+
         for lock_file in DEFAULT_CACHE_DIR.glob("*.lock"):
             try:
                 # If lock file is more than 1 hour old, it's likely a zombie
@@ -372,5 +373,5 @@ def _cleanup_stale_locks() -> None:
     except Exception:
         pass
 
-import atexit
+
 atexit.register(_cleanup_stale_locks)

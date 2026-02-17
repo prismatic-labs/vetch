@@ -11,12 +11,12 @@ from __future__ import annotations
 import pytest
 
 from vetch.exceptions import (
-    VetchError,
-    RegistryError,
-    ProviderError,
-    ConfigurationError,
     CalibrationError,
+    ConfigurationError,
+    ProviderError,
+    RegistryError,
     StorageError,
+    VetchError,
 )
 
 

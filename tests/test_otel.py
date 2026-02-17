@@ -9,7 +9,7 @@ These tests verify:
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from vetch.otel import attach_to_otel_span
 

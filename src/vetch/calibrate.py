@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Union
+from typing import Any, Callable, NamedTuple
 
 # P2: Mark as experimental
 warnings.warn(
@@ -32,6 +31,7 @@ CALIBRATION_DIR = Path.home() / ".vetch" / "calibrations"
 
 class CalibrationResult(NamedTuple):
     """Result of a model calibration run."""
+
     model: str
     provider: str
     wh_per_1k_input: float
@@ -44,7 +44,7 @@ class CalibrationResult(NamedTuple):
 def is_gpu_available() -> bool:
     """Check if NVIDIA GPU and management library are available."""
     try:
-        import pynvml # type: ignore
+        import pynvml  # type: ignore
         pynvml.nvmlInit()
         return True
     except (ImportError, Exception):
@@ -77,7 +77,7 @@ class GPUMonitor:
         self._handle = pynvml.nvmlDeviceGetHandleByIndex(self.device_id)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         import pynvml
         pynvml.nvmlShutdown()
 
@@ -96,7 +96,7 @@ class GPUMonitor:
         """Get current power usage in Watts."""
         import pynvml
         # Returns milliwatts
-        return pynvml.nvmlDeviceGetPowerUsage(self._handle) / 1000.0
+        return float(pynvml.nvmlDeviceGetPowerUsage(self._handle) / 1000.0)
 
 
 def calibrate_model(
@@ -106,13 +106,13 @@ def calibrate_model(
     iterations: int = 5
 ) -> CalibrationResult:
     """Measure power draw for a specific model/workload.
-    
+
     Args:
         provider: Inference provider (e.g. 'ollama', 'vllm')
         model: Model name
         workload: Function that runs an LLM call and returns (input_tokens, output_tokens)
         iterations: Number of samples to take
-        
+
     Returns:
         CalibrationResult
     """
@@ -121,31 +121,29 @@ def calibrate_model(
 
     with GPUMonitor() as monitor:
         gpu_info = monitor.get_gpu_info()
-        
+
         total_wh = 0.0
         total_in = 0
         total_out = 0
-        
+
         # Warmup
         workload()
-        
+
         for _ in range(iterations):
             start_time = time.perf_counter()
-            # Measure power samples during workload
-            power_samples = []
-            
-            # Simple sampling in a tight loop isn't perfect, but 
+
+            # Simple sampling in a tight loop isn't perfect, but
             # good enough for Alpha. Better to use energy counters if supported.
             # We'll use a thread or async in Beta.
             in_tokens, out_tokens = workload()
-            
+
             duration = time.perf_counter() - start_time
             # Get final sample (heuristic)
             power_w = monitor.get_power_w()
-            
+
             # wh = Watts * Hours
             wh = power_w * (duration / 3600.0)
-            
+
             total_wh += wh
             total_in += in_tokens
             total_out += out_tokens
@@ -153,17 +151,17 @@ def calibrate_model(
         # Simple split based on our 1:3 ratio for now
         # Beta will use separate input/output intensive workloads
         wh_per_token = total_wh / (total_in + (total_out * 3))
-        
+
         res = CalibrationResult(
             model=model,
             provider=provider,
             wh_per_1k_input=(wh_per_token * 1000),
             wh_per_1k_output=(wh_per_token * 3000),
-            tier=0, # Tier 0: Measured
+            tier=0,  # Tier 0: Measured
             samples=iterations,
             gpu_name=gpu_info["name"]
         )
-        
+
         _save_calibration(res)
         return res
 
@@ -171,7 +169,7 @@ def calibrate_model(
 def _save_calibration(res: CalibrationResult) -> None:
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
     path = CALIBRATION_DIR / f"{res.provider}_{res.model.replace(':', '_')}.json"
-    
+
     data = {
         "wh_per_1k_input": res.wh_per_1k_input,
         "wh_per_1k_output": res.wh_per_1k_output,

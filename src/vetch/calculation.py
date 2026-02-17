@@ -12,7 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +49,13 @@ def _load_json_with_override(default_path: Path, override_name: str) -> dict[str
     if local_override.exists():
         try:
             logger.info(f"Loading local registry override: {local_override}")
-            return json.loads(local_override.read_text())
+            return cast("dict[str, Any]", json.loads(local_override.read_text()))
         except Exception as e:
             logger.warning(f"Failed to load override {local_override}: {e}")
 
     # Fallback to default
     try:
-        return json.loads(default_path.read_text())
+        return cast("dict[str, Any]", json.loads(default_path.read_text()))
     except Exception as e:
         logger.error(f"Failed to load registry {default_path}: {e}")
         return {}
@@ -65,13 +65,17 @@ def _load_registry() -> None:
     """Load registry files into memory."""
     global _ENERGY, _PRICING, _ALIASES
     if _ENERGY is None:
-        _ENERGY = _load_json_with_override(_ENERGY_PATH, "energy.json")
+        _ENERGY = cast(
+            "dict[str, dict[str, Any]]", _load_json_with_override(_ENERGY_PATH, "energy.json")
+        )
 
     if _PRICING is None:
-        _PRICING = _load_json_with_override(_PRICING_PATH, "pricing.json")  # type: ignore[assignment]
+        _PRICING = cast(
+            "dict[str, dict[str, float]]", _load_json_with_override(_PRICING_PATH, "pricing.json")
+        )
 
     if _ALIASES is None:
-        _ALIASES = _load_json_with_override(_ALIASES_PATH, "aliases.json")  # type: ignore[assignment]
+        _ALIASES = cast("dict[str, str]", _load_json_with_override(_ALIASES_PATH, "aliases.json"))
 
 
 def _reset_registries() -> None:
@@ -207,13 +211,13 @@ def estimate_tokens(text: str | None, model: str | None = None) -> int:
     # Detect likely content type and adjust ratio
     # CJK characters are roughly 1.5-2 tokens each
     # Code tends to have more tokens per character
-    cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    cjk_count = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
     if cjk_count > char_count * 0.3:
         # Predominantly CJK text: ~1.5 chars per token
         return max(1, int(char_count / 1.5))
 
     # Check for code-like content (high punctuation/operator density)
-    code_chars = sum(1 for c in text if c in '{}[]()<>;:=+-*/&|!@#$%^')
+    code_chars = sum(1 for c in text if c in "{}[]()<>;:=+-*/&|!@#$%^")
     if code_chars > char_count * 0.1:
         # Code-like: ~3 chars per token
         return max(1, char_count // 3)
@@ -242,9 +246,9 @@ def calculate_energy(
     Returns:
         Tuple of (energy_wh, tier, source, basis, model_known).
     """
-    # Clamp negative tokens to 0 (defensive)
-    input_tokens = max(0, input_tokens)
-    output_tokens = max(0, output_tokens)
+    # Clamp negative tokens to 0
+    in_tokens = max(0, input_tokens)
+    out_tokens = max(0, output_tokens)
 
     if energy_override:
         wh_in = energy_override["wh_per_1k_input"]
@@ -253,7 +257,7 @@ def calculate_energy(
         source = energy_override.get("source", "override")
         basis = energy_override.get("basis", "User-provided override")
 
-        energy_wh = (input_tokens * wh_in + output_tokens * wh_out) / 1000
+        energy_wh = (in_tokens * wh_in + out_tokens * wh_out) / 1000
         # Check if model is known in registry anyway for informational purposes
         _, known = resolve_model(model)
         return energy_wh, tier, "override", basis, known
@@ -277,7 +281,7 @@ def calculate_energy(
         basis = entry["basis"]
         source = "fallback"
 
-    energy_wh = (input_tokens * wh_in + output_tokens * wh_out) / 1000
+    energy_wh = (in_tokens * wh_in + out_tokens * wh_out) / 1000
     return energy_wh, tier, source, basis, known
 
 
@@ -307,9 +311,7 @@ def get_default_pue() -> float:
             return DEFAULT_PUE
         return pue
     except ValueError:
-        logger.warning(
-            f"VETCH_DEFAULT_PUE={env_pue!r} is not a valid number, using {DEFAULT_PUE}"
-        )
+        logger.warning(f"VETCH_DEFAULT_PUE={env_pue!r} is not a valid number, using {DEFAULT_PUE}")
         return DEFAULT_PUE
 
 
@@ -333,15 +335,18 @@ def calculate_carbon(
     """
     import math
 
-    # Handle invalid inputs defensively
-    if math.isnan(grid_intensity_gco2e_kwh) or math.isnan(energy_wh):
-        return 0.0
-    if math.isinf(grid_intensity_gco2e_kwh):
-        grid_intensity_gco2e_kwh = 1000.0  # Cap at high-carbon grid
-
     if pue is None:
         pue = get_default_pue()
-    return (energy_wh * pue * grid_intensity_gco2e_kwh) / 1000
+
+    # Defensive handling of NaN and Inf
+    intensity = grid_intensity_gco2e_kwh
+    if math.isnan(intensity):
+        intensity = 0.0
+    # Cap extremely high intensity at a reasonable max (e.g. 2000 g/kWh)
+    if math.isinf(intensity) or intensity > 2000:
+        intensity = 2000.0
+
+    return (energy_wh * pue * intensity) / 1000
 
 
 def calculate_cost(

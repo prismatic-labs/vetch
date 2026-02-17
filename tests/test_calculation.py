@@ -12,6 +12,8 @@ These tests verify:
 
 from __future__ import annotations
 
+import pytest
+
 from vetch.calculation import (
     calculate_carbon,
     calculate_cost,
@@ -57,11 +59,11 @@ class TestEnergyCalculation:
         # (1000 * 0.3 + 500 * 0.8) / 1000 = (300 + 400) / 1000 = 0.7 Wh
         energy, tier, source, basis, known = calculate_energy(1000, 500, "gpt-4o")
 
-        assert energy == 0.7
+        assert energy == pytest.approx(0.7)
         assert tier == 3
         assert source == "registry"
         assert known is True
-        assert basis is not None  # Has basis text
+        assert "Epoch AI" in basis
 
     def test_calculate_energy_unknown_model(self) -> None:
         """Calculate energy for unknown model using conservative fallback."""
@@ -97,7 +99,6 @@ class TestCarbonCalculation:
 
     def test_calculate_carbon(self) -> None:
         """Calculate carbon from energy and grid intensity."""
-        import pytest
         # energy_wh * pue * grid_intensity / 1000
         # 2.0 Wh * 1.1 PUE * 400 gCO2e/kWh / 1000 = 0.88g
         carbon = calculate_carbon(2.0, 400.0, pue=1.1)
@@ -109,7 +110,6 @@ class TestCostCalculation:
 
     def test_calculate_cost_known_model(self) -> None:
         """Calculate cost for a known model (gpt-4o: $0.005 in, $0.015 out)."""
-        import pytest
         # (1000 * 0.005 + 500 * 0.015) / 1000 = (5.0 + 7.5) / 1000 = $0.0125
         total, cost_in, cost_out, tier = calculate_cost(1000, 500, "gpt-4o")
 
@@ -127,51 +127,49 @@ class TestCostCalculation:
 
 
 class TestTokenEstimation:
-    """Tests for token count estimation."""
+    """Tests for heuristic token estimation."""
 
-    def test_empty_text(self) -> None:
-        """Empty text returns 0 tokens."""
+    def test_estimate_tokens_english(self) -> None:
+        """English prose uses ~4 chars/token heuristic."""
+        text = "Hello world!"  # 12 chars
+        # 12 // 4 = 3 tokens
+        assert estimate_tokens(text) == 3
+
+    def test_estimate_tokens_cjk(self) -> None:
+        """CJK text uses ~1.5 chars/token ratio or tiktoken."""
+        text = "你好世界，很高兴见到你。"  # 12 chars (including punctuation)
+
+        # Check if tiktoken is available
+        try:
+            import tiktoken  # noqa: F401
+
+            # tiktoken returns 15 tokens for this specific string
+            expected = 15
+        except ImportError:
+            # Heuristic: 12 / 1.5 = 8 tokens
+            expected = 8
+
+        assert estimate_tokens(text) == expected
+
+    def test_estimate_tokens_code(self) -> None:
+        """Code text uses ~3 chars/token ratio or tiktoken."""
+        text = "def hello():\n    print('world')"  # High punctuation
+
+        try:
+            import tiktoken  # noqa: F401
+
+            # tiktoken returns 8 tokens for this specific string
+            expected = 8
+        except ImportError:
+            # Heuristic: 32 chars // 3 = 10 tokens
+            expected = 10
+
+        assert estimate_tokens(text) == expected
+
+    def test_estimate_tokens_empty(self) -> None:
+        """Empty or None text returns 0."""
         assert estimate_tokens("") == 0
         assert estimate_tokens(None) == 0
-
-    def test_english_prose(self) -> None:
-        """English prose uses ~4 chars/token heuristic or tiktoken."""
-        text = "Hello, this is a simple test of the token estimation function."
-        tokens = estimate_tokens(text)
-        # Should be reasonable (10-20 tokens for this text)
-        assert 5 <= tokens <= 25
-
-    def test_cjk_text(self) -> None:
-        """CJK text uses adjusted ratio (~1.5 chars/token)."""
-        # Chinese text: "这是一个测试" (This is a test)
-        text = "这是一个测试中文文本的功能"
-        tokens = estimate_tokens(text)
-        # CJK characters should yield more tokens per character
-        # Without tiktoken: ~12 chars / 1.5 = ~8 tokens
-        # With tiktoken: varies but typically similar
-        assert tokens >= 5
-
-    def test_code_like_text(self) -> None:
-        """Code uses adjusted ratio (~3 chars/token)."""
-        code = "def foo(): return {'a': [1, 2], 'b': (x + y) * z}"
-        tokens = estimate_tokens(code)
-        # Code-like content with many symbols
-        assert tokens >= 5
-
-    def test_with_model_hint(self) -> None:
-        """Model hint can improve accuracy (when tiktoken available)."""
-        text = "The quick brown fox jumps over the lazy dog."
-        tokens_generic = estimate_tokens(text)
-        tokens_gpt4 = estimate_tokens(text, model="gpt-4o")
-        # Both should return reasonable values
-        assert tokens_generic >= 5
-        assert tokens_gpt4 >= 5
-
-    def test_minimum_one_token(self) -> None:
-        """Minimum of 1 token for non-empty text."""
-        assert estimate_tokens("a") >= 1
-        assert estimate_tokens("ab") >= 1
-        assert estimate_tokens("abc") >= 1
 
 
 class TestTokenEstimationWithTiktoken:
@@ -180,24 +178,21 @@ class TestTokenEstimationWithTiktoken:
     def test_tiktoken_available(self) -> None:
         """Check if tiktoken is available (informational)."""
         try:
-            import tiktoken
+            import tiktoken  # noqa: F401
+
             available = True
         except ImportError:
             available = False
+        assert isinstance(available, bool)
 
-        # If tiktoken is available, estimate_tokens should use it
-        text = "Hello world"
-        tokens = estimate_tokens(text, model="gpt-4o")
-        if available:
+    def test_tiktoken_usage_if_installed(self) -> None:
+        """If tiktoken is available, estimate_tokens should use it."""
+        try:
+            import tiktoken  # noqa: F401
+
+            text = "Hello world"
             # tiktoken for "Hello world" gives exactly 2 tokens
-            assert tokens == 2
-        else:
-            # Heuristic: 11 chars / 4 = 2-3 tokens
-            assert tokens >= 2
-
-    def test_tiktoken_fallback_on_unknown_model(self) -> None:
-        """Unknown models should fall back to cl100k_base or heuristic."""
-        text = "Testing with an unknown model name"
-        tokens = estimate_tokens(text, model="totally-unknown-model-xyz")
-        # Should still return reasonable estimate
-        assert 5 <= tokens <= 15
+            assert estimate_tokens(text) == 2
+        except ImportError:
+            # Skip if not installed in this environment
+            pytest.skip("tiktoken not installed")

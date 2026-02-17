@@ -110,7 +110,9 @@ def wrap(
 
     # P0: Kill switch - return no-op context when disabled
     if _DISABLED:
-        return VetchContext(region=region, tags=tags, energy_override=energy_override, _disabled=True)
+        return VetchContext(
+            region=region, tags=tags, energy_override=energy_override, _disabled=True
+        )
 
     return VetchContext(region=region, tags=tags, energy_override=energy_override)
 

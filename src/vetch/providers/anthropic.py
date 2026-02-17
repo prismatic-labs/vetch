@@ -47,9 +47,8 @@ def extract_usage(response: Any) -> Usage | None:
             "text": {
                 "input_tokens": getattr(usage, "input_tokens", 0),
                 "output_tokens": getattr(usage, "output_tokens", 0),
-                "total_tokens": (
-                    getattr(usage, "input_tokens", 0) + getattr(usage, "output_tokens", 0)
-                ),
+                "total_tokens": getattr(usage, "input_tokens", 0)
+                + getattr(usage, "output_tokens", 0),
             }
         },
     )
@@ -146,8 +145,7 @@ class StreamWrapper:
             raise
 
     def _process_chunk(self, chunk: Any) -> None:
-        # Anthropic chunks are events
-        # type: message_start, content_block_delta, message_delta, etc.
+        # Anthropic chunks are events: message_start, content_block_delta, message_delta, etc.
 
         event_type = getattr(chunk, "type", "")
 
@@ -186,7 +184,7 @@ class StreamWrapper:
         ctx.capture(
             model=self._model,
             provider="anthropic",
-            usage=final_usage, # type: ignore[arg-type]
+            usage=final_usage,  # type: ignore[arg-type]
             is_stream=True,
             accumulated_chars=self._accumulated_chars,
             complete=self._complete,
@@ -198,10 +196,7 @@ class StreamWrapper:
         return self
 
     def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: Any,
+        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
     ) -> None:
         if exc_type is not None:
             self._error = True
@@ -263,6 +258,7 @@ def _wrapped_create(original: Any) -> Any:
     import inspect
 
     if inspect.iscoroutinefunction(original):
+
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             is_stream = kwargs.get("stream", False)
             try:
@@ -275,8 +271,8 @@ def _wrapped_create(original: Any) -> Any:
                 _on_create_error(e)
                 raise
 
-        async_wrapper.vetch_patched = True # type: ignore[attr-defined]
-        async_wrapper._vetch_original = original # type: ignore[attr-defined]
+        async_wrapper.vetch_patched = True  # type: ignore[attr-defined]
+        async_wrapper._vetch_original = original  # type: ignore[attr-defined]
         return async_wrapper
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -348,6 +344,7 @@ def unpatch_anthropic_client(client: Any) -> bool:
 def detect_anthropic_client() -> Any | None:
     """Detect default Anthropic client."""
     import sys
+
     if "anthropic" not in sys.modules:
         return None
 

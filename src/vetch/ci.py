@@ -8,9 +8,8 @@ Note: This module is EXPERIMENTAL and may change in future versions.
 
 from __future__ import annotations
 
-import os
 import atexit
-import sys
+import os
 import warnings
 from typing import Any
 
@@ -37,7 +36,7 @@ def track_ci_event(event: dict[str, Any]) -> None:
     """Update CI stats with a new event."""
     if not is_ci():
         return
-    
+
     _CI_STATS["count"] += 1
     _CI_STATS["energy_wh"] += event.get("estimated_energy_wh") or 0.0
     _CI_STATS["carbon_g"] += event.get("estimated_carbon_g") or 0.0

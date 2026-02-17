@@ -9,7 +9,6 @@ These tests verify:
 from __future__ import annotations
 
 import os
-from io import StringIO
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +23,7 @@ class TestCIDetection:
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}, clear=True):
             # Need to reimport to pick up env var
             import importlib
+
             import vetch.ci
             importlib.reload(vetch.ci)
 
@@ -33,6 +33,7 @@ class TestCIDetection:
         """Detect generic CI=true environment."""
         with patch.dict(os.environ, {"CI": "true"}, clear=True):
             import importlib
+
             import vetch.ci
             importlib.reload(vetch.ci)
 
@@ -42,6 +43,7 @@ class TestCIDetection:
         """Not CI when env vars unset."""
         with patch.dict(os.environ, {}, clear=True):
             import importlib
+
             import vetch.ci
             importlib.reload(vetch.ci)
 

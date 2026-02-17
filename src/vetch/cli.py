@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 from vetch import __version__
 
@@ -70,12 +72,12 @@ def positive_float(value: str) -> float:
 CONFIG_PATH = Path.home() / ".vetch" / "config.json"
 
 
-def load_config() -> dict[str, object]:
+def load_config() -> dict[str, Any]:
     """Load Vetch config from ~/.vetch/config.json."""
     if not CONFIG_PATH.exists():
         return {}
     try:
-        return json.loads(CONFIG_PATH.read_text())
+        return cast("dict[str, Any]", json.loads(CONFIG_PATH.read_text()))
     except Exception:
         return {}
 
@@ -214,8 +216,6 @@ def methodology(args: argparse.Namespace) -> None:
 
 def check(args: argparse.Namespace) -> None:
     """Validate environment and connectivity."""
-    import os
-
     from vetch.sensing.cache import get_file_cache
     from vetch.sensing.grid import get_carbon_intensity
 
@@ -251,8 +251,7 @@ def check(args: argparse.Namespace) -> None:
     # 4. Observability
     print("Checking observability bridges...")
     try:
-        import opentelemetry # type: ignore
-        from opentelemetry import trace
+        from opentelemetry import trace  # type: ignore[import-not-found]
         span = trace.get_current_span()
         status = "Active" if span.is_recording() else "Installed, but no active span"
         print(f"  OpenTelemetry: {status}")
@@ -271,13 +270,14 @@ def check(args: argparse.Namespace) -> None:
 
 def clean(args: argparse.Namespace) -> None:
     """Clean up Vetch cache and lock files."""
-    from vetch.sensing.cache import DEFAULT_CACHE_DIR
     import shutil
-    
+
+    from vetch.sensing.cache import DEFAULT_CACHE_DIR
+
     if not DEFAULT_CACHE_DIR.exists():
         print("No cache directory found.")
         return
-        
+
     try:
         shutil.rmtree(DEFAULT_CACHE_DIR)
         print(f"Successfully cleaned {DEFAULT_CACHE_DIR}")
@@ -490,11 +490,11 @@ def config_cmd(args: argparse.Namespace) -> None:
                 print(f"Error: Invalid format '{setting}'. Use key=value")
                 sys.exit(1)
 
-            key, value = setting.split("=", 1)
-            key = key.strip().lower()
+            key_to_del, value = setting.split("=", 1)
+            key_to_del = key_to_del.strip().lower()
 
             # Validate known keys
-            if key == "pue":
+            if key_to_del == "pue":
                 try:
                     pue = float(value)
                     if pue < 1.0:
@@ -506,30 +506,30 @@ def config_cmd(args: argparse.Namespace) -> None:
                 except ValueError:
                     print(f"Error: PUE must be a number (got '{value}')")
                     sys.exit(1)
-            elif key == "region":
+            elif key_to_del == "region":
                 config["region"] = value.strip()
                 print(f"Set region = {value}")
                 print(f"  To apply: export VETCH_REGION={value}")
-            elif key == "provider":
+            elif key_to_del == "provider":
                 config["provider"] = value.strip()
                 print(f"Set provider = {value}")
             else:
                 # Allow arbitrary keys for extensibility
-                config[key] = value
-                print(f"Set {key} = {value}")
+                config[key_to_del] = value
+                print(f"Set {key_to_del} = {value}")
 
         save_config(config)
         print(f"\nConfig saved to {CONFIG_PATH}")
 
     # Unset values
     if args.unset:
-        for key in args.unset:
-            key = key.strip().lower()
-            if key in config:
-                del config[key]
-                print(f"Removed {key}")
+        for key_to_unset in args.unset:
+            key_to_unset = key_to_unset.strip().lower()
+            if key_to_unset in config:
+                del config[key_to_unset]
+                print(f"Removed {key_to_unset}")
             else:
-                print(f"Key '{key}' not found in config")
+                print(f"Key '{key_to_unset}' not found in config")
 
         save_config(config)
         print(f"\nConfig saved to {CONFIG_PATH}")

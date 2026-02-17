@@ -45,7 +45,7 @@ def _configure_logging() -> None:
             return record.getMessage()
 
     if target == "stderr":
-        handler = logging.StreamHandler(sys.stderr)
+        handler: logging.Handler = logging.StreamHandler(sys.stderr)
         handler.setFormatter(JsonFormatter())
         logger.addHandler(handler)
     elif target.startswith(("http://", "https://")):
@@ -109,15 +109,6 @@ class HttpHandler(logging.Handler):
 _configure_logging()
 
 
-def get_output_target() -> str:
-    """Get the configured output target.
-
-    Returns:
-        The VETCH_OUTPUT env var value, or 'stderr' as default.
-    """
-    return os.environ.get("VETCH_OUTPUT", "stderr")
-
-
 def serialize_event(event: InferenceEvent) -> str:
     """Serialize an InferenceEvent to JSON.
 
@@ -172,9 +163,6 @@ class BufferedEmitter:
 # Global buffered emitter for testing
 _test_emitter: BufferedEmitter | None = None
 
-# P1: First-run welcome message flag
-_first_event_shown = False
-
 
 def set_test_emitter(emitter: BufferedEmitter | None) -> None:
     """Set a test emitter to capture events.
@@ -199,38 +187,10 @@ def emit_event(event: InferenceEvent) -> None:
     """Emit an event, using test emitter if set.
 
     This is the main entry point for event emission.
-    Also stores the event in persistent storage if configured.
 
     Args:
         event: The event to emit.
     """
-    global _first_event_shown
-
-    # P1: First-run welcome message (only for stderr output, not tests)
-    if not _first_event_shown and _test_emitter is None:
-        _first_event_shown = True
-        target = get_output_target()
-        if target == "stderr":
-            # Show a friendly welcome on first event
-            energy = event.get("estimated_energy_wh", 0)
-            carbon = event.get("estimated_carbon_g", 0)
-            cost = event.get("estimated_cost_usd", 0)
-            sys.stderr.write(
-                f"\n[vetch] Tracking active (alpha). "
-                f"First event: {energy:.4f} Wh, {carbon:.4f} g CO2, ${cost:.4f}\n"
-                f"[vetch] Configure output: VETCH_OUTPUT=vetch.jsonl | Disable: VETCH_DISABLED=true\n\n"
-            )
-
-    # Store in persistent storage (fail-open)
-    try:
-        from vetch.storage import is_storage_enabled, store_event
-
-        if is_storage_enabled():
-            store_event(event)
-    except Exception:
-        # Storage failure should never break emission
-        pass
-
     if _test_emitter is not None:
         _test_emitter.emit(event)
     else:

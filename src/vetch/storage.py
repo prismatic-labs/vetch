@@ -7,8 +7,6 @@ Uses SQLite to store inference history locally, enabling:
 
 Privacy: Database is stored in user's home directory (~/.vetch/usage.db)
 and is never uploaded unless explicitly configured via sync (future).
-
-Note: This module is EXPERIMENTAL. API may change in future versions.
 """
 
 from __future__ import annotations
@@ -16,31 +14,27 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-import time
 import warnings
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, cast
 
-from vetch.schema import InferenceEvent, SCHEMA_VERSION
+from vetch.schema import InferenceEvent
+
+# P2: Mark as experimental
+warnings.warn(
+    "vetch.storage is experimental. API may change in future versions.",
+    FutureWarning,
+    stacklevel=2,
+)
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path.home() / ".vetch" / "usage.db"
 _STORAGE_ENABLED = False
-_EXPERIMENTAL_WARNING_SHOWN = False
 
 
 def configure_storage(enabled: bool = True, path: Path | None = None) -> None:
-    # P2: Show experimental warning on first use
-    global _EXPERIMENTAL_WARNING_SHOWN
-    if not _EXPERIMENTAL_WARNING_SHOWN:
-        _EXPERIMENTAL_WARNING_SHOWN = True
-        warnings.warn(
-            "vetch.storage is experimental. API may change in future versions.",
-            FutureWarning,
-            stacklevel=2,
-        )
     """Enable or disable local storage."""
     global _STORAGE_ENABLED, DB_PATH
     _STORAGE_ENABLED = enabled
@@ -58,12 +52,12 @@ def _init_db() -> None:
         try:
             DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
-            return # Fail safe if readonly fs
+            return  # Fail safe if readonly fs
 
     conn = sqlite3.connect(DB_PATH)
     try:
         cursor = conn.cursor()
-        
+
         # Events table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS events (
@@ -80,11 +74,11 @@ def _init_db() -> None:
                 raw_json TEXT
             )
         """)
-        
+
         # Index for reporting
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON events(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_model ON events(model)")
-        
+
         conn.commit()
     finally:
         conn.close()
@@ -103,17 +97,17 @@ def store_event(event: InferenceEvent) -> None:
         conn = sqlite3.connect(DB_PATH)
         try:
             cursor = conn.cursor()
-            
+
             # Extract fields for columns
-            usage = event.get("usage", {}) or {}
+            usage: dict[str, Any] = cast(dict[str, Any], event.get("usage", {}) or {})
             text_usage = usage.get("text", {}) or {}
-            
+
             cursor.execute(
                 """
                 INSERT INTO events (
-                    event_id, timestamp, model, provider, 
-                    input_tokens, output_tokens, 
-                    energy_wh, carbon_g, cost_usd, 
+                    event_id, timestamp, model, provider,
+                    input_tokens, output_tokens,
+                    energy_wh, carbon_g, cost_usd,
                     tags_json, raw_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -174,8 +168,8 @@ class UsageSummary:
 
 
 def query_usage(
-    start: datetime, 
-    end: datetime, 
+    start: datetime,
+    end: datetime,
     model: str | None = None,
     tags: dict[str, str] | None = None
 ) -> UsageSummary:
@@ -187,57 +181,20 @@ def query_usage(
     conn.row_factory = sqlite3.Row
     try:
         cursor = conn.cursor()
-        
-        query = """
-            SELECT 
-                model, 
-                count(*) as count,
-                sum(input_tokens) as in_tok,
-                sum(output_tokens) as out_tok,
-                sum(energy_wh) as energy,
-                sum(carbon_g) as carbon,
-                sum(cost_usd) as cost,
-                tags_json
-            FROM events
-            WHERE timestamp BETWEEN ? AND ?
-        """
-        params = [start.isoformat(), end.isoformat()]
-        
-        if model:
-            query += " AND model = ?"
-            params.append(model)
-            
-        # Note: SQLite JSON filtering is tricky in raw SQL without extensions in some pythons.
-        # We'll filter tags in python for broader compatibility in Alpha.
-        
-        query += " GROUP BY model" # We actually need to fetch raw rows for accurate tag grouping if we do python side
-        
-        # Simplified aggregation for Alpha (group by model)
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        
-        summary = UsageSummary(start, end)
-        
-        for row in rows:
-            # Check tags if filtered
-            # This is imperfect because we grouped by model first, 
-            # so tag filtering here is only possible if we change the query structure.
-            # For Alpha, let's do a simple aggregate query first.
-            pass 
-            
-        # Re-do: Fetch all matching rows for flexible aggregation in Python
-        # Performance warning: Fine for Alpha (<100k rows), bad for Prod.
-        
+
+        # Grouped aggregation logic for Alpha
         cursor.execute(
-            "SELECT * FROM events WHERE timestamp BETWEEN ? AND ?", 
+            "SELECT * FROM events WHERE timestamp BETWEEN ? AND ?",
             (start.isoformat(), end.isoformat())
         )
-        
+
+        summary = UsageSummary(start, end)
+
         for row in cursor:
             # Filter
             if model and row['model'] != model:
                 continue
-                
+
             row_tags = json.loads(row['tags_json'])
             if tags:
                 match = True
@@ -247,7 +204,7 @@ def query_usage(
                         break
                 if not match:
                     continue
-            
+
             # Aggregate
             summary.total_requests += 1
             summary.total_input_tokens += (row['input_tokens'] or 0)
@@ -255,7 +212,7 @@ def query_usage(
             summary.total_energy_wh += (row['energy_wh'] or 0.0)
             summary.total_carbon_g += (row['carbon_g'] or 0.0)
             summary.total_cost_usd += (row['cost_usd'] or 0.0)
-            
+
             # Group by Model
             m = row['model'] or 'unknown'
             if m not in summary.by_model:
@@ -263,7 +220,7 @@ def query_usage(
             summary.by_model[m]['requests'] += 1
             summary.by_model[m]['cost_usd'] += (row['cost_usd'] or 0.0)
             summary.by_model[m]['energy_wh'] += (row['energy_wh'] or 0.0)
-            
+
             # Group by Tags
             for k, v in row_tags.items():
                 if k not in summary.by_tag:
@@ -278,21 +235,26 @@ def query_usage(
     finally:
         conn.close()
 
+
 def get_db_path() -> Path:
     return DB_PATH
 
-def get_top_consumers(metric: str = "cost", tag_key: str = "team", days: int = 7, limit: int = 5) -> list[dict[str, Any]]:
+
+def get_top_consumers(
+    metric: str = "cost",
+    tag_key: str = "team",
+    days: int = 7,
+    limit: int = 5
+) -> list[dict[str, Any]]:
     """Get top consumers by a specific tag."""
-    # Placeholder for reporting CLI
-    # Reuses query_usage logic
     from datetime import timedelta
     end = datetime.now()
     start = end - timedelta(days=days)
     summary = query_usage(start, end)
-    
+
     if tag_key not in summary.by_tag:
         return []
-        
+
     # Flatten
     items = []
     for tag_val, data in summary.by_tag[tag_key].items():
@@ -300,8 +262,8 @@ def get_top_consumers(metric: str = "cost", tag_key: str = "team", days: int = 7
             "tag_value": tag_val,
             "requests": data['requests'],
             "cost": data['cost_usd'],
-            "energy": 0.0 # Aggregation in query_usage missed this for tags, Alpha limitation
+            "energy": 0.0  # Missing in Alpha for tag grouping
         })
-        
+
     items.sort(key=lambda x: x.get(metric, 0), reverse=True)
     return items[:limit]

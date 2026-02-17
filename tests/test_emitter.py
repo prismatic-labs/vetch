@@ -8,7 +8,6 @@ from vetch.emitter import (
     _configure_logging,
     emit,
     emit_event,
-    get_output_target,
     get_test_emitter,
     serialize_event,
     set_test_emitter,
@@ -54,32 +53,6 @@ class TestSerializeEvent:
         assert ", " not in json_str
 
 
-class TestGetOutputTarget:
-    """Tests for get_output_target function."""
-
-    def test_default_is_stderr(self) -> None:
-        """Default output target is stderr."""
-        # Save and clear env var
-        original = os.environ.pop("VETCH_OUTPUT", None)
-        try:
-            assert get_output_target() == "stderr"
-        finally:
-            if original:
-                os.environ["VETCH_OUTPUT"] = original
-
-    def test_reads_env_var(self) -> None:
-        """Reads VETCH_OUTPUT environment variable."""
-        original = os.environ.get("VETCH_OUTPUT")
-        try:
-            os.environ["VETCH_OUTPUT"] = "/tmp/vetch.log"
-            assert get_output_target() == "/tmp/vetch.log"
-        finally:
-            if original:
-                os.environ["VETCH_OUTPUT"] = original
-            else:
-                os.environ.pop("VETCH_OUTPUT", None)
-
-
 class TestEmit:
     """Tests for emit function."""
 
@@ -88,6 +61,7 @@ class TestEmit:
         original = os.environ.get("VETCH_OUTPUT")
         try:
             os.environ["VETCH_OUTPUT"] = "none"
+            _configure_logging()
             event: InferenceEvent = {
                 "schema_version": "1",
                 "signal_quality": "live",
@@ -99,6 +73,7 @@ class TestEmit:
                 os.environ["VETCH_OUTPUT"] = original
             else:
                 os.environ.pop("VETCH_OUTPUT", None)
+            _configure_logging()
 
     def test_emit_to_file(self) -> None:
         """Emit writes to file when configured."""

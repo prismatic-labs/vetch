@@ -14,9 +14,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from vetch.storage import configure_storage, store_event, query_usage
-from vetch.stats import SessionStats
 from vetch.advisory import generate_advisories
+from vetch.stats import SessionStats
+from vetch.storage import configure_storage, query_usage, store_event
 
 
 class TestChaosStorage:
@@ -27,17 +27,17 @@ class TestChaosStorage:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(b"NOT A SQLITE DB")
             db_path = Path(tmp.name)
-        
+
         try:
             configure_storage(enabled=True, path=db_path)
-            
+
             # Should not raise exception
             store_event({
                 "schema_version": "1",
                 "model": "gpt-4o",
                 "estimated_energy_wh": 1.0
             })
-            
+
             # Query should fail gracefully (return empty summary or handle error)
             # In our implementation, query_usage connects to DB.
             # SQLite might raise DatabaseError.
@@ -48,7 +48,7 @@ class TestChaosStorage:
                 # Acceptable behavior: raise DB error on explicit query
                 # But store_event (background) should definitely NOT crash app
                 pass
-                
+
         finally:
             if db_path.exists():
                 os.unlink(db_path)
@@ -70,7 +70,7 @@ class TestChaosAdvisory:
         stats = SessionStats()
         stats.total_requests = 10
         # No input tokens recorded
-        
+
         advisories = generate_advisories(stats)
         # Should not crash division by zero
         assert isinstance(advisories, list)
@@ -81,7 +81,7 @@ class TestChaosAdvisory:
         stats.total_requests = 1000
         stats.total_input_tokens = 10**9
         stats.total_output_tokens = 0
-        
+
         advisories = generate_advisories(stats)
         # Should trigger RAG warning
         rag_warnings = [a for a in advisories if a.code == "RAG-001"]

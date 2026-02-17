@@ -32,6 +32,7 @@ dependencies = []
 openai = ["openai>=1.0,<2.0"]
 vertexai = ["google-cloud-aiplatform>=1.0"]
 tiktoken = ["tiktoken>=0.5.0"]  # Accurate token counting for OpenAI models
+calibrate = ["nvidia-ml-py3"]  # Hardware power sensing for NVIDIA GPUs
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -74,7 +75,7 @@ testpaths = ["tests"]
 addopts = [
     "--cov=vetch",
     "--cov-report=term-missing",
-    "--cov-fail-under=70",  # TODO: Raise to 90% when SDK mocking tests added (Day 7)
+    "--cov-fail-under=70",
 ]
 
 [tool.ruff]

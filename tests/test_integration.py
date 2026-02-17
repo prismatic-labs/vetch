@@ -77,12 +77,12 @@ class TestOpenAIIntegration:
         """Verify full flow for OpenAI streaming chat completion."""
         emitter = BufferedEmitter()
         set_test_emitter(emitter)
-        
+
         mock_openai = MagicMock()
         mock_openai.__version__ = "1.0.0"
         mock_client = MagicMock()
         mock_openai._client = mock_client
-        
+
         # Mock chunks
         def mock_stream():
             chunk1 = MagicMock()
@@ -90,19 +90,19 @@ class TestOpenAIIntegration:
             chunk1.choices = [MagicMock()]
             chunk1.choices[0].delta.content = "Hello"
             yield chunk1
-            
+
             chunk2 = MagicMock()
             chunk2.choices = [MagicMock()]
             chunk2.choices[0].delta.content = " world"
-            
+
             usage_obj = MagicMock()
             usage_obj.prompt_tokens = 10
             usage_obj.completion_tokens = 5
             chunk2.usage = usage_obj
             yield chunk2
-            
+
         mock_client.chat.completions.create.return_value = mock_stream()
-        
+
         try:
             with patch.dict(sys.modules, {"openai": mock_openai}):
                 with VetchContext(region="us-east-1"):
@@ -111,11 +111,11 @@ class TestOpenAIIntegration:
                         messages=[],
                         stream=True
                     )
-                    
+
                     # Consume stream
                     content = "".join([getattr(c.choices[0].delta, "content", "") for c in stream])
                     assert content == "Hello world"
-            
+
             # Verify event
             assert len(emitter) == 1
             event = emitter.events[0]

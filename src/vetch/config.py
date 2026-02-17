@@ -17,7 +17,7 @@ _global_tags: dict[str, str] = {}
 
 def add_global_tags(tags: dict[str, str]) -> None:
     """Set tags that will be automatically added to every inference event.
-    
+
     Args:
         tags: Key-value pairs (e.g. {'env': 'prod', 'version': '1.2.0'})
     """
@@ -60,3 +60,10 @@ def validate_tags(tags: dict[str, str] | None) -> list[str]:
     current_keys = set(tags.keys()) if tags else set()
     missing = _required_tags - current_keys
     return sorted(list(missing))
+
+
+def _reset_config() -> None:
+    """Reset global configuration. Primarily for testing."""
+    global _required_tags, _global_tags
+    _required_tags = set()
+    _global_tags = {}

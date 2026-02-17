@@ -204,7 +204,6 @@ class TestChaosNetwork:
 
     def test_malformed_grid_api_response(self) -> None:
         """Verify fallback when API returns invalid JSON."""
-        from io import BytesIO
         from unittest.mock import MagicMock
 
         mock_response = MagicMock()
@@ -219,8 +218,9 @@ class TestChaosNetwork:
 
     def test_http_emitter_timeout(self) -> None:
         """HTTP emitter should fail silently on timeout."""
-        from vetch.emitter import HttpHandler
         import logging
+
+        from vetch.emitter import HttpHandler
 
         handler = HttpHandler("http://localhost:9999/fake")
         record = logging.LogRecord(
@@ -232,8 +232,9 @@ class TestChaosNetwork:
 
     def test_http_emitter_connection_refused(self) -> None:
         """HTTP emitter should fail silently on connection refused."""
-        from vetch.emitter import HttpHandler
         import logging
+
+        from vetch.emitter import HttpHandler
 
         handler = HttpHandler("http://127.0.0.1:1/unreachable")
         record = logging.LogRecord(
@@ -250,7 +251,8 @@ class TestChaosStorage:
     def test_corrupt_sqlite_database(self) -> None:
         """Verify fail-open when SQLite database is corrupt."""
         import tempfile
-        from vetch.storage import configure_storage, store_event, is_storage_enabled
+
+        from vetch.storage import configure_storage, store_event
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             # Write garbage to simulate corrupt DB
@@ -275,7 +277,7 @@ class TestChaosStorage:
 
     def test_readonly_database_directory(self) -> None:
         """Verify fail-open when DB directory is read-only."""
-        from vetch.storage import store_event, configure_storage
+        from vetch.storage import configure_storage, store_event
 
         # Use a path that will fail
         with patch("pathlib.Path.mkdir", side_effect=PermissionError("Read-only")):
@@ -296,6 +298,7 @@ class TestChaosConcurrency:
         """Multiple threads writing to cache should not corrupt data."""
         import threading
         import time
+
         from vetch.sensing.cache import CachedIntensity
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
@@ -409,7 +412,7 @@ class TestChaosPricing:
 
     def test_missing_pricing_registry(self) -> None:
         """Cost calculation should return 0 if pricing registry is missing."""
-        from vetch.calculation import calculate_cost, _reset_registries
+        from vetch.calculation import _reset_registries, calculate_cost
 
         _reset_registries()
         with patch("pathlib.Path.read_text", side_effect=FileNotFoundError()):
@@ -422,7 +425,7 @@ class TestChaosPricing:
 
     def test_malformed_pricing_json(self) -> None:
         """Cost calculation should handle malformed JSON gracefully."""
-        from vetch.calculation import calculate_cost, _reset_registries
+        from vetch.calculation import _reset_registries, calculate_cost
 
         _reset_registries()
         with patch("pathlib.Path.read_text", return_value="NOT JSON {"):

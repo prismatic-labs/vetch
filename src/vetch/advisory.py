@@ -8,7 +8,7 @@ Analyzes session or historical data to find:
 
 from __future__ import annotations
 
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from vetch.stats import SessionStats
 
@@ -32,7 +32,7 @@ def generate_advisories(stats: SessionStats) -> list[Advisory]:
         for count in stats.input_token_counts.values():
             if count > 1:
                 repeated_inputs += count
-        
+
         repetition_rate = repeated_inputs / stats.total_requests
         if repetition_rate > 0.5:
             advisories.append(Advisory(
@@ -75,7 +75,7 @@ def format_advisories(advisories: list[Advisory], format: str = "text") -> str:
 
     lines = ["\n🛡️  Vetch Advisories"]
     lines.append("=" * 50)
-    
+
     for adv in advisories:
         icon = "🔴" if adv.severity == "CRITICAL" else "🟡" if adv.severity == "WARNING" else "🔵"
         lines.append(f"{icon} [{adv.code}] {adv.title}")
@@ -83,5 +83,5 @@ def format_advisories(advisories: list[Advisory], format: str = "text") -> str:
         if adv.potential_savings_usd:
             lines.append(f"   Potential Savings: ${adv.potential_savings_usd:.2f}")
         lines.append("")
-        
+
     return "\n".join(lines)

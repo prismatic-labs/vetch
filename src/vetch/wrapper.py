@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from vetch import __version__
 from vetch.context import TrackingContext
@@ -31,12 +31,10 @@ logger = logging.getLogger(__name__)
 
 # Flag to track if warning about missing region has been issued
 _region_warning_issued = False
+_timezone_warning_issued = False
 
 # Track patched clients for cleanup
 _patched_clients: list[Any] = []
-
-# P0: Track if timezone heuristic warning has been shown
-_timezone_warning_issued = False
 
 
 def _infer_region() -> tuple[str | None, str | None]:
@@ -45,10 +43,10 @@ def _infer_region() -> tuple[str | None, str | None]:
     Priority:
     1. VETCH_REGION
     2. Cloud Provider Env Vars
-    3. Heuristic: Local Timezone (with warning)
+    3. Heuristic: Local Timezone
 
     Returns:
-        Tuple of (region, warning_message_or_none)
+        Tuple of (region_name, warning_message).
     """
     # 1. Direct Env Vars
     region = os.environ.get("VETCH_REGION")
@@ -61,36 +59,33 @@ def _infer_region() -> tuple[str | None, str | None]:
         if val:
             return val, None
 
-    # 3. Timezone Heuristic - P0: Now returns warning about low accuracy
-    global _timezone_warning_issued
+    # 3. Extraordinary Move: Timezone Heuristic
     try:
-        import time as time_module
+        import time
+
         # Get UTC offset in hours
-        offset = -time_module.timezone if time_module.daylight == 0 else -time_module.altzone
+        offset = -time.timezone if time.daylight == 0 else -time.altzone
         hours = offset / 3600
 
         # Simple mapping for common regions
-        tz_region = None
+        inferred = None
         if hours == 0:
-            tz_region = "eu-west-2"  # London
+            inferred = "eu-west-2"  # London
         elif 1 <= hours <= 3:
-            tz_region = "eu-central-1"  # Europe
+            inferred = "eu-central-1"  # Europe
         elif -5 <= hours <= -4:
-            tz_region = "us-east-1"  # US East
+            inferred = "us-east-1"  # US East
         elif -8 <= hours <= -7:
-            tz_region = "us-west-2"  # US West
+            inferred = "us-west-2"  # US West
         elif 8 <= hours <= 9:
-            tz_region = "asia-northeast-1"  # Tokyo/Seoul
+            inferred = "asia-northeast-1"  # Tokyo/Seoul
 
-        if tz_region:
+        if inferred:
             warning = (
-                f"Region inferred from timezone (UTC{hours:+.0f} -> {tz_region}). "
-                "Accuracy ~30%. Set VETCH_REGION for accurate carbon calculation."
+                f"Region '{inferred}' inferred from timezone. Accuracy ~30%. "
+                "Set VETCH_REGION for precision."
             )
-            if not _timezone_warning_issued:
-                logger.warning(warning)
-                _timezone_warning_issued = True
-            return tz_region, warning
+            return inferred, warning
     except Exception:
         pass
 
@@ -135,17 +130,22 @@ class VetchContext:
         if self.price_multiplier == 1.0 and parent is not None:
             self.price_multiplier = getattr(parent, "price_multiplier", 1.0)
 
+        # Build initial tags from global configuration
+        from vetch.config import get_global_tags
+
+        self.tags: dict[str, str] | None = dict(get_global_tags())
+
         # Inherit region
         self.region = region
         if self.region is None and parent is not None:
             self.region = parent.region
 
         # Merge tags (inner overrides parent)
-        self.tags = {}
         if parent is not None and parent.tags:
             self.tags.update(parent.tags)
         if tags:
             self.tags.update(tags)
+
         if not self.tags:
             self.tags = None
 
@@ -163,7 +163,8 @@ class VetchContext:
             if validated is None:
                 logger.warning(
                     "Invalid energy_override provided, falling back to registry. "
-                    "Required: wh_per_1k_input (positive float), wh_per_1k_output (positive float)"
+                    "Required: wh_per_1k_input (positive float), "
+                    "wh_per_1k_output (positive float)"
                 )
             else:
                 self._energy_override = validated
@@ -224,8 +225,8 @@ class VetchContext:
 
     def _setup(self) -> None:
         """Setup context state."""
-        # P0: Kill switch - skip all setup if disabled
-        if self._globally_disabled:
+        # P0: Skip setup if globally disabled
+        if getattr(self, "_globally_disabled", False):
             self._tracking_disabled = True
             return
 
@@ -233,10 +234,10 @@ class VetchContext:
 
         # Infer region if not provided
         if self.region is None:
-            inferred_region, region_warning = _infer_region()
-            self.region = inferred_region
-            if region_warning:
-                self._warnings.append(region_warning)
+            self.region, warning = _infer_region()
+            if warning:
+                self._warnings.append(warning)
+
             if self.region is None:
                 global _region_warning_issued
                 if not _region_warning_issued:
@@ -249,6 +250,7 @@ class VetchContext:
         try:
             # 1. Validate compliance (Mandatory Tags)
             from vetch.config import validate_tags
+
             missing = validate_tags(self.tags)
             if missing:
                 msg = f"Compliance Error: Missing mandatory tags: {', '.join(missing)}"
@@ -264,6 +266,7 @@ class VetchContext:
                 tags=self.tags,
                 energy_override=self._energy_override,
             )
+            self._tracking_ctx.warnings = list(self._warnings)  # Start with current warnings
             self._tracking_ctx.__enter__()
 
             # 3. Set up SDK patches
@@ -286,14 +289,18 @@ class VetchContext:
             )
         except Exception as e:
             # Extraordinary Move: Pre-filled Issue Link
-            import urllib.parse
             import traceback
+            import urllib.parse
+
             tb = traceback.format_exc()
             params = {
                 "title": f"Alpha Error: {type(e).__name__}",
-                "body": f"Vetch version: {__version__}\n\nTraceback:\n```\n{tb}\n```"
+                "body": f"Vetch version: {__version__}\n\nTraceback:\n```\n{tb}\n```",
             }
-            issue_url = f"https://github.com/prismatic-labs/vetch/issues/new?{urllib.parse.urlencode(params)}"
+            issue_url = (
+                f"https://github.com/prismatic-labs/vetch/issues/new?"
+                f"{urllib.parse.urlencode(params)}"
+            )
             logger.warning(
                 f"Vetch event emission failed: {e}\n"
                 f"Please help us improve the Alpha by reporting this: {issue_url}"
@@ -329,7 +336,9 @@ class VetchContext:
         try:
             # Vertex AI requires explicit model patching, but we can try to
             # detect if the SDK is used and provide hooks.
-            from vetch.providers.vertexai import detect_vertexai_model  # noqa: F401
+            from vetch.providers.vertexai import detect_vertexai_model
+
+            _ = detect_vertexai_model()
             # Note: Vertex AI patching is typically done per-model instance
             # in the current implementation. Future versions may add global patching.
         except Exception as e:
@@ -459,8 +468,17 @@ class VetchContext:
                 out_tokens = text.get("output_tokens", 0)
 
                 # Energy
-                energy_wh, energy_tier, energy_source, energy_basis, model_known = calculate_energy(
-                    in_tokens, out_tokens, model, self._energy_override
+                (
+                    energy_wh,
+                    energy_tier,
+                    energy_source,
+                    energy_basis,
+                    model_known,
+                ) = calculate_energy(
+                    in_tokens,
+                    out_tokens,
+                    model,
+                    cast("dict[str, Any]", self._energy_override),
                 )
 
                 # Add warning if model not in registry
@@ -534,31 +552,35 @@ class VetchContext:
 
         # Emit to configured output
         emit_event(self._event)
-        
+
         # Local Storage (The Black Box Recorder)
         try:
             from vetch.storage import store_event
+
             store_event(self._event)
         except Exception:
             pass
-            
+
         # Session Stats (The Advisory Brain)
         try:
             from vetch.stats import track_session_event
-            track_session_event(self._event)
+
+            track_session_event(cast("dict[str, Any]", self._event))
         except Exception:
             pass
-        
+
         # Extraordinary Move: CI Tracking
         try:
             from vetch.ci import track_ci_event
-            track_ci_event(self._event)
+
+            track_ci_event(cast("dict[str, Any]", self._event))
         except Exception:
             pass
 
         # Try to attach to active OTel span
         try:
             from vetch.otel import attach_to_otel_span
+
             attach_to_otel_span(self._event)
         except Exception:
             pass

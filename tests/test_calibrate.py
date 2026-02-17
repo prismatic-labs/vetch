@@ -38,15 +38,17 @@ class TestGPUAvailability:
         """Get descriptive error when pynvml missing."""
         # Force pynvml import to fail
         with patch.dict("sys.modules", {"pynvml": None}):
-            from vetch.calibrate import get_gpu_error
 
             # Re-import to get fresh state
             import importlib
+
             import vetch.calibrate
             importlib.reload(vetch.calibrate)
 
             error = vetch.calibrate.get_gpu_error()
-            assert "pynvml" in error.lower() or "not installed" in error.lower() or "nvidia" in error.lower() or len(error) > 0
+            assert any(
+                s in error.lower() for s in ["pynvml", "not installed", "nvidia"]
+            ) or len(error) > 0
 
 
 class TestCalibrationResult:
@@ -198,6 +200,7 @@ class TestCalibrateModelMocked:
         with patch.dict("sys.modules", {"pynvml": mock_pynvml}):
             # Need to reload module to pick up mock
             import importlib
+
             import vetch.calibrate
             importlib.reload(vetch.calibrate)
 
@@ -223,7 +226,7 @@ class TestSaveCalibration:
 
     def test_save_creates_file(self) -> None:
         """Saving calibration creates JSON file."""
-        from vetch.calibrate import CalibrationResult, _save_calibration, CALIBRATION_DIR
+        from vetch.calibrate import CalibrationResult, _save_calibration
 
         result = CalibrationResult(
             model="test-model",

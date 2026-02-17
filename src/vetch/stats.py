@@ -6,9 +6,10 @@ advisories and summaries without querying the database.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Any
+
 
 @dataclass
 class SessionStats:
@@ -18,29 +19,29 @@ class SessionStats:
     total_energy_wh: float = 0.0
     total_carbon_g: float = 0.0
     total_cost_usd: float = 0.0
-    
+
     # For pattern detection
     input_token_counts: dict[int, int] = field(default_factory=lambda: defaultdict(int))
     models_used: set[str] = field(default_factory=set)
 
     def update(self, event: dict[str, Any]) -> None:
         self.total_requests += 1
-        
+
         usage = event.get("usage", {}) or {}
         text = usage.get("text", {}) or {}
         in_tok = text.get("input_tokens", 0)
         out_tok = text.get("output_tokens", 0)
-        
+
         self.total_input_tokens += in_tok
         self.total_output_tokens += out_tok
         self.total_energy_wh += (event.get("estimated_energy_wh") or 0.0)
         self.total_carbon_g += (event.get("estimated_carbon_g") or 0.0)
         self.total_cost_usd += (event.get("estimated_cost_usd") or 0.0)
-        
+
         # Track for advisory
         if in_tok > 0:
             self.input_token_counts[in_tok] += 1
-        
+
         model = event.get("model")
         if model:
             self.models_used.add(model)

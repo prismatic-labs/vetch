@@ -57,6 +57,7 @@ class TrackingContext:
 
     # Captured during the wrapped call
     captured_call: CapturedCall | None = None
+    warnings: list[str] = field(default_factory=list)
 
     # Token for context restoration
     _token: Token[TrackingContext | None] | None = field(default=None, repr=False)
