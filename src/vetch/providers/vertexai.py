@@ -1,0 +1,434 @@
+"""Vertex AI SDK provider wrapper.
+
+This module handles patching the Google Vertex AI Python SDK to capture
+inference metadata without reading prompt/completion content.
+
+Supports:
+- Sync completions (model.generate_content)
+- Async completions (model.generate_content_async)
+- Streaming completions (stream=True)
+- Async streaming completions (stream=True)
+
+Privacy guarantee: We only read model, usage, and timing metadata.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import TYPE_CHECKING, Any, cast
+
+from vetch.context import get_active_context
+from vetch.proxy import is_vetch_patched
+
+if TYPE_CHECKING:
+    from vetch.schema import Usage
+
+logger = logging.getLogger(__name__)
+
+# Track original methods for cleanup
+_original_generate: Any = None
+_original_generate_async: Any = None
+_patched = False
+
+
+def extract_usage(response: Any) -> Usage | None:
+    """Extract usage metadata from Vertex AI response.
+
+    Args:
+        response: Vertex AI GenerateContentResponse object.
+
+    Returns:
+        Usage dict with text token counts, or None if unavailable.
+    """
+    # Vertex AI uses usage_metadata attribute
+    usage_metadata = getattr(response, "usage_metadata", None)
+    if usage_metadata is None:
+        return None
+
+    return cast(
+        "Usage",
+        {
+            "text": {
+                "input_tokens": getattr(usage_metadata, "prompt_token_count", 0),
+                "output_tokens": getattr(usage_metadata, "candidates_token_count", 0),
+                "total_tokens": getattr(usage_metadata, "total_token_count", 0),
+            }
+        },
+    )
+
+
+def extract_model(model_obj: Any) -> str:
+    """Extract model name from Vertex AI model object.
+
+    Args:
+        model_obj: Vertex AI GenerativeModel instance.
+
+    Returns:
+        Model identifier string.
+    """
+    # Try to get model name from the model object
+    model_name = getattr(model_obj, "_model_name", None)
+    if model_name:
+        # Clean up the model name (e.g., "models/gemini-1.5-pro" -> "gemini-1.5-pro")
+        if "/" in model_name:
+            return str(model_name.split("/")[-1])
+        return str(model_name)
+    return "unknown"
+
+
+def infer_region_from_endpoint(endpoint: str | None) -> str | None:
+    """Infer region from Vertex AI endpoint URL.
+
+    Supports patterns like:
+    - us-central1-aiplatform.googleapis.com
+
+    Args:
+        endpoint: The API endpoint URL.
+
+    Returns:
+        Inferred region or None.
+    """
+    if endpoint is None:
+        return None
+
+    # Pattern: region-aiplatform.googleapis.com
+    match = re.match(r"([a-z]+-[a-z]+\d+)-aiplatform\.googleapis\.com", endpoint)
+    if match:
+        return match.group(1)
+
+    return None
+
+
+def _after_generate(result: Any, model_obj: Any, *args: Any, **kwargs: Any) -> None:
+    """Hook called after model.generate_content.
+
+    Captures metadata from the response into the active context.
+    """
+    ctx = get_active_context()
+    if ctx is None:
+        return
+
+    # Check if this is a streaming response
+    is_stream = kwargs.get("stream", False)
+
+    if is_stream:
+        # For streams, actual capture happens in stream iteration
+        return
+
+    # Non-streaming: capture immediately
+    usage = extract_usage(result)
+    model = extract_model(model_obj)
+
+    ctx.capture(
+        model=model,
+        provider="vertexai",
+        usage=usage,
+        is_stream=False,
+        complete=True,
+    )
+
+
+def _on_generate_error(error: BaseException) -> None:
+    """Hook called when model.generate_content fails."""
+    ctx = get_active_context()
+    if ctx is None:
+        return
+
+    ctx.capture(
+        model="unknown",
+        provider="vertexai",
+        error=True,
+        error_type=type(error).__name__,
+        complete=False,
+    )
+
+
+class StreamWrapper:
+    """Wrapper for Vertex AI streaming responses.
+
+    Counts characters without accumulating content.
+    Captures final usage from the last chunk if available.
+    """
+
+    def __init__(self, stream: Any, model_name: str) -> None:
+        """Initialize stream wrapper.
+
+        Args:
+            stream: The original Vertex AI stream.
+            model_name: Model identifier for capture.
+        """
+        self._stream = stream
+        self._model = model_name
+        self._accumulated_chars = 0
+        self._final_usage: Usage | None = None
+        self._complete = False
+        self._error = False
+        self._error_type: str | None = None
+
+    def __iter__(self) -> StreamWrapper:
+        """Return self as iterator."""
+        return self
+
+    def __next__(self) -> Any:
+        """Get next chunk from stream."""
+        try:
+            chunk = next(self._stream)
+            self._process_chunk(chunk)
+            return chunk
+
+        except StopIteration:
+            self._complete = True
+            self._capture_to_context()
+            raise
+
+        except BaseException as e:
+            self._error = True
+            self._error_type = type(e).__name__
+            self._capture_to_context()
+            raise
+
+    def _process_chunk(self, chunk: Any) -> None:
+        """Process a single chunk to update counters."""
+        # Count characters from text content (not accumulate)
+        text = getattr(chunk, "text", None)
+        if text:
+            self._accumulated_chars += len(text)
+
+        # Check for usage in chunk
+        usage_metadata = getattr(chunk, "usage_metadata", None)
+        if usage_metadata:
+            self._final_usage = cast(
+                "Usage",
+                {
+                    "text": {
+                        "input_tokens": getattr(usage_metadata, "prompt_token_count", 0),
+                        "output_tokens": getattr(usage_metadata, "candidates_token_count", 0),
+                        "total_tokens": getattr(usage_metadata, "total_token_count", 0),
+                    }
+                },
+            )
+
+    def _capture_to_context(self) -> None:
+        """Capture final metadata to active context."""
+        ctx = get_active_context()
+        if ctx is None:
+            return
+
+        ctx.capture(
+            model=self._model,
+            provider="vertexai",
+            usage=self._final_usage,
+            is_stream=True,
+            accumulated_chars=self._accumulated_chars,
+            complete=self._complete,
+            error=self._error,
+            error_type=self._error_type,
+        )
+
+    def __enter__(self) -> StreamWrapper:
+        """Support context manager protocol."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Clean up on context exit."""
+        if exc_type is not None:
+            self._error = True
+            self._error_type = exc_type.__name__
+            self._capture_to_context()
+
+
+class AsyncStreamWrapper(StreamWrapper):
+    """Async wrapper for Vertex AI streaming responses."""
+
+    def __aiter__(self) -> AsyncStreamWrapper:
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            chunk = await self._stream.__anext__()
+            self._process_chunk(chunk)
+            return chunk
+        except StopAsyncIteration:
+            self._complete = True
+            self._capture_to_context()
+            raise
+        except BaseException as e:
+            self._error = True
+            self._error_type = type(e).__name__
+            self._capture_to_context()
+            raise
+
+
+def _wrapped_generate(original: Any, model_obj: Any) -> Any:
+    """Create wrapped version of model.generate_content.
+
+    Args:
+        original: The original generate_content method.
+        model_obj: The GenerativeModel instance.
+
+    Returns:
+        Wrapped method that captures metadata.
+    """
+    model_name = extract_model(model_obj)
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = original(*args, **kwargs)
+
+            if is_stream:
+                # Wrap the stream to capture during iteration
+                return StreamWrapper(result, model_name)
+
+            # Non-streaming: capture immediately
+            _after_generate(result, model_obj, *args, **kwargs)
+            return result
+
+        except BaseException as e:
+            _on_generate_error(e)
+            raise
+
+    wrapper.vetch_patched = True  # type: ignore[attr-defined]
+    wrapper._vetch_original = original  # type: ignore[attr-defined]
+
+    return wrapper
+
+
+def _wrapped_generate_async(original: Any, model_obj: Any) -> Any:
+    """Create wrapped version of model.generate_content_async.
+
+    Args:
+        original: The original generate_content_async method.
+        model_obj: The GenerativeModel instance.
+
+    Returns:
+        Wrapped method that captures metadata.
+    """
+    model_name = extract_model(model_obj)
+
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = await original(*args, **kwargs)
+
+            if is_stream:
+                # Wrap the stream to capture during iteration
+                return AsyncStreamWrapper(result, model_name)
+
+            # Non-streaming: capture immediately
+            _after_generate(result, model_obj, *args, **kwargs)
+            return result
+
+        except BaseException as e:
+            _on_generate_error(e)
+            raise
+
+    wrapper.vetch_patched = True  # type: ignore[attr-defined]
+    wrapper._vetch_original = original  # type: ignore[attr-defined]
+
+    return wrapper
+
+
+def patch_vertexai_model(model: Any) -> bool:
+    """Patch a Vertex AI GenerativeModel instance.
+
+    Args:
+        model: GenerativeModel instance.
+
+    Returns:
+        True if patching succeeded, False otherwise.
+    """
+    global _patched, _original_generate, _original_generate_async
+
+    try:
+        # 1. Check version compatibility
+        from vetch.compat import get_vertexai_version
+        v_info = get_vertexai_version()
+        if v_info.installed and not v_info.tested:
+            logger.warning(
+                f"Vertex AI SDK version {v_info.version} is not tested with Vetch. "
+                "Patching may be unstable. Set VETCH_FORCE_PATCH=true to override."
+            )
+            import os
+            if os.environ.get("VETCH_FORCE_PATCH") != "true":
+                return False
+
+        # 2. Patch sync method
+        generate = getattr(model, "generate_content", None)
+        if generate and not is_vetch_patched(generate):
+            _original_generate = generate
+            model.generate_content = _wrapped_generate(generate, model)
+
+        # Patch async method if it exists
+        generate_async = getattr(model, "generate_content_async", None)
+        if generate_async and not is_vetch_patched(generate_async):
+            _original_generate_async = generate_async
+            model.generate_content_async = _wrapped_generate_async(generate_async, model)
+
+        _patched = True
+        logger.debug("Vertex AI model patched successfully")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Failed to patch Vertex AI model: {e}")
+        return False
+
+
+def unpatch_vertexai_model(model: Any) -> bool:
+    """Remove Vetch patch from a Vertex AI model.
+
+    Args:
+        model: GenerativeModel instance.
+
+    Returns:
+        True if unpatching succeeded, False otherwise.
+    """
+    global _patched, _original_generate, _original_generate_async
+
+    try:
+        if _original_generate:
+            model.generate_content = _original_generate
+            _original_generate = None
+
+        if _original_generate_async:
+            model.generate_content_async = _original_generate_async
+            _original_generate_async = None
+
+        _patched = False
+        logger.debug("Vertex AI model unpatched successfully")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Failed to unpatch Vertex AI model: {e}")
+        return False
+
+
+def detect_vertexai_model() -> Any | None:
+    """Detect if Vertex AI SDK is available.
+
+    Note: Unlike OpenAI, Vertex AI doesn't have a global client.
+    Users create model instances explicitly. This function just
+    checks if the SDK is importable.
+
+    Returns:
+        None (Vertex AI requires explicit model creation).
+    """
+    import sys
+    # Check for common Vertex AI entry points in sys.modules
+    if not any(m in sys.modules for m in ["google.cloud.aiplatform", "vertexai"]):
+        return None
+
+    try:
+        import google.generativeai  # type: ignore[import-not-found]  # noqa: F401
+
+        return None  # SDK available but no default model
+    except ImportError:
+        return None

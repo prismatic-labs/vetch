@@ -1,0 +1,62 @@
+{
+  "gpt-4": {
+    "wh_per_1k_input": 0.8,
+    "wh_per_1k_output": 2.4,
+    "tier": 3,
+    "basis": "Architecture analysis (1.8T MoE), scaled from Bloom baseline with 1.3x system overhead."
+  },
+  "gpt-4-turbo": {
+    "wh_per_1k_input": 0.6,
+    "wh_per_1k_output": 1.8,
+    "tier": 3,
+    "basis": "Estimated ~25% efficiency gain over GPT-4 base."
+  },
+  "gpt-4o": {
+    "wh_per_1k_input": 0.3,
+    "wh_per_1k_output": 0.8,
+    "tier": 3,
+    "basis": "Scaled from Epoch AI benchmark (0.6 Wh/1k output) with 1.3x system overhead."
+  },
+  "gpt-3.5-turbo": {
+    "wh_per_1k_input": 0.1,
+    "wh_per_1k_output": 0.3,
+    "tier": 3,
+    "basis": "Architecture analysis (~175B), aligned with optimized batching benchmarks."
+  },
+  "claude-3-opus": {
+    "wh_per_1k_input": 1.0,
+    "wh_per_1k_output": 3.0,
+    "tier": 3,
+    "basis": "Latency-correlated scaling relative to GPT-4 Turbo."
+  },
+  "claude-3-sonnet": {
+    "wh_per_1k_input": 0.5,
+    "wh_per_1k_output": 1.5,
+    "tier": 3,
+    "basis": "Estimated ~70B parameter class efficiency."
+  },
+  "claude-3-haiku": {
+    "wh_per_1k_input": 0.1,
+    "wh_per_1k_output": 0.3,
+    "tier": 3,
+    "basis": "Estimated ~20B parameter class efficiency."
+  },
+  "gemini-1.5-pro": {
+    "wh_per_1k_input": 0.7,
+    "wh_per_1k_output": 2.1,
+    "tier": 3,
+    "basis": "MoE architecture proxy, aligned with GPT-4 Turbo compute intensity."
+  },
+  "gemini-1.5-flash": {
+    "wh_per_1k_input": 0.2,
+    "wh_per_1k_output": 0.6,
+    "tier": 3,
+    "basis": "Distilled architecture efficiency proxy."
+  },
+  "llama-3-70b": {
+    "wh_per_1k_input": 0.4,
+    "wh_per_1k_output": 1.0,
+    "tier": 3,
+    "basis": "Meta published training energy reverse-scaled for inference with 1.3x system overhead."
+  }
+}
