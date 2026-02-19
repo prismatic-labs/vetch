@@ -55,6 +55,31 @@ This is our largest uncertainty.
 
 Tier 3 estimates should be treated as order-of-magnitude guidance, not precise measurements.
 
+### Architecture-Aware Estimation
+
+For Mixture-of-Experts (MoE) models, we estimate energy based on **active parameters per token**, not total parameters. This prevents significant overestimation:
+
+| Model | Total Params | Active Params | Correction Factor |
+|-------|-------------|---------------|-------------------|
+| GPT-4 | ~1.8T | ~220B | 8x |
+| GPT-4o | ~200B | ~50B | 4x |
+| Mixtral 8x7B | 47B | 13B | 3.6x |
+| Gemini 1.5 Pro | ~500B | ~100B | 5x |
+
+**Dense models** (Claude, Llama) use all parameters per token, so total = active.
+
+### Quantization Factors
+
+Lower precision reduces memory bandwidth and compute:
+
+| Quantization | Relative Energy | Typical Use |
+|--------------|----------------|-------------|
+| bf16/fp16 | 1.0x (baseline) | Cloud inference |
+| int8 | ~0.5x | Optimized serving |
+| int4 | ~0.25x | Local inference |
+
+Registry entries include a `quantization` field. When known, estimates are adjusted accordingly.
+
 ### Upgrading Tiers
 
 We actively work to upgrade estimates. The path for any model:
@@ -119,6 +144,6 @@ We want better data. If you have inference energy measurements—from internal b
 
 ### How to Submit
 - Pull request against `registry/energy.json`
-- Email to contribute@vetch.dev
+- Email to marco@prismaticlabs.ai
 - Open an issue with the data
 - (Coming soon) `vetch calibrate --submit` for automated Tier 0 → Tier 2 aggregation

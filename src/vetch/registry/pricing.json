@@ -27,6 +27,10 @@
     "usd_per_1k_input": 0.00025,
     "usd_per_1k_output": 0.00125
   },
+  "claude-3.5-sonnet": {
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015
+  },
   "gemini-1.5-pro": {
     "usd_per_1k_input": 0.007,
     "usd_per_1k_output": 0.021
@@ -35,7 +39,23 @@
     "usd_per_1k_input": 0.00035,
     "usd_per_1k_output": 0.00105
   },
+  "gemini-2.0-flash": {
+    "usd_per_1k_input": 0.0001,
+    "usd_per_1k_output": 0.0004
+  },
   "llama-3-70b": {
+    "usd_per_1k_input": 0.0,
+    "usd_per_1k_output": 0.0
+  },
+  "llama-3.1-405b": {
+    "usd_per_1k_input": 0.0,
+    "usd_per_1k_output": 0.0
+  },
+  "mixtral-8x7b": {
+    "usd_per_1k_input": 0.0,
+    "usd_per_1k_output": 0.0
+  },
+  "mixtral-8x22b": {
     "usd_per_1k_input": 0.0,
     "usd_per_1k_output": 0.0
   }

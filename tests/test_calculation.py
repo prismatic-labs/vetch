@@ -55,24 +55,30 @@ class TestEnergyCalculation:
     """Tests for energy consumption calculation."""
 
     def test_calculate_energy_known_model(self) -> None:
-        """Calculate energy for a known model (gpt-4o: 0.3 in, 0.8 out)."""
-        # (1000 * 0.3 + 500 * 0.8) / 1000 = (300 + 400) / 1000 = 0.7 Wh
-        energy, tier, source, basis, known = calculate_energy(1000, 500, "gpt-4o")
+        """Calculate energy for a known model (gpt-4o: 0.1 in, 0.27 out)."""
+        # (1000 * 0.1 + 500 * 0.27) / 1000 = (100 + 135) / 1000 = 0.235 Wh
+        energy, tier, uncertainty_pct, source, basis, known = calculate_energy(
+            1000, 500, "gpt-4o"
+        )
 
-        assert energy == pytest.approx(0.7)
+        assert energy == pytest.approx(0.235)
         assert tier == 3
+        assert uncertainty_pct == 1000  # Tier 3 = order of magnitude
         assert source == "registry"
         assert known is True
         assert "Epoch AI" in basis
 
     def test_calculate_energy_unknown_model(self) -> None:
         """Calculate energy for unknown model using conservative fallback."""
-        energy, tier, source, basis, known = calculate_energy(1000, 500, "unknown-model")
+        energy, tier, uncertainty_pct, source, basis, known = calculate_energy(
+            1000, 500, "unknown-model"
+        )
 
         # Fallback uses 1.5 in, 4.5 out
         # (1000 * 1.5 + 500 * 4.5) / 1000 = (1500 + 2250) / 1000 = 3.75 Wh
         assert energy == 3.75
         assert tier == 3
+        assert uncertainty_pct == 1000
         assert source == "fallback"
         assert known is False
 
@@ -86,10 +92,13 @@ class TestEnergyCalculation:
             "basis": "Custom measurement",
         }
         # (1000 * 2.0 + 500 * 6.0) / 1000 = (2000 + 3000) / 1000 = 5.0 Wh
-        energy, tier, source, basis, known = calculate_energy(1000, 500, "gpt-4o", override)
+        energy, tier, uncertainty_pct, source, basis, known = calculate_energy(
+            1000, 500, "gpt-4o", override
+        )
 
         assert energy == 5.0
         assert tier == 2
+        assert uncertainty_pct == 100  # Tier 2 = ±100%
         assert source == "override"
         assert basis == "Custom measurement"
 

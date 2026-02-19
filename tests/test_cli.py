@@ -109,7 +109,7 @@ class TestCLIMethodology:
 
         captured = capsys.readouterr()
         assert "Submission Format" in captured.out
-        assert "Email to contribute@vetch.dev" in captured.out
+        assert "Email to marco@prismaticlabs.ai" in captured.out
 
 
 class TestCLICheck:

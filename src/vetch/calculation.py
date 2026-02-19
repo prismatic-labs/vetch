@@ -134,6 +134,31 @@ def get_conservative_energy() -> dict[str, Any]:
     }
 
 
+# Uncertainty percentage by tier (upper bound of range)
+# Tier 0: ±10-20% (measured hardware)
+# Tier 1: ±20-50% (vendor-published)
+# Tier 2: ±50-100% (validated research)
+# Tier 3: order of magnitude (~1000%, i.e., could be 0.1x to 10x)
+TIER_UNCERTAINTY_PCT: dict[int, int] = {
+    0: 20,
+    1: 50,
+    2: 100,
+    3: 1000,
+}
+
+
+def get_uncertainty_pct(tier: int) -> int:
+    """Get uncertainty percentage for a given energy tier.
+
+    Args:
+        tier: Energy tier (0-3).
+
+    Returns:
+        Uncertainty as percentage (e.g., 20 means ±20%).
+    """
+    return TIER_UNCERTAINTY_PCT.get(tier, 1000)
+
+
 # Tiktoken availability flag (lazy-loaded)
 _TIKTOKEN_AVAILABLE: bool | None = None
 _TIKTOKEN_WARNING_ISSUED = False
@@ -231,7 +256,7 @@ def calculate_energy(
     output_tokens: int,
     model: str,
     energy_override: dict[str, Any] | None = None,
-) -> tuple[float, int, str, str, bool]:
+) -> tuple[float, int, int, str, str, bool]:
     """Calculate energy consumption in Watt-hours.
 
     Formula:
@@ -244,7 +269,7 @@ def calculate_energy(
         energy_override: User-provided energy values.
 
     Returns:
-        Tuple of (energy_wh, tier, source, basis, model_known).
+        Tuple of (energy_wh, tier, uncertainty_pct, source, basis, model_known).
     """
     # Clamp negative tokens to 0
     in_tokens = max(0, input_tokens)
@@ -258,9 +283,10 @@ def calculate_energy(
         basis = energy_override.get("basis", "User-provided override")
 
         energy_wh = (in_tokens * wh_in + out_tokens * wh_out) / 1000
+        uncertainty_pct = get_uncertainty_pct(tier)
         # Check if model is known in registry anyway for informational purposes
         _, known = resolve_model(model)
-        return energy_wh, tier, "override", basis, known
+        return energy_wh, tier, uncertainty_pct, "override", basis, known
 
     resolved_model, known = resolve_model(model)
     _load_registry()
@@ -282,7 +308,8 @@ def calculate_energy(
         source = "fallback"
 
     energy_wh = (in_tokens * wh_in + out_tokens * wh_out) / 1000
-    return energy_wh, tier, source, basis, known
+    uncertainty_pct = get_uncertainty_pct(tier)
+    return energy_wh, tier, uncertainty_pct, source, basis, known
 
 
 # Default PUE (Power Usage Effectiveness) for data centers

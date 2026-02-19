@@ -74,6 +74,7 @@ class InferenceEvent(TypedDict, total=False):
     # Signal quality
     signal_quality: Literal["live", "delayed", "blind", "unknown"]
     energy_tier: int  # 0=measured, 1=vendor, 2=validated, 3=estimated
+    energy_uncertainty_pct: Union[int, None]  # Uncertainty %: 20/50/100/1000 for tier 0/1/2/3
     energy_source: str  # "registry", "override", "fallback", "calibrated"
     energy_override_source: Union[str, None]
     energy_basis: Union[str, None]

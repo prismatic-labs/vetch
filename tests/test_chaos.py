@@ -86,7 +86,9 @@ class TestChaosRegistry:
         _reset_registries()
         with patch("pathlib.Path.read_text", side_effect=FileNotFoundError()):
             # Should use fallback values
-            energy, tier, source, basis, known = calculate_energy(1000, 500, "gpt-4o")
+            energy, tier, uncertainty_pct, source, basis, known = calculate_energy(
+                1000, 500, "gpt-4o"
+            )
             assert source == "fallback"
             assert energy > 0
             assert known is False
@@ -175,7 +177,7 @@ class TestGracefulDegradation:
         """Zero tokens should not crash."""
         from vetch.calculation import calculate_energy
 
-        energy, tier, source, basis, known = calculate_energy(0, 0, "gpt-4o")
+        energy, tier, uncertainty_pct, source, basis, known = calculate_energy(0, 0, "gpt-4o")
         assert energy == 0.0
 
     def test_handles_very_large_token_counts(self) -> None:
@@ -183,7 +185,7 @@ class TestGracefulDegradation:
         from vetch.calculation import calculate_energy
 
         # 1 billion tokens
-        energy, tier, source, basis, known = calculate_energy(
+        energy, tier, uncertainty_pct, source, basis, known = calculate_energy(
             1_000_000_000, 500_000_000, "gpt-4o"
         )
         assert energy > 0
@@ -193,7 +195,7 @@ class TestGracefulDegradation:
         """Empty model name should fall back gracefully."""
         from vetch.calculation import calculate_energy
 
-        energy, tier, source, basis, known = calculate_energy(100, 50, "")
+        energy, tier, uncertainty_pct, source, basis, known = calculate_energy(100, 50, "")
         assert energy >= 0
         assert known is False
         assert source == "fallback"
@@ -474,7 +476,7 @@ class TestChaosEdgeCases:
         from vetch.calculation import calculate_energy
 
         # Negative tokens should be clamped to 0
-        energy, tier, source, basis, known = calculate_energy(-100, -50, "gpt-4o")
+        energy, tier, uncertainty_pct, source, basis, known = calculate_energy(-100, -50, "gpt-4o")
         assert energy == 0.0  # Clamped to zero
 
     def test_nan_in_grid_intensity_returns_zero(self) -> None:
@@ -515,7 +517,7 @@ class TestChaosEdgeCases:
         from vetch.calculation import calculate_energy
 
         long_name = "a" * 10000
-        energy, tier, source, basis, known = calculate_energy(100, 50, long_name)
+        energy, tier, uncertainty_pct, source, basis, known = calculate_energy(100, 50, long_name)
         assert energy >= 0
         assert known is False
 

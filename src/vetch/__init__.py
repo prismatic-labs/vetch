@@ -36,7 +36,7 @@ if _DISABLED:
 if TYPE_CHECKING:
     from vetch.wrapper import VetchContext
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 __all__ = [
     "wrap",
     "require_tags",

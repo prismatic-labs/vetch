@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-02-19
+
+### Added
+- `energy_uncertainty_pct` field in events (20/50/100/1000 for tiers 0-3)
+- MoE active parameter accounting in energy registry (fixes ~300% overestimation)
+- Architecture metadata (`architecture`, `total_params_b`, `active_params_b`, `quantization`)
+- Provider-specific PUE table (`registry/pue_overrides.json`)
+- Expanded model aliases for Claude 3.5, Gemini 2.0, Llama 3.1
+
+### Changed
+- Energy estimates now based on active parameters for MoE models
+- CLI output shows uncertainty as percentage or "order of magnitude" for Tier 3
+
 ## [0.1.2] - 2026-02-18
 
 ### Added

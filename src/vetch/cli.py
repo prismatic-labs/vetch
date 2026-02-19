@@ -97,7 +97,7 @@ def estimate(args: argparse.Namespace) -> None:
     grid = get_carbon_intensity(args.region)
 
     # 2. Perform calculations
-    energy_wh, tier, source, basis, known = calculate_energy(
+    energy_wh, tier, uncertainty_pct, source, basis, known = calculate_energy(
         args.input_tokens, args.output_tokens, args.model
     )
 
@@ -117,6 +117,7 @@ def estimate(args: argparse.Namespace) -> None:
             "carbon_g": carbon_g,
             "cost_usd": cost_usd,
             "energy_tier": tier,
+            "energy_uncertainty_pct": uncertainty_pct,
             "grid_region": args.region or "global",
             "grid_intensity": grid.intensity_gco2e_kwh,
             "signal_quality": grid.signal_quality,
@@ -125,7 +126,8 @@ def estimate(args: argparse.Namespace) -> None:
         return
 
     # Text output with uncertainty indicators
-    print(f"Energy:  ~{energy_wh:.2f} Wh ±10x  [Tier {tier}]")
+    uncertainty_label = f"±{uncertainty_pct}%" if uncertainty_pct < 1000 else "order of magnitude"
+    print(f"Energy:  ~{energy_wh:.2f} Wh ({uncertainty_label})  [Tier {tier}]")
     intensity = grid.intensity_gco2e_kwh
     print(f"Carbon:  ~{carbon_g:.2f}g       [{intensity:.0f} gCO2e/kWh, {grid.signal_quality}]")
     print(f"Cost:    ${cost_usd:.2f}       [list pricing]")
@@ -146,7 +148,7 @@ def compare(args: argparse.Namespace) -> None:
 
     results = []
     for model in models:
-        energy_wh, tier, _, _, known = calculate_energy(
+        energy_wh, tier, uncertainty_pct, _, _, known = calculate_energy(
             args.input_tokens, args.output_tokens, model
         )
         carbon_g = calculate_carbon(energy_wh, grid.intensity_gco2e_kwh)

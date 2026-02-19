@@ -428,6 +428,7 @@ class VetchContext:
         # 2. Perform calculations
         energy_wh = None
         energy_tier = 3
+        energy_uncertainty_pct: int | None = 1000  # Tier 3 default
         energy_source = "registry"
         energy_basis = None
         carbon_g = None
@@ -471,6 +472,7 @@ class VetchContext:
                 (
                     energy_wh,
                     energy_tier,
+                    energy_uncertainty_pct,
                     energy_source,
                     energy_basis,
                     model_known,
@@ -526,6 +528,7 @@ class VetchContext:
             billing_tier=billing_tier,
             signal_quality=signal_quality,
             energy_tier=energy_tier,
+            energy_uncertainty_pct=energy_uncertainty_pct,
             energy_source=energy_source,
             energy_override_source=(
                 self._energy_override.get("source") if self._energy_override else None
