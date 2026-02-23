@@ -40,6 +40,9 @@ class CapturedCall:
     error: bool = False
     error_type: str | None = None
     warnings: list[str] = field(default_factory=list)
+    # Prompt caching metadata
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
 
 
 @dataclass
@@ -104,6 +107,8 @@ class TrackingContext:
         error: bool = False,
         error_type: str | None = None,
         warnings: list[str] | None = None,
+        cache_read_tokens: int | None = None,
+        cache_creation_tokens: int | None = None,
     ) -> None:
         """Capture metadata from an LLM call.
 
@@ -117,6 +122,8 @@ class TrackingContext:
             error: Whether an error occurred.
             error_type: Exception class name if error.
             warnings: Diagnostic warnings.
+            cache_read_tokens: Tokens read from prompt cache (cost savings).
+            cache_creation_tokens: Tokens written to prompt cache (extra cost).
         """
         self.captured_call = CapturedCall(
             model=model,
@@ -128,6 +135,8 @@ class TrackingContext:
             error=error,
             error_type=error_type,
             warnings=warnings or [],
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
 
 

@@ -29,33 +29,41 @@ class TestExtractUsage:
         response.usage = MagicMock()
         response.usage.input_tokens = 100
         response.usage.output_tokens = 50
+        response.usage.cache_read_input_tokens = None
+        response.usage.cache_creation_input_tokens = None
 
-        result = extract_usage(response)
+        result, cache_read, cache_create = extract_usage(response)
 
         assert result is not None
         assert result["text"]["input_tokens"] == 100
         assert result["text"]["output_tokens"] == 50
         assert result["text"]["total_tokens"] == 150
+        assert cache_read is None
+        assert cache_create is None
 
     def test_returns_none_when_no_usage(self) -> None:
         """Return None when response has no usage."""
         response = MagicMock()
         response.usage = None
 
-        result = extract_usage(response)
+        result, cache_read, cache_create = extract_usage(response)
 
         assert result is None
+        assert cache_read is None
+        assert cache_create is None
 
     def test_handles_missing_tokens(self) -> None:
         """Handle missing token counts gracefully."""
         response = MagicMock()
         response.usage = MagicMock(spec=[])  # No attributes
 
-        result = extract_usage(response)
+        result, cache_read, cache_create = extract_usage(response)
 
         assert result is not None
         assert result["text"]["input_tokens"] == 0
         assert result["text"]["output_tokens"] == 0
+        assert cache_read is None
+        assert cache_create is None
 
 
 class TestExtractModel:

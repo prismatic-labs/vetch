@@ -112,6 +112,11 @@ class InferenceEvent(TypedDict, total=False):
     usage_estimated: bool  # True if tokens were heuristically estimated
     usage_estimation_method: Union[str, None]  # "char_ratio", "model_default", etc.
 
+    # Prompt caching metadata (Anthropic, OpenAI)
+    cache_read_tokens: Union[int, None]  # Tokens read from cache (cost savings)
+    cache_creation_tokens: Union[int, None]  # Tokens written to cache (extra cost)
+    cache_hit: Union[bool, None]  # True if any cache was used
+
 
 class EnergyOverride(TypedDict, total=False):
     """Schema for user-provided energy values.

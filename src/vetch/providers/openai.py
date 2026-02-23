@@ -14,6 +14,7 @@ Privacy guarantee: We only read model, usage, and timing metadata.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import threading
@@ -34,28 +35,44 @@ _client_originals: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
 _client_lock = threading.Lock()
 
 
-def extract_usage(response: Any) -> Usage | None:
+def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     """Extract usage metadata from OpenAI response.
 
     Args:
         response: OpenAI ChatCompletion response object.
 
     Returns:
-        Usage dict with text token counts, or None if unavailable.
+        Tuple of (Usage dict, cache_read_tokens, cache_creation_tokens).
     """
     usage = getattr(response, "usage", None)
     if usage is None:
-        return None
+        return None, None, None
 
-    return cast(
-        "Usage",
-        {
-            "text": {
-                "input_tokens": getattr(usage, "prompt_tokens", 0),
-                "output_tokens": getattr(usage, "completion_tokens", 0),
-                "total_tokens": getattr(usage, "total_tokens", 0),
-            }
-        },
+    # Extract cache tokens if available (OpenAI prompt caching)
+    # OpenAI includes these in prompt_tokens_details
+    cache_read_tokens = None
+    cache_creation_tokens = None
+
+    prompt_details = getattr(usage, "prompt_tokens_details", None)
+    if prompt_details:
+        cache_read_tokens = getattr(prompt_details, "cached_tokens", None)
+
+    # completion_tokens_details may have reasoning tokens but not cache creation
+    # Cache creation tokens are billed separately in some APIs
+
+    return (
+        cast(
+            "Usage",
+            {
+                "text": {
+                    "input_tokens": getattr(usage, "prompt_tokens", 0),
+                    "output_tokens": getattr(usage, "completion_tokens", 0),
+                    "total_tokens": getattr(usage, "total_tokens", 0),
+                }
+            },
+        ),
+        cache_read_tokens,
+        cache_creation_tokens,
     )
 
 
@@ -113,7 +130,7 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         return
 
     # Non-streaming: capture immediately
-    usage = extract_usage(result)
+    usage, cache_read, cache_create = extract_usage(result)
     model = extract_model(result)
 
     # P1: Removed user_id hashing - compliance risk (GDPR/CCPA)
@@ -125,6 +142,8 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         usage=usage,
         is_stream=False,
         complete=True,
+        cache_read_tokens=cache_read,
+        cache_creation_tokens=cache_create,
     )
 
 
@@ -160,6 +179,8 @@ class StreamWrapper:
         self._accumulated_chars = 0
         self._model = "unknown"
         self._final_usage: Usage | None = None
+        self._cache_read_tokens: int | None = None
+        self._cache_creation_tokens: int | None = None
         self._complete = False
         self._error = False
         self._error_type: str | None = None
@@ -216,6 +237,10 @@ class StreamWrapper:
                     }
                 },
             )
+            # Extract cache tokens if available
+            prompt_details = getattr(usage, "prompt_tokens_details", None)
+            if prompt_details:
+                self._cache_read_tokens = getattr(prompt_details, "cached_tokens", None)
 
     def _capture_to_context(self) -> None:
         """Capture final metadata to active context."""
@@ -232,6 +257,8 @@ class StreamWrapper:
             complete=self._complete,
             error=self._error,
             error_type=self._error_type,
+            cache_read_tokens=self._cache_read_tokens,
+            cache_creation_tokens=self._cache_creation_tokens,
         )
 
     def __enter__(self) -> StreamWrapper:
@@ -485,3 +512,59 @@ def detect_openai_client() -> Any | None:
 
     except (ImportError, AttributeError):
         return None
+
+
+# Track if module is instrumented
+_module_instrumented = False
+
+
+def instrument_openai_module() -> bool:
+    """Instrument the OpenAI module to auto-track all client instances.
+
+    Patches the OpenAI class __init__ to automatically call patch_openai_client
+    on every new client instance.
+
+    Returns:
+        True if instrumentation succeeded, False otherwise.
+    """
+    global _module_instrumented
+    import sys
+
+    if _module_instrumented:
+        return True
+
+    if "openai" not in sys.modules:
+        return False
+
+    try:
+        import openai
+
+        # Store original __init__
+        original_init = openai.OpenAI.__init__
+
+        def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            original_init(self, *args, **kwargs)
+            # Auto-patch this client instance
+            with contextlib.suppress(Exception):
+                patch_openai_client(self)
+
+        openai.OpenAI.__init__ = patched_init
+
+        # Also patch AsyncOpenAI if available
+        if hasattr(openai, "AsyncOpenAI"):
+            original_async_init = openai.AsyncOpenAI.__init__
+
+            def patched_async_init(self: Any, *args: Any, **kwargs: Any) -> None:
+                original_async_init(self, *args, **kwargs)
+                with contextlib.suppress(Exception):
+                    patch_openai_client(self)
+
+            openai.AsyncOpenAI.__init__ = patched_async_init
+
+        _module_instrumented = True
+        logger.debug("OpenAI module instrumented")
+        return True
+
+    except Exception as e:
+        logger.debug(f"Failed to instrument OpenAI module: {e}")
+        return False

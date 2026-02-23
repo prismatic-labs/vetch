@@ -317,3 +317,43 @@ def get_carbon_intensity(
         intensity_gco2e_kwh=_get_fallback_intensity(region),
         signal_quality="blind",
     )
+
+
+def get_cleanest_region(
+    candidates: list[str],
+    api_key: str | None = None,
+) -> tuple[str, float]:
+    """Find the region with the lowest carbon intensity.
+
+    Use this to route background tasks to the cleanest available datacenter.
+
+    Args:
+        candidates: List of region identifiers to compare (e.g., ["us-east-1", "eu-west-1"]).
+        api_key: Optional Electricity Maps API key for live data.
+
+    Returns:
+        Tuple of (cleanest_region, intensity_gco2e_kwh).
+
+    Example::
+
+        # Route batch job to cleanest region
+        region, intensity = get_cleanest_region(["us-east-1", "us-west-2", "eu-west-1"])
+        print(f"Running in {region} ({intensity:.0f} gCO2e/kWh)")
+
+    Note:
+        Falls back to regional averages if live data unavailable.
+        Returns first candidate if all have same intensity.
+    """
+    if not candidates:
+        raise ValueError("candidates list cannot be empty")
+
+    best_region = candidates[0]
+    best_intensity = float("inf")
+
+    for region in candidates:
+        result = get_carbon_intensity(region, api_key=api_key)
+        if result.intensity_gco2e_kwh < best_intensity:
+            best_intensity = result.intensity_gco2e_kwh
+            best_region = region
+
+    return best_region, best_intensity

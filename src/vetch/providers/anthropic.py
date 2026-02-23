@@ -12,6 +12,7 @@ Supports:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 from typing import TYPE_CHECKING, Any, cast
@@ -30,29 +31,37 @@ _client_originals: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
 _client_lock = threading.Lock()
 
 
-def extract_usage(response: Any) -> Usage | None:
+def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     """Extract usage metadata from Anthropic response.
 
     Args:
         response: Anthropic Message object.
 
     Returns:
-        Usage dict with text token counts, or None if unavailable.
+        Tuple of (Usage dict, cache_read_tokens, cache_creation_tokens).
     """
     usage = getattr(response, "usage", None)
     if usage is None:
-        return None
+        return None, None, None
 
-    return cast(
-        "Usage",
-        {
-            "text": {
-                "input_tokens": getattr(usage, "input_tokens", 0),
-                "output_tokens": getattr(usage, "output_tokens", 0),
-                "total_tokens": getattr(usage, "input_tokens", 0)
-                + getattr(usage, "output_tokens", 0),
-            }
-        },
+    # Anthropic prompt caching tokens
+    cache_read_tokens = getattr(usage, "cache_read_input_tokens", None)
+    cache_creation_tokens = getattr(usage, "cache_creation_input_tokens", None)
+
+    return (
+        cast(
+            "Usage",
+            {
+                "text": {
+                    "input_tokens": getattr(usage, "input_tokens", 0),
+                    "output_tokens": getattr(usage, "output_tokens", 0),
+                    "total_tokens": getattr(usage, "input_tokens", 0)
+                    + getattr(usage, "output_tokens", 0),
+                }
+            },
+        ),
+        cache_read_tokens,
+        cache_creation_tokens,
     )
 
 
@@ -84,7 +93,7 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         return
 
     # Non-streaming: capture immediately
-    usage = extract_usage(result)
+    usage, cache_read, cache_create = extract_usage(result)
     model = extract_model(result)
 
     ctx.capture(
@@ -93,6 +102,8 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         usage=usage,
         is_stream=False,
         complete=True,
+        cache_read_tokens=cache_read,
+        cache_creation_tokens=cache_create,
     )
 
 
@@ -124,6 +135,8 @@ class StreamWrapper:
         self._model = "unknown"
         self._input_tokens = 0
         self._output_tokens = 0
+        self._cache_read_tokens: int | None = None
+        self._cache_creation_tokens: int | None = None
         self._complete = False
         self._error = False
         self._error_type: str | None = None
@@ -158,6 +171,13 @@ class StreamWrapper:
                 usage = getattr(msg, "usage", None)
                 if usage:
                     self._input_tokens += getattr(usage, "input_tokens", 0)
+                    # Extract cache tokens if present
+                    cache_read = getattr(usage, "cache_read_input_tokens", None)
+                    cache_create = getattr(usage, "cache_creation_input_tokens", None)
+                    if cache_read is not None:
+                        self._cache_read_tokens = cache_read
+                    if cache_create is not None:
+                        self._cache_creation_tokens = cache_create
 
         elif event_type == "content_block_delta":
             delta = getattr(chunk, "delta", None)
@@ -192,6 +212,8 @@ class StreamWrapper:
             complete=self._complete,
             error=self._error,
             error_type=self._error_type,
+            cache_read_tokens=self._cache_read_tokens,
+            cache_creation_tokens=self._cache_creation_tokens,
         )
 
     def __enter__(self) -> StreamWrapper:
@@ -374,3 +396,59 @@ def detect_anthropic_client() -> Any | None:
 
     # Anthropic doesn't have a global default client easily accessible
     return None
+
+
+# Track if module is instrumented
+_module_instrumented = False
+
+
+def instrument_anthropic_module() -> bool:
+    """Instrument the Anthropic module to auto-track all client instances.
+
+    Patches the Anthropic class __init__ to automatically call patch_anthropic_client
+    on every new client instance.
+
+    Returns:
+        True if instrumentation succeeded, False otherwise.
+    """
+    global _module_instrumented
+    import sys
+
+    if _module_instrumented:
+        return True
+
+    if "anthropic" not in sys.modules:
+        return False
+
+    try:
+        import anthropic  # type: ignore[import-not-found]
+
+        # Store original __init__
+        original_init = anthropic.Anthropic.__init__
+
+        def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            original_init(self, *args, **kwargs)
+            # Auto-patch this client instance
+            with contextlib.suppress(Exception):
+                patch_anthropic_client(self)
+
+        anthropic.Anthropic.__init__ = patched_init
+
+        # Also patch AsyncAnthropic if available
+        if hasattr(anthropic, "AsyncAnthropic"):
+            original_async_init = anthropic.AsyncAnthropic.__init__
+
+            def patched_async_init(self: Any, *args: Any, **kwargs: Any) -> None:
+                original_async_init(self, *args, **kwargs)
+                with contextlib.suppress(Exception):
+                    patch_anthropic_client(self)
+
+            anthropic.AsyncAnthropic.__init__ = patched_async_init
+
+        _module_instrumented = True
+        logger.debug("Anthropic module instrumented")
+        return True
+
+    except Exception as e:
+        logger.debug(f"Failed to instrument Anthropic module: {e}")
+        return False

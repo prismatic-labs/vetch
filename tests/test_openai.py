@@ -75,20 +75,24 @@ class TestExtractUsage:
         usage = MockUsage(prompt=100, completion=50, total=150)
         response = MockResponse(usage=usage)
 
-        result = extract_usage(response)
+        result, cache_read, cache_create = extract_usage(response)
 
         assert result is not None
         assert result["text"]["input_tokens"] == 100
         assert result["text"]["output_tokens"] == 50
         assert result["text"]["total_tokens"] == 150
+        assert cache_read is None  # No cache tokens in mock
+        assert cache_create is None
 
     def test_extract_usage_no_usage(self) -> None:
         """Return None when no usage."""
         response = MockResponse(usage=None)
 
-        result = extract_usage(response)
+        result, cache_read, cache_create = extract_usage(response)
 
         assert result is None
+        assert cache_read is None
+        assert cache_create is None
 
     def test_extract_usage_missing_attribute(self) -> None:
         """Handle missing usage attribute."""
@@ -96,9 +100,11 @@ class TestExtractUsage:
         class NoUsage:
             model = "gpt-4"
 
-        result = extract_usage(NoUsage())
+        result, cache_read, cache_create = extract_usage(NoUsage())
 
         assert result is None
+        assert cache_read is None
+        assert cache_create is None
 
 
 class TestStreamWrapper:

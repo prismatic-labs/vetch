@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.1.4"
+version = "0.1.5"
 description = "Planet-aware observability for LLM inference"
 readme = "README.md"
 license = "Apache-2.0"
@@ -40,6 +40,10 @@ openai = ["openai>=1.0,<2.0"]
 vertexai = ["google-cloud-aiplatform>=1.0"]
 tiktoken = ["tiktoken>=0.5.0"]  # Accurate token counting for OpenAI models
 calibrate = ["nvidia-ml-py3"]  # Hardware power sensing for NVIDIA GPUs
+otel = [  # OpenTelemetry OTLP export
+    "opentelemetry-sdk>=1.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.0",
+]
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",

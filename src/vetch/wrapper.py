@@ -408,12 +408,18 @@ class VetchContext:
         accumulated_chars = 0
         model_known = False
 
+        # Cache tokens
+        cache_read_tokens: int | None = None
+        cache_creation_tokens: int | None = None
+
         if captured is not None:
             model = captured.model
             provider = captured.provider
             usage = captured.usage
             is_stream = captured.is_stream
             accumulated_chars = captured.accumulated_chars
+            cache_read_tokens = captured.cache_read_tokens
+            cache_creation_tokens = captured.cache_creation_tokens
 
             # Override error info from captured call if present
             if captured.error:
@@ -555,7 +561,34 @@ class VetchContext:
             budget_exceeded=None,
             usage_estimated=usage_estimated,
             usage_estimation_method=usage_estimation_method,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            cache_hit=bool(isinstance(cache_read_tokens, int) and cache_read_tokens > 0),
         )
+
+        # Budget checking (warn-only, never blocks)
+        try:
+            from vetch.budget import check_budgets
+
+            exceeded, alerts = check_budgets(
+                cost_usd=cost_usd,
+                energy_wh=energy_wh,
+                carbon_g=carbon_g,
+                tags=self.tags,
+            )
+            if exceeded:
+                self._event["budget_exceeded"] = True
+            if alerts:
+                # Add budget info to event
+                for alert in alerts:
+                    if alert.metric == "cost_usd":
+                        self._event["budget_cost_usd"] = alert.threshold
+                    elif alert.metric == "energy_wh":
+                        self._event["budget_energy_wh"] = alert.threshold
+                    elif alert.metric == "carbon_g":
+                        self._event["budget_carbon_g"] = alert.threshold
+        except Exception:
+            pass  # Fail-open: budget checks never block
 
         # Emit to configured output (unless quiet mode)
         if self._emit:
@@ -590,6 +623,15 @@ class VetchContext:
             from vetch.otel import attach_to_otel_span
 
             attach_to_otel_span(self._event)
+        except Exception:
+            pass
+
+        # Export via OTLP if configured
+        try:
+            from vetch.otel import export_event_otlp, is_otlp_configured
+
+            if is_otlp_configured():
+                export_event_otlp(self._event)
         except Exception:
             pass
 

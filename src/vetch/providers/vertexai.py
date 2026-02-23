@@ -14,6 +14,7 @@ Privacy guarantee: We only read model, usage, and timing metadata.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import threading
@@ -453,3 +454,49 @@ def detect_vertexai_model() -> Any | None:
         return None  # SDK available but no default model
     except ImportError:
         return None
+
+
+# Track if module is instrumented
+_module_instrumented = False
+
+
+def instrument_vertexai_module() -> bool:
+    """Instrument the Vertex AI module to auto-track all model instances.
+
+    Patches GenerativeModel.__init__ to automatically call patch_vertexai_client
+    on every new model instance.
+
+    Returns:
+        True if instrumentation succeeded, False otherwise.
+    """
+    global _module_instrumented
+    import sys
+
+    if _module_instrumented:
+        return True
+
+    # Check for Vertex AI modules
+    if not any(m in sys.modules for m in ["google.cloud.aiplatform", "vertexai"]):
+        return False
+
+    try:
+        from vertexai.generative_models import GenerativeModel  # type: ignore[import-not-found]
+
+        # Store original __init__
+        original_init = GenerativeModel.__init__
+
+        def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            original_init(self, *args, **kwargs)
+            # Auto-patch this model instance
+            with contextlib.suppress(Exception):
+                patch_vertexai_model(self)
+
+        GenerativeModel.__init__ = patched_init
+
+        _module_instrumented = True
+        logger.debug("Vertex AI module instrumented")
+        return True
+
+    except Exception as e:
+        logger.debug(f"Failed to instrument Vertex AI module: {e}")
+        return False

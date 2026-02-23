@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-02-23
+
+### Added
+- **Budget Alerts** (warn-only): `set_budget()`, `on_budget_alert()`, `get_budget_status()`
+  - Configure thresholds for cost, energy, or carbon
+  - Alerts logged to stderr and fire callbacks
+  - **Never blocks inference** - fail-open by design
+  - Thread-safe: accumulation protected by `threading.Lock`
+  - Bounded memory: warning deduplication uses LRU with max 1000 keys
+  - Environment variables: `VETCH_BUDGET_COST_USD`, `VETCH_BUDGET_ENERGY_WH`, `VETCH_BUDGET_CARBON_G`
+- **OTLP Export**: `configure_otlp_export()` for Datadog, Honeycomb, Grafana, Jaeger
+  - Export spans and metrics to any OTLP-compatible backend
+  - **Non-blocking**: uses background thread queue (max 1000 events)
+  - Auto-configure via `VETCH_OTEL_EXPORT=true` and `OTEL_EXPORTER_OTLP_ENDPOINT`
+  - Metrics: `vetch.energy_wh`, `vetch.carbon_g`, `vetch.cost_usd`, `vetch.requests_total`
+- **Global Instrumentation**: `vetch.instrument()` for zero-code integration
+  - Auto-patches OpenAI, Anthropic, and Vertex AI clients at import time
+  - Works with LangChain, LlamaIndex, and other frameworks
+- **Prompt Cache Detection**: Track cache hits for Anthropic and OpenAI
+  - New event fields: `cache_read_tokens`, `cache_creation_tokens`, `cache_hit`
+  - Attached to OTel spans when available
+- **Grafana Dashboard Template**: `vetch/dashboards/grafana_vetch.json`
+  - Pre-built panels for cost, energy, carbon, and request rate
+  - Export via `vetch dashboard --export grafana` (CLI coming in v0.1.6)
+
+### Changed
+- OTLP integration now supports both span decoration (existing) and full export (new)
+- Budget fields in events (`budget_exceeded`, `budget_cost_usd`, etc.) now populated
+- Budget `window` parameter now only accepts `"request"` or `"session"` (removed misleading `"hour"`/`"day"` options that had no implementation)
+
+### Environment Variables (New)
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `VETCH_BUDGET_COST_USD` | Per-request cost alert threshold | (none) |
+| `VETCH_BUDGET_ENERGY_WH` | Per-request energy alert threshold | (none) |
+| `VETCH_BUDGET_CARBON_G` | Per-request carbon alert threshold | (none) |
+| `VETCH_BUDGET_SESSION_COST_USD` | Session-wide cost alert threshold | (none) |
+| `VETCH_OTEL_EXPORT` | Enable automatic OTLP export | `false` |
+| `VETCH_OTEL_SERVICE_NAME` | Service name for OTLP export | `vetch` |
+
 ## [0.1.4] - 2026-02-23
 
 ### Added

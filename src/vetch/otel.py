@@ -1,18 +1,57 @@
-"""OpenTelemetry bridge for Vetch metrics.
+"""OpenTelemetry integration for Vetch metrics.
 
-This module allows Vetch to automatically attach energy, carbon, and
-cost metadata to active OpenTelemetry spans.
+This module provides two integration modes:
+
+1. **Span Decoration** (default): Attach Vetch metrics to existing OTel spans.
+   Use when you already have OpenTelemetry tracing configured.
+
+2. **OTLP Export**: Export Vetch metrics directly to any OTLP-compatible backend
+   (Datadog, Honeycomb, Grafana, Jaeger, etc.). Use when you want Vetch to
+   manage its own telemetry export.
+
+Environment Variables:
+    OTEL_EXPORTER_OTLP_ENDPOINT: OTLP endpoint (e.g., "http://localhost:4317")
+    OTEL_EXPORTER_OTLP_HEADERS: Comma-separated key=value pairs for auth
+    VETCH_OTEL_SERVICE_NAME: Service name for exported spans (default: "vetch")
+    VETCH_OTEL_EXPORT: Set to "true" to enable automatic OTLP export
 """
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import logging
-from typing import TYPE_CHECKING
+import os
+import queue
+import threading
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from vetch.schema import InferenceEvent
 
 logger = logging.getLogger(__name__)
+
+# Track if OTLP exporter is configured
+_otlp_configured = False
+_tracer: Any = None
+_meter: Any = None
+
+# Metric instruments (created lazily)
+_energy_histogram: Any = None
+_carbon_histogram: Any = None
+_cost_histogram: Any = None
+_request_counter: Any = None
+
+# Background export queue (non-blocking export)
+_export_queue: queue.Queue[InferenceEvent | None] = queue.Queue(maxsize=1000)
+_export_thread: threading.Thread | None = None
+_shutdown_event = threading.Event()
+
+# Error rate limiting (circuit breaker for logging)
+_ERROR_LOG_INTERVAL = 300  # Log errors at most once per 5 minutes
+_last_error_log_time: float = 0.0
+_error_count_since_log: int = 0
+_error_lock = threading.Lock()
 
 
 def attach_to_otel_span(event: InferenceEvent) -> bool:
@@ -28,6 +67,7 @@ def attach_to_otel_span(event: InferenceEvent) -> bool:
         True if successfully attached to a span, False otherwise.
     """
     import sys
+
     if "opentelemetry" not in sys.modules:
         return False
 
@@ -52,8 +92,368 @@ def attach_to_otel_span(event: InferenceEvent) -> bool:
         # Attach energy tier for confidence
         span.set_attribute("vetch.energy_tier", event.get("energy_tier", 3))
 
+        # Attach uncertainty
+        uncertainty = event.get("energy_uncertainty_pct")
+        if uncertainty is not None:
+            span.set_attribute("vetch.energy_uncertainty_pct", uncertainty)
+
+        # Attach token counts
+        usage = event.get("usage")
+        if usage:
+            text = usage.get("text")
+            if text:
+                span.set_attribute("vetch.input_tokens", text.get("input_tokens", 0))
+                span.set_attribute("vetch.output_tokens", text.get("output_tokens", 0))
+
+        # Attach budget status
+        if event.get("budget_exceeded"):
+            span.set_attribute("vetch.budget_exceeded", True)
+
+        # Attach cache hit status (if available)
+        cache_hit = event.get("cache_read_tokens")
+        if cache_hit is not None:
+            span.set_attribute("vetch.cache_read_tokens", cache_hit)
+
         return True
 
     except Exception as e:
         logger.debug(f"Failed to attach to OTel span: {e}")
         return False
+
+
+def configure_otlp_export(
+    endpoint: str | None = None,
+    headers: dict[str, str] | None = None,
+    service_name: str = "vetch",
+) -> bool:
+    """Configure OTLP export for Vetch metrics.
+
+    Call this once at application startup to enable automatic export
+    of Vetch metrics to any OTLP-compatible backend.
+
+    Args:
+        endpoint: OTLP endpoint (default: OTEL_EXPORTER_OTLP_ENDPOINT env var).
+        headers: Auth headers (default: OTEL_EXPORTER_OTLP_HEADERS env var).
+        service_name: Service name for traces/metrics (default: "vetch").
+
+    Returns:
+        True if configuration succeeded, False otherwise.
+
+    Example::
+
+        # Honeycomb
+        configure_otlp_export(
+            endpoint="https://api.honeycomb.io",
+            headers={"x-honeycomb-team": "your-api-key"}
+        )
+
+        # Grafana Cloud
+        configure_otlp_export(
+            endpoint="https://otlp-gateway-prod-us-central-0.grafana.net/otlp",
+            headers={"Authorization": "Basic base64-encoded-credentials"}
+        )
+
+        # Local Jaeger
+        configure_otlp_export(endpoint="http://localhost:4317")
+    """
+    global _otlp_configured, _tracer, _meter
+    global _energy_histogram, _carbon_histogram, _cost_histogram, _request_counter
+
+    try:
+        # Try importing OTel SDK components
+        from opentelemetry import metrics, trace
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (  # type: ignore
+            OTLPMetricExporter,
+        )
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore
+            OTLPSpanExporter,
+        )
+        from opentelemetry.sdk.metrics import MeterProvider  # type: ignore
+        from opentelemetry.sdk.metrics.export import (  # type: ignore
+            PeriodicExportingMetricReader,
+        )
+        from opentelemetry.sdk.resources import Resource  # type: ignore
+        from opentelemetry.sdk.trace import TracerProvider  # type: ignore
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore
+
+    except ImportError as e:
+        logger.warning(
+            f"OpenTelemetry SDK not installed. Install with: "
+            f"pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-grpc. "
+            f"Error: {e}"
+        )
+        return False
+
+    try:
+        # Resolve endpoint
+        if endpoint is None:
+            endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        if endpoint is None:
+            logger.warning("No OTLP endpoint specified. Set OTEL_EXPORTER_OTLP_ENDPOINT.")
+            return False
+
+        # Resolve headers
+        if headers is None:
+            headers_str = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS", "")
+            headers = {}
+            for pair in headers_str.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    headers[k.strip()] = v.strip()
+
+        # Create resource
+        resource = Resource.create(
+            {
+                "service.name": service_name,
+                "service.version": "0.1.5",
+                "vetch.sdk": True,
+            }
+        )
+
+        # Configure tracing
+        tracer_provider = TracerProvider(resource=resource)
+        span_exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers or None)
+        tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
+        trace.set_tracer_provider(tracer_provider)
+        _tracer = trace.get_tracer("vetch", "0.1.5")
+
+        # Configure metrics
+        metric_exporter = OTLPMetricExporter(endpoint=endpoint, headers=headers or None)
+        metric_reader = PeriodicExportingMetricReader(
+            metric_exporter, export_interval_millis=60000
+        )
+        meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+        metrics.set_meter_provider(meter_provider)
+        _meter = metrics.get_meter("vetch", "0.1.5")
+
+        # Create metric instruments
+        _energy_histogram = _meter.create_histogram(
+            "vetch.energy_wh",
+            description="Energy consumption per inference (Wh)",
+            unit="Wh",
+        )
+        _carbon_histogram = _meter.create_histogram(
+            "vetch.carbon_g",
+            description="Carbon emissions per inference (gCO2e)",
+            unit="g",
+        )
+        _cost_histogram = _meter.create_histogram(
+            "vetch.cost_usd",
+            description="Cost per inference (USD)",
+            unit="USD",
+        )
+        _request_counter = _meter.create_counter(
+            "vetch.requests_total",
+            description="Total inference requests",
+            unit="1",
+        )
+
+        _otlp_configured = True
+
+        # Start background export worker
+        _start_export_worker()
+
+        logger.info(f"OTLP export configured: {endpoint}")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Failed to configure OTLP export: {e}")
+        return False
+
+
+def _export_event_sync(event: InferenceEvent) -> bool:
+    """Synchronously export an inference event via OTLP (internal).
+
+    Creates a span for the inference and records metrics.
+    Only works if configure_otlp_export() was called first.
+
+    Args:
+        event: The InferenceEvent to export.
+
+    Returns:
+        True if export succeeded, False otherwise.
+    """
+    if not _otlp_configured or _tracer is None:
+        return False
+
+    try:
+        from opentelemetry import trace
+
+        # Create span for this inference
+        with _tracer.start_as_current_span(
+            "llm.inference",
+            kind=trace.SpanKind.CLIENT,
+        ) as span:
+            # Set span attributes
+            span.set_attribute("llm.model", event.get("model", "unknown"))
+            span.set_attribute("llm.provider", event.get("provider", "unknown"))
+
+            # Vetch metrics
+            energy = event.get("estimated_energy_wh") or 0.0
+            carbon = event.get("estimated_carbon_g") or 0.0
+            cost = event.get("estimated_cost_usd") or 0.0
+
+            span.set_attribute("vetch.energy_wh", energy)
+            span.set_attribute("vetch.carbon_g", carbon)
+            span.set_attribute("vetch.cost_usd", cost)
+            span.set_attribute("vetch.energy_tier", event.get("energy_tier", 3))
+            span.set_attribute("vetch.signal_quality", event.get("signal_quality", "unknown"))
+            span.set_attribute("vetch.region", event.get("region") or "unknown")
+
+            # Token counts
+            usage = event.get("usage")
+            if usage:
+                text = usage.get("text")
+                if text:
+                    span.set_attribute("llm.input_tokens", text.get("input_tokens", 0))
+                    span.set_attribute("llm.output_tokens", text.get("output_tokens", 0))
+
+            # Budget status
+            if event.get("budget_exceeded"):
+                span.set_attribute("vetch.budget_exceeded", True)
+
+            # Latency
+            latency = event.get("latency_ms")
+            if latency:
+                span.set_attribute("llm.latency_ms", latency)
+
+            # Error
+            if event.get("error"):
+                span.set_status(trace.Status(trace.StatusCode.ERROR))
+                span.set_attribute("error.type", event.get("error_type", "unknown"))
+
+            # Tags as span attributes
+            tags = event.get("tags")
+            if tags:
+                for k, v in tags.items():
+                    span.set_attribute(f"vetch.tag.{k}", v)
+
+        # Record metrics
+        model = event.get("model", "unknown")
+        provider = event.get("provider", "unknown")
+        region = event.get("region") or "unknown"
+
+        attributes = {
+            "model": model,
+            "provider": provider,
+            "region": region,
+        }
+
+        if _energy_histogram:
+            _energy_histogram.record(energy, attributes)
+        if _carbon_histogram:
+            _carbon_histogram.record(carbon, attributes)
+        if _cost_histogram:
+            _cost_histogram.record(cost, attributes)
+        if _request_counter:
+            _request_counter.add(1, attributes)
+
+        return True
+
+    except Exception as e:
+        logger.debug(f"Failed to export event via OTLP: {e}")
+        return False
+
+
+def _log_error_rate_limited(error: Exception) -> None:
+    """Log OTLP errors at most once per 5 minutes to prevent log flooding."""
+    global _last_error_log_time, _error_count_since_log
+    import time
+
+    with _error_lock:
+        now = time.time()
+        _error_count_since_log += 1
+
+        if now - _last_error_log_time >= _ERROR_LOG_INTERVAL:
+            if _error_count_since_log > 1:
+                logger.warning(
+                    f"OTLP export error ({_error_count_since_log} errors in last "
+                    f"{_ERROR_LOG_INTERVAL}s): {error}"
+                )
+            else:
+                logger.warning(f"OTLP export error: {error}")
+            _last_error_log_time = now
+            _error_count_since_log = 0
+
+
+def _export_worker() -> None:
+    """Background worker thread for OTLP export."""
+    while not _shutdown_event.is_set():
+        try:
+            # Wait for event with timeout to allow shutdown check
+            event = _export_queue.get(timeout=0.5)
+            if event is None:  # Shutdown sentinel
+                break
+            _export_event_sync(event)
+        except queue.Empty:
+            continue
+        except Exception as e:
+            _log_error_rate_limited(e)
+
+
+def _start_export_worker() -> None:
+    """Start the background export worker thread."""
+    global _export_thread
+    if _export_thread is not None and _export_thread.is_alive():
+        return
+    _shutdown_event.clear()
+    _export_thread = threading.Thread(target=_export_worker, daemon=True, name="vetch-otlp-export")
+    _export_thread.start()
+    atexit.register(_shutdown_export_worker)
+
+
+def _shutdown_export_worker() -> None:
+    """Shutdown the background export worker gracefully."""
+    global _export_thread
+    if _export_thread is None:
+        return
+    _shutdown_event.set()
+    with contextlib.suppress(queue.Full):
+        _export_queue.put_nowait(None)  # Sentinel to wake worker
+    _export_thread.join(timeout=2.0)
+    _export_thread = None
+
+
+def export_event_otlp(event: InferenceEvent) -> bool:
+    """Queue an inference event for async OTLP export.
+
+    Non-blocking: queues the event for background export.
+    Events are dropped if the queue is full (backpressure).
+
+    Args:
+        event: The InferenceEvent to export.
+
+    Returns:
+        True if queued successfully, False if queue full or not configured.
+    """
+    if not _otlp_configured:
+        return False
+
+    try:
+        _export_queue.put_nowait(event)
+        return True
+    except queue.Full:
+        logger.debug("OTLP export queue full, dropping event")
+        return False
+
+
+def is_otlp_configured() -> bool:
+    """Check if OTLP export is configured.
+
+    Returns:
+        True if configure_otlp_export() was called successfully.
+    """
+    return _otlp_configured
+
+
+# Auto-configure from environment if enabled
+def _auto_configure() -> None:
+    """Auto-configure OTLP export from environment variables."""
+    if os.environ.get("VETCH_OTEL_EXPORT", "").lower() in ("true", "1", "yes"):
+        endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        if endpoint:
+            service_name = os.environ.get("VETCH_OTEL_SERVICE_NAME", "vetch")
+            configure_otlp_export(service_name=service_name)
+
+
+_auto_configure()

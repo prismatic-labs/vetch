@@ -36,9 +36,10 @@ if _DISABLED:
 if TYPE_CHECKING:
     from vetch.wrapper import VetchContext
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 __all__ = [
     "wrap",
+    "instrument",
     "require_tags",
     "add_global_tags",
     "configure_storage",
@@ -46,7 +47,20 @@ __all__ = [
     "__version__",
     "get_session_stats",
     "generate_advisories",
+    # v0.1.5: Budget alerts
+    "set_budget",
+    "on_budget_alert",
+    "get_budget_status",
+    # v0.1.5: OTLP export
+    "configure_otlp_export",
+    # v0.1.5: Green signal API
+    "get_cleanest_region",
+    # v0.1.5: Logging control
+    "set_log_level",
 ]
+
+# Track instrumented state
+_instrumented = False
 
 
 def add_global_tags(tags: dict[str, str]) -> None:
@@ -71,6 +85,120 @@ def require_tags(tags: list[str]) -> None:
     from vetch.config import require_tags as _require_tags
 
     _require_tags(tags)
+
+
+def instrument(
+    region: str | None = None,
+    tags: dict[str, str] | None = None,
+) -> bool:
+    """Auto-instrument all detected LLM SDK clients.
+
+    Call once at application startup to automatically track all LLM calls
+    without needing to use the `wrap()` context manager.
+
+    This is ideal for frameworks like LangChain, LlamaIndex, or any code
+    where you don't control the client instantiation.
+
+    Args:
+        region: Default grid region for carbon calculation.
+        tags: Default tags to add to all events.
+
+    Returns:
+        True if any clients were instrumented, False otherwise.
+
+    Example::
+
+        import vetch
+        import openai
+
+        # Call once at startup
+        vetch.instrument(region="us-east-1", tags={"service": "chat-api"})
+
+        # All OpenAI calls are now automatically tracked
+        client = openai.OpenAI()
+        response = client.chat.completions.create(...)
+        # Events emitted automatically!
+
+    Note:
+        - Works with OpenAI, Anthropic, and Vertex AI SDKs
+        - Safe to call multiple times (idempotent)
+        - Set VETCH_DISABLED=true to disable all instrumentation
+    """
+    global _instrumented
+
+    if _DISABLED:
+        return False
+
+    if _instrumented:
+        return True
+
+    # Store default config for auto-instrumentation
+    if region:
+        os.environ.setdefault("VETCH_REGION", region)
+    if tags:
+        add_global_tags(tags)
+
+    instrumented_any = False
+
+    # Try to instrument OpenAI
+    try:
+        from vetch.providers.openai import instrument_openai_module
+
+        if instrument_openai_module():
+            instrumented_any = True
+    except (ImportError, ModuleNotFoundError):
+        pass  # SDK not installed
+    except Exception as e:
+        import logging
+
+        logging.getLogger("vetch").debug(f"Failed to instrument OpenAI: {e}")
+
+    # Try to instrument Anthropic
+    try:
+        from vetch.providers.anthropic import instrument_anthropic_module
+
+        if instrument_anthropic_module():
+            instrumented_any = True
+    except (ImportError, ModuleNotFoundError):
+        pass  # SDK not installed
+    except Exception as e:
+        import logging
+
+        logging.getLogger("vetch").debug(f"Failed to instrument Anthropic: {e}")
+
+    # Try to instrument Vertex AI
+    try:
+        from vetch.providers.vertexai import instrument_vertexai_module
+
+        if instrument_vertexai_module():
+            instrumented_any = True
+    except (ImportError, ModuleNotFoundError):
+        pass  # SDK not installed
+    except Exception as e:
+        import logging
+
+        logging.getLogger("vetch").debug(f"Failed to instrument Vertex AI: {e}")
+
+    _instrumented = instrumented_any
+    return instrumented_any
+
+
+def set_log_level(level: str | int) -> None:
+    """Set Vetch's internal logging verbosity.
+
+    Args:
+        level: Logging level (e.g., "DEBUG", "INFO", "WARNING", "ERROR", or int).
+
+    Example::
+
+        import vetch
+        vetch.set_log_level("ERROR")  # Silence info/warning messages
+    """
+    import logging
+
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.WARNING)
+    logging.getLogger("vetch").setLevel(level)
 
 
 def wrap(
@@ -139,4 +267,27 @@ def __getattr__(name: str) -> object:
         from vetch.storage import query_usage
 
         return query_usage
+    # v0.1.5: Budget alerts
+    if name == "set_budget":
+        from vetch.budget import set_budget
+
+        return set_budget
+    if name == "on_budget_alert":
+        from vetch.budget import on_budget_alert
+
+        return on_budget_alert
+    if name == "get_budget_status":
+        from vetch.budget import get_budget_status
+
+        return get_budget_status
+    # v0.1.5: OTLP export
+    if name == "configure_otlp_export":
+        from vetch.otel import configure_otlp_export
+
+        return configure_otlp_export
+    # v0.1.5: Green signal API
+    if name == "get_cleanest_region":
+        from vetch.sensing.grid import get_cleanest_region
+
+        return get_cleanest_region
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
