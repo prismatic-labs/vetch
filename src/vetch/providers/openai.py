@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import TYPE_CHECKING, Any, cast
+from weakref import WeakKeyDictionary
 
 from vetch.context import get_active_context
 from vetch.proxy import is_vetch_patched
@@ -26,9 +28,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Track original methods for cleanup
-_original_create: Any = None
-_patched = False
+# Thread-safe per-client storage for original methods
+# Using WeakKeyDictionary so clients can be garbage collected
+_client_originals: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
+_client_lock = threading.Lock()
 
 
 def extract_usage(response: Any) -> Usage | None:
@@ -191,8 +194,9 @@ class StreamWrapper:
             self._model = model
 
         # Count characters (not accumulate content)
-        choices = getattr(chunk, "choices", [])
-        if choices:
+        # Defensive access: verify choices exists and has elements
+        choices = getattr(chunk, "choices", None)
+        if choices and len(choices) > 0:
             delta = getattr(choices[0], "delta", None)
             if delta:
                 content = getattr(delta, "content", None)
@@ -359,14 +363,15 @@ def _wrapped_create(original: Any) -> Any:
 def patch_openai_client(client: Any) -> bool:
     """Patch an OpenAI client instance.
 
+    Thread-safe. Each client's original method is stored separately
+    using WeakKeyDictionary, allowing proper cleanup and multi-client support.
+
     Args:
         client: OpenAI client instance.
 
     Returns:
         True if patching succeeded, False otherwise.
     """
-    global _patched
-
     try:
         # 1. Check version compatibility
         from vetch.compat import get_openai_version
@@ -400,13 +405,17 @@ def patch_openai_client(client: Any) -> bool:
             logger.debug("OpenAI client already patched by Vetch")
             return True
 
-        # Store original for restoration
-        global _original_create
-        _original_create = create
+        # Thread-safe: store original per-client before patching
+        with _client_lock:
+            # Double-check inside lock (another thread may have patched)
+            if is_vetch_patched(getattr(completions, "create", None)):
+                return True
 
-        # Apply patch
-        completions.create = _wrapped_create(create)
-        _patched = True
+            # Store original keyed by completions object (unique per client)
+            _client_originals[completions] = create
+
+            # Apply patch
+            completions.create = _wrapped_create(create)
 
         logger.debug("OpenAI client patched successfully")
         return True
@@ -419,25 +428,31 @@ def patch_openai_client(client: Any) -> bool:
 def unpatch_openai_client(client: Any) -> bool:
     """Remove Vetch patch from an OpenAI client.
 
+    Thread-safe. Restores the original method for this specific client.
+
     Args:
         client: OpenAI client instance.
 
     Returns:
         True if unpatching succeeded, False otherwise.
     """
-    global _patched, _original_create
-
     try:
-        if _original_create is None:
-            return True  # Nothing to unpatch
-
-        completions = getattr(client.chat, "completions", None)
+        completions = getattr(client, "chat", None)
         if completions is None:
             return False
 
-        completions.create = _original_create
-        _original_create = None
-        _patched = False
+        completions = getattr(completions, "completions", None)
+        if completions is None:
+            return False
+
+        # Thread-safe: retrieve and remove original for this client
+        with _client_lock:
+            original = _client_originals.pop(completions, None)
+            if original is None:
+                # Not patched by us, or already unpatched
+                return True
+
+            completions.create = original
 
         logger.debug("OpenAI client unpatched successfully")
         return True

@@ -33,9 +33,6 @@ logger = logging.getLogger(__name__)
 _region_warning_issued = False
 _timezone_warning_issued = False
 
-# Track patched clients for cleanup
-_patched_clients: list[Any] = []
-
 
 def _infer_region() -> tuple[str | None, str | None]:
     """Infer region from environment or local heuristics.
@@ -106,6 +103,7 @@ class VetchContext:
         tags: dict[str, str] | None = None,
         energy_override: dict[str, object] | None = None,
         price_multiplier: float = 1.0,
+        emit: bool = True,
         _disabled: bool = False,
     ) -> None:
         """Initialize tracking context.
@@ -115,8 +113,10 @@ class VetchContext:
             tags: Key-value pairs for cost attribution.
             energy_override: User-provided energy values.
             price_multiplier: Factor to adjust list pricing (e.g. 0.8 for 20% discount).
+            emit: If True, emit JSON to configured output. Set False for quiet mode.
             _disabled: Internal flag for kill switch (VETCH_DISABLED=true).
         """
+        self._emit = emit
         # P0: Kill switch - store disabled state for no-op behavior
         self._globally_disabled = _disabled
 
@@ -155,6 +155,7 @@ class VetchContext:
         self._event: InferenceEvent | None = None
         self._tracking_ctx: TrackingContext | None = None
         self._warnings: list[str] = []  # Collect diagnostic warnings
+        self._patched_clients: list[tuple[str, Any]] = []  # Per-context patched clients
 
         # Validate energy override if provided
         if energy_override is not None:
@@ -321,6 +322,7 @@ class VetchContext:
 
         Detects installed SDKs and patches their completion methods.
         Respects existing patches (Datadog, OpenTelemetry, etc.).
+        Each context tracks its own patched clients for proper cleanup isolation.
         """
         # Try to patch OpenAI
         try:
@@ -328,7 +330,7 @@ class VetchContext:
 
             client = detect_openai_client()
             if client is not None and patch_openai_client(client):
-                _patched_clients.append(("openai", client))
+                self._patched_clients.append(("openai", client))
         except Exception as e:
             logger.debug(f"OpenAI patching skipped: {e}")
 
@@ -349,10 +351,12 @@ class VetchContext:
         # as there isn't a global default client.
 
     def _cleanup_patches(self) -> None:
-        """Remove SDK method patches."""
-        global _patched_clients
+        """Remove SDK method patches.
 
-        for provider, client in _patched_clients:
+        Only unpatches clients that THIS context patched.
+        Thread-safe: other contexts' clients are not affected.
+        """
+        for provider, client in self._patched_clients:
             try:
                 if provider == "openai":
                     from vetch.providers.openai import unpatch_openai_client
@@ -369,7 +373,7 @@ class VetchContext:
             except Exception as e:
                 logger.debug(f"Failed to unpatch {provider}: {e}")
 
-        _patched_clients = []
+        self._patched_clients.clear()
 
     def _emit_event(
         self,
@@ -553,8 +557,9 @@ class VetchContext:
             usage_estimation_method=usage_estimation_method,
         )
 
-        # Emit to configured output
-        emit_event(self._event)
+        # Emit to configured output (unless quiet mode)
+        if self._emit:
+            emit_event(self._event)
 
         # Local Storage (The Black Box Recorder)
         try:
@@ -595,6 +600,7 @@ def wrap(
     tags: dict[str, str] | None = None,
     energy_override: dict[str, object] | None = None,
     price_multiplier: float = 1.0,
+    emit: bool = True,
 ) -> Generator[VetchContext, None, None]:
     """Context manager for tracking LLM inference.
 
@@ -606,12 +612,21 @@ def wrap(
         tags: Key-value pairs for cost attribution.
         energy_override: User-provided energy values.
         price_multiplier: Factor to adjust list pricing (e.g., 0.8 for 20% discount).
+        emit: If True (default), emit JSON to configured output.
+              Set False for quiet mode (metrics still available in ctx.event).
+
+    Example:
+        # Quiet mode - no JSON output, access metrics programmatically
+        with wrap(emit=False) as ctx:
+            response = client.chat.completions.create(...)
+        print(f"Energy: {ctx.event['estimated_energy_wh']} Wh")
     """
     ctx = VetchContext(
         region=region,
         tags=tags,
         energy_override=energy_override,
         price_multiplier=price_multiplier,
+        emit=emit,
     )
     with ctx:
         yield ctx

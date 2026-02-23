@@ -13,7 +13,9 @@ Supports:
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Any, cast
+from weakref import WeakKeyDictionary
 
 from vetch.context import get_active_context
 from vetch.proxy import is_vetch_patched
@@ -23,9 +25,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Track original methods for cleanup
-_original_create: Any = None
-_patched = False
+# Thread-safe per-client storage for original methods
+_client_originals: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
+_client_lock = threading.Lock()
 
 
 def extract_usage(response: Any) -> Usage | None:
@@ -293,9 +295,16 @@ def _wrapped_create(original: Any) -> Any:
 
 
 def patch_anthropic_client(client: Any) -> bool:
-    """Patch an Anthropic client instance."""
-    global _patched, _original_create
+    """Patch an Anthropic client instance.
 
+    Thread-safe. Each client's original method is stored separately.
+
+    Args:
+        client: Anthropic client instance.
+
+    Returns:
+        True if patching succeeded, False otherwise.
+    """
     try:
         messages = getattr(client, "messages", None)
         if messages is None:
@@ -308,12 +317,15 @@ def patch_anthropic_client(client: Any) -> bool:
         if is_vetch_patched(create):
             return True
 
-        # Store original
-        if _original_create is None:
-            _original_create = create
+        # Thread-safe: store original per-client before patching
+        with _client_lock:
+            # Double-check inside lock
+            if is_vetch_patched(getattr(messages, "create", None)):
+                return True
 
-        messages.create = _wrapped_create(create)
-        _patched = True
+            _client_originals[messages] = create
+            messages.create = _wrapped_create(create)
+
         logger.debug("Anthropic client patched successfully")
         return True
 
@@ -323,21 +335,33 @@ def patch_anthropic_client(client: Any) -> bool:
 
 
 def unpatch_anthropic_client(client: Any) -> bool:
-    """Remove patch from Anthropic client."""
-    global _patched, _original_create
+    """Remove patch from Anthropic client.
 
+    Thread-safe. Restores the original method for this specific client.
+
+    Args:
+        client: Anthropic client instance.
+
+    Returns:
+        True if unpatching succeeded, False otherwise.
+    """
     try:
-        if _original_create is None:
-            return True
-
         messages = getattr(client, "messages", None)
-        if messages:
-            messages.create = _original_create
-            _original_create = None
-            _patched = False
-            return True
-        return False
-    except Exception:
+        if messages is None:
+            return False
+
+        with _client_lock:
+            original = _client_originals.pop(messages, None)
+            if original is None:
+                return True
+
+            messages.create = original
+
+        logger.debug("Anthropic client unpatched successfully")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Failed to unpatch Anthropic client: {e}")
         return False
 
 

@@ -1,4 +1,6 @@
 {
+  "_comment": "Model aliases: map API model strings to canonical registry names",
+
   "gpt-4-0613": "gpt-4",
   "gpt-4-0314": "gpt-4",
   "gpt-4-32k": "gpt-4",
@@ -18,27 +20,52 @@
   "gpt-3.5-turbo-0613": "gpt-3.5-turbo",
   "gpt-3.5-turbo-16k-0613": "gpt-3.5-turbo",
   "gpt-3.5-turbo-16k": "gpt-3.5-turbo",
+
   "claude-3-opus-20240229": "claude-3-opus",
   "claude-3-sonnet-20240229": "claude-3-sonnet",
   "claude-3-haiku-20240307": "claude-3-haiku",
+
+  "claude-3-5-sonnet": "claude-3.5-sonnet",
   "claude-3-5-sonnet-20240620": "claude-3.5-sonnet",
   "claude-3-5-sonnet-20241022": "claude-3.5-sonnet",
   "claude-3-5-sonnet-latest": "claude-3.5-sonnet",
+  "claude-3-5-sonnet-v2": "claude-3.5-sonnet",
+  "claude-sonnet-3-5": "claude-3.5-sonnet",
+  "claude-sonnet-3.5": "claude-3.5-sonnet",
+
+  "claude-3-5-haiku": "claude-3-haiku",
+  "claude-3-5-haiku-20241022": "claude-3-haiku",
+  "claude-3-5-haiku-latest": "claude-3-haiku",
+  "claude-haiku-3-5": "claude-3-haiku",
+
+  "claude-sonnet-4": "claude-3.5-sonnet",
+  "claude-4-sonnet": "claude-3.5-sonnet",
+
   "gemini-1.5-pro-001": "gemini-1.5-pro",
   "gemini-1.5-pro-002": "gemini-1.5-pro",
   "gemini-1.5-pro-latest": "gemini-1.5-pro",
+  "gemini-pro-1.5": "gemini-1.5-pro",
   "gemini-1.5-flash-001": "gemini-1.5-flash",
   "gemini-1.5-flash-002": "gemini-1.5-flash",
   "gemini-1.5-flash-latest": "gemini-1.5-flash",
+  "gemini-flash-1.5": "gemini-1.5-flash",
   "gemini-2.0-flash-001": "gemini-2.0-flash",
   "gemini-2.0-flash-exp": "gemini-2.0-flash",
   "gemini-2.0-flash-latest": "gemini-2.0-flash",
+  "gemini-flash-2.0": "gemini-2.0-flash",
+
   "llama-3-70b-instruct": "llama-3-70b",
   "llama-3-70b-chat": "llama-3-70b",
+  "llama3-70b": "llama-3-70b",
   "llama-3.1-405b-instruct": "llama-3.1-405b",
   "llama-3.1-405b-chat": "llama-3.1-405b",
+  "llama3.1-405b": "llama-3.1-405b",
+  "llama-3-1-405b": "llama-3.1-405b",
+
   "mixtral-8x7b-instruct": "mixtral-8x7b",
   "mixtral-8x7b-instruct-v0.1": "mixtral-8x7b",
+  "mistral-8x7b": "mixtral-8x7b",
   "mixtral-8x22b-instruct": "mixtral-8x22b",
-  "mixtral-8x22b-instruct-v0.1": "mixtral-8x22b"
+  "mixtral-8x22b-instruct-v0.1": "mixtral-8x22b",
+  "mistral-8x22b": "mixtral-8x22b"
 }

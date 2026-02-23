@@ -27,10 +27,11 @@ logger.addHandler(logging.NullHandler())
 def _configure_logging() -> None:
     """Configure logging based on VETCH_OUTPUT env var.
 
+    Defaults to 'none' (quiet mode). Set VETCH_OUTPUT=stderr to see JSON output.
     This is a convenience helper. Advanced users should configure
     the 'vetch.emitter' logger directly.
     """
-    target = os.environ.get("VETCH_OUTPUT", "stderr")
+    target = os.environ.get("VETCH_OUTPUT", "none")
 
     if target == "none":
         return

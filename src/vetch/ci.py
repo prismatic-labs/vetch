@@ -13,12 +13,8 @@ import os
 import warnings
 from typing import Any
 
-# P2: Mark as experimental
-warnings.warn(
-    "vetch.ci is experimental and may change in future versions",
-    FutureWarning,
-    stacklevel=2,
-)
+# Track if warning has been issued
+_EXPERIMENTAL_WARNING_ISSUED = False
 
 # Global counters for CI summary
 _CI_STATS = {
@@ -34,8 +30,19 @@ def is_ci() -> bool:
 
 def track_ci_event(event: dict[str, Any]) -> None:
     """Update CI stats with a new event."""
+    global _EXPERIMENTAL_WARNING_ISSUED
+
     if not is_ci():
         return
+
+    # Issue warning only once when CI tracking is first used
+    if not _EXPERIMENTAL_WARNING_ISSUED:
+        _EXPERIMENTAL_WARNING_ISSUED = True
+        warnings.warn(
+            "vetch.ci is experimental and may change in future versions",
+            FutureWarning,
+            stacklevel=2,
+        )
 
     _CI_STATS["count"] += 1
     _CI_STATS["energy_wh"] += event.get("estimated_energy_wh") or 0.0

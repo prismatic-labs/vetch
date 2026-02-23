@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Any, cast
+import threading
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from weakref import WeakKeyDictionary
 
 from vetch.context import get_active_context
 from vetch.proxy import is_vetch_patched
@@ -26,10 +28,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Track original methods for cleanup
-_original_generate: Any = None
-_original_generate_async: Any = None
-_patched = False
+
+class _ModelOriginals(NamedTuple):
+    """Stores original methods for a single model instance."""
+
+    generate: Any
+    generate_async: Any
+
+
+# Thread-safe per-model storage for original methods
+_model_originals: WeakKeyDictionary[Any, _ModelOriginals] = WeakKeyDictionary()
+_model_lock = threading.Lock()
 
 
 def extract_usage(response: Any) -> Usage | None:
@@ -340,14 +349,14 @@ def _wrapped_generate_async(original: Any, model_obj: Any) -> Any:
 def patch_vertexai_model(model: Any) -> bool:
     """Patch a Vertex AI GenerativeModel instance.
 
+    Thread-safe. Each model's original methods are stored separately.
+
     Args:
         model: GenerativeModel instance.
 
     Returns:
         True if patching succeeded, False otherwise.
     """
-    global _patched, _original_generate, _original_generate_async
-
     try:
         # 1. Check version compatibility
         from vetch.compat import get_vertexai_version
@@ -361,19 +370,29 @@ def patch_vertexai_model(model: Any) -> bool:
             if os.environ.get("VETCH_FORCE_PATCH") != "true":
                 return False
 
-        # 2. Patch sync method
-        generate = getattr(model, "generate_content", None)
-        if generate and not is_vetch_patched(generate):
-            _original_generate = generate
-            model.generate_content = _wrapped_generate(generate, model)
+        # Thread-safe: check and patch atomically
+        with _model_lock:
+            # Check if already patched
+            generate = getattr(model, "generate_content", None)
+            generate_async = getattr(model, "generate_content_async", None)
 
-        # Patch async method if it exists
-        generate_async = getattr(model, "generate_content_async", None)
-        if generate_async and not is_vetch_patched(generate_async):
-            _original_generate_async = generate_async
-            model.generate_content_async = _wrapped_generate_async(generate_async, model)
+            if generate and is_vetch_patched(generate):
+                return True  # Already patched
 
-        _patched = True
+            # Store originals for this model
+            _model_originals[model] = _ModelOriginals(
+                generate=generate,
+                generate_async=generate_async,
+            )
+
+            # Patch sync method
+            if generate:
+                model.generate_content = _wrapped_generate(generate, model)
+
+            # Patch async method if it exists
+            if generate_async:
+                model.generate_content_async = _wrapped_generate_async(generate_async, model)
+
         logger.debug("Vertex AI model patched successfully")
         return True
 
@@ -385,24 +404,26 @@ def patch_vertexai_model(model: Any) -> bool:
 def unpatch_vertexai_model(model: Any) -> bool:
     """Remove Vetch patch from a Vertex AI model.
 
+    Thread-safe. Restores original methods for this specific model.
+
     Args:
         model: GenerativeModel instance.
 
     Returns:
         True if unpatching succeeded, False otherwise.
     """
-    global _patched, _original_generate, _original_generate_async
-
     try:
-        if _original_generate:
-            model.generate_content = _original_generate
-            _original_generate = None
+        with _model_lock:
+            originals = _model_originals.pop(model, None)
+            if originals is None:
+                return True  # Not patched by us
 
-        if _original_generate_async:
-            model.generate_content_async = _original_generate_async
-            _original_generate_async = None
+            if originals.generate:
+                model.generate_content = originals.generate
 
-        _patched = False
+            if originals.generate_async:
+                model.generate_content_async = originals.generate_async
+
         logger.debug("Vertex AI model unpatched successfully")
         return True
 

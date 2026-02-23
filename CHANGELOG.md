@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-02-23
+
+### Added
+- `emit=False` parameter for quiet mode (no JSON output to stderr)
+- `vetch quickstart` CLI command with usage examples
+- Package metadata with GitHub URLs (homepage, issues, repository)
+- Expanded model aliases (claude-3-5-sonnet, gemini-flash-2.0, llama3.1-405b, etc.)
+
+### Changed
+- Default output changed to `none` (quiet by default). Set `VETCH_OUTPUT=stderr` for JSON.
+- FutureWarning for experimental modules now only triggers on first use
+- Improved CLI messaging for `vetch report` when storage is disabled
+
+### Fixed
+- Model alias mismatch: `claude-3-5-sonnet` now correctly maps to registry (was 12x overestimate)
+- Reduced warning spam from experimental modules (storage, ci, calibrate)
+- Multi-client patching: each client's original method now stored separately (was losing first client's original)
+- Thread-safe patching: added locks to prevent race conditions in multi-threaded environments
+- Context isolation: `_cleanup_patches` now only unpatches clients from its own context (was breaking other threads)
+- Streaming fragility: defensive access for `chunk.choices` in OpenAI provider
+
 ## [0.1.3] - 2026-02-19
 
 ### Added
@@ -69,7 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `VETCH_REGION` | Grid region for carbon calculation | (inferred) |
-| `VETCH_OUTPUT` | Output target: `stderr`, `none`, or file path | `stderr` |
+| `VETCH_OUTPUT` | Output target: `stderr`, `none`, or file path | `none` |
 | `VETCH_DEFAULT_PUE` | Power Usage Effectiveness multiplier | `1.1` |
 | `VETCH_CACHE_MODE` | Set to `memory-only` for serverless | (file-based) |
 | `VETCH_DISABLED` | Set to `true` to disable all tracking | `false` |

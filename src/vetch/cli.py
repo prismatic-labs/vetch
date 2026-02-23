@@ -270,6 +270,72 @@ def check(args: argparse.Namespace) -> None:
         print("  Provenance: Missing audit trail")
 
 
+def quickstart(args: argparse.Namespace) -> None:
+    """Print quickstart examples."""
+    print(f"""
+Vetch v{__version__} - Planet-aware observability for LLM inference
+GitHub: https://github.com/prismatic-labs/vetch
+
+QUICKSTART
+==========
+
+1. Basic Usage (OpenAI)
+-----------------------
+from vetch import wrap
+from openai import OpenAI
+
+client = OpenAI()
+
+with wrap() as ctx:
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{{"role": "user", "content": "Hello!"}}]
+    )
+
+# Access metrics after the call
+print(f"Energy: {{ctx.event['estimated_energy_wh']:.3f}} Wh")
+print(f"Carbon: {{ctx.event['estimated_carbon_g']:.2f}} g CO2e")
+print(f"Cost:   ${{ctx.event['estimated_cost_usd']:.4f}}")
+
+2. Quiet Mode (no JSON output)
+------------------------------
+with wrap(emit=False) as ctx:
+    response = client.chat.completions.create(...)
+
+# Metrics still available in ctx.event
+
+3. With Region (for accurate carbon)
+------------------------------------
+with wrap(region="us-west-2") as ctx:
+    ...
+
+# Or set environment variable:
+# export VETCH_REGION=us-west-2
+
+4. CLI Tools
+------------
+# Estimate without running code
+vetch estimate --model gpt-4o --input-tokens 1000 --output-tokens 500
+
+# Compare models
+vetch compare --models gpt-4o,claude-3.5-sonnet --input-tokens 1000
+
+# Check environment
+vetch check
+
+ENVIRONMENT VARIABLES
+=====================
+VETCH_REGION          - Grid region (e.g., us-east-1, eu-west-2)
+VETCH_OUTPUT          - Output target: none, stderr, or file path
+VETCH_DEFAULT_PUE     - Power Usage Effectiveness (default: 1.1)
+ELECTRICITY_MAPS_API_KEY - For real-time grid carbon data
+
+DOCUMENTATION
+=============
+https://github.com/prismatic-labs/vetch#readme
+""")
+
+
 def clean(args: argparse.Namespace) -> None:
     """Clean up Vetch cache and lock files."""
     import shutil
@@ -554,10 +620,13 @@ def report(args: argparse.Namespace) -> None:
         configure_storage()
 
     if not is_storage_enabled():
-        print("Storage not configured.")
-        print("\nTo enable storage, add to your code:")
-        print("  from vetch import configure_storage")
-        print("  configure_storage()  # Uses ~/.vetch/usage.db")
+        print("Storage is disabled by default to respect privacy.")
+        print("\nTo enable persistent storage, add to your code:")
+        print("")
+        print("  from vetch.storage import configure_storage")
+        print("  configure_storage(enabled=True)  # Stores to ~/.vetch/usage.db")
+        print("")
+        print("Then re-run your LLM calls to start recording history.")
         sys.exit(1)
 
     db_path = get_db_path()
@@ -706,6 +775,9 @@ def main() -> None:
     # Check
     subparsers.add_parser("check", help="Check environment")
 
+    # Quickstart
+    subparsers.add_parser("quickstart", help="Show quickstart examples")
+
     # Clean
     subparsers.add_parser("clean", help="Clean up cache and lock files")
 
@@ -788,6 +860,8 @@ def main() -> None:
         methodology(args)
     elif args.command == "check":
         check(args)
+    elif args.command == "quickstart":
+        quickstart(args)
     elif args.command == "clean":
         clean(args)
     elif args.command == "audit":

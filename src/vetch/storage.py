@@ -21,14 +21,10 @@ from typing import Any, cast
 
 from vetch.schema import InferenceEvent
 
-# P2: Mark as experimental
-warnings.warn(
-    "vetch.storage is experimental. API may change in future versions.",
-    FutureWarning,
-    stacklevel=2,
-)
-
 logger = logging.getLogger(__name__)
+
+# Track if warning has been issued (to avoid spam on repeated imports)
+_EXPERIMENTAL_WARNING_ISSUED = False
 
 DB_PATH = Path.home() / ".vetch" / "usage.db"
 _STORAGE_ENABLED = False
@@ -36,7 +32,17 @@ _STORAGE_ENABLED = False
 
 def configure_storage(enabled: bool = True, path: Path | None = None) -> None:
     """Enable or disable local storage."""
-    global _STORAGE_ENABLED, DB_PATH
+    global _STORAGE_ENABLED, DB_PATH, _EXPERIMENTAL_WARNING_ISSUED
+
+    # Issue warning only once when storage is first enabled
+    if enabled and not _EXPERIMENTAL_WARNING_ISSUED:
+        _EXPERIMENTAL_WARNING_ISSUED = True
+        warnings.warn(
+            "vetch.storage is experimental. API may change in future versions.",
+            FutureWarning,
+            stacklevel=2,
+        )
+
     _STORAGE_ENABLED = enabled
     if path:
         DB_PATH = path

@@ -16,14 +16,23 @@ import warnings
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
-# P2: Mark as experimental
-warnings.warn(
-    "vetch.calibrate is experimental. API may change. Requires: pip install nvidia-ml-py3",
-    FutureWarning,
-    stacklevel=2,
-)
-
 logger = logging.getLogger(__name__)
+
+# Track if warning has been issued
+_EXPERIMENTAL_WARNING_ISSUED = False
+
+
+def _warn_experimental() -> None:
+    """Issue experimental warning once."""
+    global _EXPERIMENTAL_WARNING_ISSUED
+    if not _EXPERIMENTAL_WARNING_ISSUED:
+        _EXPERIMENTAL_WARNING_ISSUED = True
+        warnings.warn(
+            "vetch.calibrate is experimental. API may change. "
+            "Requires: pip install nvidia-ml-py3",
+            FutureWarning,
+            stacklevel=3,
+        )
 
 # Cache for hardware calibrations
 CALIBRATION_DIR = Path.home() / ".vetch" / "calibrations"
@@ -116,6 +125,7 @@ def calibrate_model(
     Returns:
         CalibrationResult
     """
+    _warn_experimental()
     if not is_gpu_available():
         raise RuntimeError(f"GPU not available: {get_gpu_error()}")
 
