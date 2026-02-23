@@ -115,8 +115,23 @@ Anonymized submissions (model + tokens + energy + hardware) will aggregate into 
 Default: 1.1 (Uptime Institute 2023 hyperscaler average)
 
 ## Grid Carbon Intensity
+
 Source: Electricity Maps API, marginal carbon intensity.
-This is the most accurate data in the pipeline. Real-time, regionally specific, updated every 5 minutes.
+
+### 4-Tier Fallback Hierarchy
+
+Vetch uses a multi-tier caching strategy to balance accuracy with reliability:
+
+| Level | Source | TTL | signal_quality |
+|-------|--------|-----|----------------|
+| 1 | **Memory Cache** | 5 min | `live` |
+| 2 | **File Cache** | 30 min | `delayed` |
+| 3 | **Electricity Maps API** | Real-time | `live` |
+| 4 | **Regional Averages** | Static | `blind` |
+
+The grid intensity lookup proceeds through each level in order. If Level 3 (API) fails (timeout, rate limit, no API key), Vetch falls back to Level 4 regional averages and sets `signal_quality: blind` in the event.
+
+This ensures carbon estimates are always available, with the `signal_quality` field indicating data freshness.
 
 ## Contributing Energy Estimates
 We want better data. If you have inference energy measurements—from internal benchmarks, published research, or provider relationships—we'll incorporate them with attribution.

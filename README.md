@@ -10,13 +10,38 @@ Planet-aware observability for LLM inference.
 
 Vetch is a Python SDK that wraps LLM API calls to log energy consumption, cost, and carbon per inference using live grid data. It never reads prompt or completion content—only metadata from the response usage.
 
+## Why Vetch?
+
+**Attributed Spend, Not Just Total Spend**
+
+Provider dashboards (OpenAI Usage, Anthropic Console, Google Cloud Billing) show you *total* spend. Vetch shows you *attributed* spend. Using tags, you can track cost-per-feature, cost-per-user, or cost-per-environment in real-time—without building custom infrastructure.
+
+**Sustainability Instrumentation**
+
+Begin tracking AI inference emissions for future CSRD (EU) and SEC (US) Scope 3 reporting. Note: Current estimates are Tier 3 (order-of-magnitude). Vetch provides the instrumentation infrastructure—audit-grade accuracy requires Tier 1/2 energy data from providers or calibrated measurements.
+
+## Design Guarantees
+
+### Fail-Open Architecture
+
+Vetch is architected with a non-blocking, fail-open boundary. Every Vetch operation (patching, calculation, emission) is wrapped in isolated error handlers. If Vetch fails, your LLM call proceeds normally, and a `tracking_disabled: true` event is logged. Vetch will never cause an inference outage.
+
+### Privacy & Data Perimeter
+
+Vetch never reads or stores prompt/completion content. It only extracts metadata (token counts, model names, timing) directly from SDK response objects. No PII or proprietary prompt data ever leaves your execution environment.
+
+### Thread Safety (v0.1.4+)
+
+Vetch is fully thread-safe and supports multi-client isolation. It uses `contextvars` for async safety and `WeakKeyDictionary` for client patching, ensuring that unpatching one client doesn't affect another in the same process.
+
 ## Features
 
-- **Fail-Open**: LLM calls always proceed even if Vetch fails.
-- **Privacy-First**: No prompt or completion data is ever read or buffered.
-- **Multi-tier Caching**: Memory and file-based caching for grid intensity data.
-- **Observability-Transparent**: Works seamlessly with Datadog, OpenTelemetry, and Sentry.
-- **Low Overhead**: Under 5ms overhead for sync calls; zero TTFT latency for streaming.
+- **Fail-Open**: LLM calls always proceed even if Vetch fails
+- **Privacy-First**: No prompt or completion data is ever read or buffered
+- **Multi-tier Caching**: Memory → File → API → Regional averages for grid data
+- **Observability-Transparent**: Works seamlessly with Datadog, OpenTelemetry, and Sentry
+- **Low Overhead**: Under 5ms overhead for sync calls; zero TTFT latency for streaming
+- **MoE-Aware**: Energy estimates account for active parameters in Mixture-of-Experts models
 
 ## Installation
 
@@ -179,7 +204,7 @@ Run `vetch methodology` to see full methodology documentation.
 |----------|-------------|
 | `VETCH_DISABLED` | Set to `true` to completely disable Vetch (emergency kill switch) |
 | `VETCH_REGION` | Default grid region (e.g., `us-east-1`, `eu-west-1`) |
-| `VETCH_OUTPUT` | Output target: `stderr` (default), `none`, or file path |
+| `VETCH_OUTPUT` | Output target: `none` (default), `stderr`, or file path |
 | `ELECTRICITY_MAPS_API_KEY` | API key for live grid carbon intensity data |
 | `VETCH_CACHE_MODE` | Set to `memory-only` for serverless/Lambda environments |
 
