@@ -38,10 +38,28 @@ Vetch is fully thread-safe and supports multi-client isolation. It uses `context
 
 - **Fail-Open**: LLM calls always proceed even if Vetch fails
 - **Privacy-First**: No prompt or completion data is ever read or buffered
-- **Multi-tier Caching**: Memory → File → API → Regional averages for grid data
+- **Multi-tier Caching**: Memory -> File -> API -> Regional averages for grid data
 - **Observability-Transparent**: Works seamlessly with Datadog, OpenTelemetry, and Sentry
 - **Low Overhead**: Under 5ms overhead for sync calls; zero TTFT latency for streaming
 - **MoE-Aware**: Energy estimates account for active parameters in Mixture-of-Experts models
+- **Session Aggregation**: Group multiple LLM calls into sessions for agentic AI tracking
+- **Cache-Aware Pricing**: Accurate cost calculation with prompt cache discounts
+
+## Supported Providers
+
+| Provider | Status | Instrumentation |
+|----------|--------|----------------|
+| OpenAI | Supported | `vetch.instrument()` or `vetch.wrap()` |
+| Azure OpenAI | Supported | `vetch.instrument()` (auto-detects `AzureOpenAI`) |
+| Anthropic | Supported | `vetch.instrument()` or `vetch.wrap()` |
+| Vertex AI (Gemini) | Supported | `vetch.instrument()` or `vetch.wrap()` |
+| OpenRouter | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| Together.ai | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| Anyscale | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| Ollama | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| vLLM / TGI | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+
+**OpenAI-compatible endpoints** (OpenRouter, Together.ai, Ollama, vLLM, TGI) work automatically with `vetch.instrument()` since they use the `openai` Python SDK under the hood.
 
 ## Installation
 
@@ -51,11 +69,30 @@ pip install vetch
 
 ## Quick Start
 
+The simplest way to use Vetch is with `instrument()` — one line at startup, and all LLM calls are tracked automatically:
+
+```python
+import vetch
+import openai
+
+# One line to instrument all providers
+vetch.instrument(region="us-east-1", tags={"service": "chat-api"})
+
+# All LLM calls are now automatically tracked
+client = openai.OpenAI()
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Hello world"}]
+)
+# Energy, cost, and carbon events emitted automatically!
+```
+
+### Advanced: Context Manager
+
+For per-call control, use the `wrap()` context manager:
+
 ```python
 from vetch import wrap
-from openai import OpenAI
-
-client = OpenAI()
 
 with wrap(region="us-east-1", tags={"team": "ml", "env": "prod"}) as ctx:
     response = client.chat.completions.create(
@@ -66,28 +103,110 @@ with wrap(region="us-east-1", tags={"team": "ml", "env": "prod"}) as ctx:
 # Access inference metadata
 print(f"Energy: {ctx.event['estimated_energy_wh']} Wh")
 print(f"Carbon: {ctx.event['estimated_carbon_g']} gCO2e")
+print(f"Cost:   ${ctx.event['estimated_cost_usd']}")
+```
+
+### Async Support
+
+```python
+import vetch
+
+async with vetch.awrap(region="us-east-1") as ctx:
+    response = await client.chat.completions.create(...)
+print(ctx.event["estimated_energy_wh"])
+```
+
+## Session Aggregation (Agentic AI)
+
+Group multiple LLM calls into sessions for agentic frameworks like CrewAI, AutoGPT, or LangGraph:
+
+```python
+import vetch
+
+with vetch.Session(tags={"agent": "researcher", "task": "summarize"}) as session:
+    with vetch.wrap() as ctx1:
+        response1 = client.chat.completions.create(...)
+
+    # Nested sessions for sub-agents
+    with vetch.Session(tags={"agent": "summarizer"}) as sub_session:
+        with vetch.wrap() as ctx2:
+            response2 = client.chat.completions.create(...)
+
+# Aggregate metrics across all calls
+print(f"Total energy: {session.total_energy_wh} Wh")
+print(f"Total cost: ${session.total_cost_usd}")
+print(f"Call count: {session.call_count}")
+```
+
+Sessions support distributed propagation across microservices:
+
+```python
+# In FastAPI service:
+headers = session.inject_headers({})
+celery_task.delay(task_id, headers=headers)
+
+# In Celery worker:
+with vetch.Session.from_headers(task_headers) as worker_session:
+    with vetch.wrap() as ctx:
+        response = client.chat.completions.create(...)
+```
+
+## Budget Alerts
+
+Set spending thresholds with automatic alerting:
+
+```python
+import vetch
+
+vetch.set_budget("hourly", cost_usd=10.0, energy_wh=50.0)
+
+@vetch.on_budget_alert
+def handle_alert(alert):
+    print(f"Budget alert: {alert}")
+
+# Check budget status
+status = vetch.get_budget_status()
+```
+
+## OTLP Export (Grafana, Datadog)
+
+Export metrics to any OpenTelemetry-compatible backend:
+
+```python
+import vetch
+
+vetch.configure_otlp_export(
+    endpoint="http://localhost:4317",
+    service_name="my-llm-service"
+)
+
+# Export a pre-built Grafana dashboard
+# vetch dashboard --export grafana --output grafana_vetch.json
 ```
 
 ## CLI Usage
 
-Estimate energy/carbon for a model without running code:
 ```bash
-vetch estimate --model gpt-4o --input-tokens 1000 --output-tokens 500 --region us-east-1
-```
+# Check Vetch status and configuration
+vetch status
 
-Compare multiple models:
-```bash
+# Estimate energy/carbon for a model without running code
+vetch estimate --model gpt-4o --input-tokens 1000 --output-tokens 500
+
+# Compare multiple models
 vetch compare --models gpt-4o,claude-3-opus,gemini-1.5-pro --tokens 1000
-```
 
-Analyze your token usage patterns:
-```bash
+# Analyze token usage patterns
 vetch audit
-```
 
-Check your environment:
-```bash
-vetch check
+# Export Grafana dashboard
+vetch dashboard --export grafana --output dashboard.json
+
+# Freeze registry for CI/CD (eliminates cold-start latency)
+vetch registry freeze --output vetch_registry.json
+
+# Generate usage reports
+vetch report --days 7 --tags team=ml
 ```
 
 ## Token Waste Audit
@@ -124,65 +243,25 @@ For local inference (Ollama, vLLM, llama.cpp), calibrate energy measurements usi
 from vetch.calibrate import calibrate_model, format_calibration_result
 
 def my_inference():
-    # Run your inference workload
-    # Return (input_tokens, output_tokens)
     response = ollama.generate(model="llama3.1:8b", prompt="Hello world")
-    return 100, 50  # Your actual token counts
+    return 100, 50  # (input_tokens, output_tokens)
 
 result = calibrate_model("ollama", "llama3.1:8b", workload=my_inference)
 print(format_calibration_result(result))
-
-# Use calibrated values for accurate tracking
-with wrap(energy_override=result.to_override()) as ctx:
-    response = ollama.generate(...)
-```
-
-Check calibration status:
-```bash
-vetch calibrate --status
 ```
 
 **Requirements:** NVIDIA GPU with `pynvml` (`pip install nvidia-ml-py3`)
 
-## Historical Analysis & Reporting
+## Clean Test Isolation
 
-Vetch can persist events to SQLite for historical FinOps analysis:
+Remove instrumentation for clean test environments:
 
 ```python
-from vetch import configure_storage, query_usage, wrap
-from datetime import datetime, timedelta
+import vetch
 
-# Enable persistent storage
-configure_storage()  # Uses ~/.vetch/usage.db
-
-# Your LLM calls are now tracked
-with wrap(tags={"team": "ml", "feature": "chat"}) as ctx:
-    response = client.chat.completions.create(...)
-
-# Query historical usage
-summary = query_usage(
-    start=datetime.now() - timedelta(days=7),
-    tags={"team": "ml"}
-)
-
-print(f"Total cost: ${summary.total_cost_usd:.2f}")
-print(f"Total energy: {summary.total_energy_wh:.2f} Wh")
-print(f"Requests: {summary.total_requests}")
-```
-
-Generate reports from CLI:
-```bash
-# Weekly report
-vetch report --days 7
-
-# Filter by team
-vetch report --tags team=ml
-
-# Show top consumers
-vetch report --top --top-by team --days 30
-
-# JSON output for dashboards
-vetch report --format json
+vetch.instrument()
+# ... run your code ...
+vetch.uninstrument()  # Restore original SDK methods
 ```
 
 ## Energy Tiers
@@ -191,9 +270,9 @@ Vetch uses a tiered system for energy estimate confidence:
 
 | Tier | Name | Uncertainty | Source |
 |------|------|-------------|--------|
-| 0 | **Measured** | ±10-20% | Direct GPU measurement (pynvml) |
-| 1 | **Vendor-Published** | ±20-50% | Official provider data |
-| 2 | **Validated** | ±50-100% | Crowdsourced aggregates |
+| 0 | **Measured** | +-10-20% | Direct GPU measurement (pynvml) |
+| 1 | **Vendor-Published** | +-20-50% | Official provider data |
+| 2 | **Validated** | +-50-100% | Crowdsourced aggregates |
 | 3 | **Estimated** | order of magnitude | Parameter-based calculation |
 
 Run `vetch methodology` to see full methodology documentation.
@@ -205,6 +284,10 @@ Run `vetch methodology` to see full methodology documentation.
 | `VETCH_DISABLED` | Set to `true` to completely disable Vetch (emergency kill switch) |
 | `VETCH_REGION` | Default grid region (e.g., `us-east-1`, `eu-west-1`) |
 | `VETCH_OUTPUT` | Output target: `none` (default), `stderr`, or file path |
+| `VETCH_HOME` | Vetch home directory (default: `~/.vetch/`) |
+| `VETCH_REGISTRY_REMOTE` | Set to `false` to disable remote registry updates |
+| `VETCH_REGISTRY_PATH` | Path to offline registry directory (air-gapped environments) |
+| `VETCH_REGISTRY_URL` | Custom remote registry URL |
 | `ELECTRICITY_MAPS_API_KEY` | API key for live grid carbon intensity data |
 | `VETCH_CACHE_MODE` | Set to `memory-only` for serverless/Lambda environments |
 
@@ -212,13 +295,11 @@ Run `vetch methodology` to see full methodology documentation.
 
 This is an alpha release. Please be aware of:
 
-1. **Energy estimates are uncertain**: Most models use Tier 3 estimates (±10x uncertainty). See `vetch methodology` for details.
+1. **Energy estimates are uncertain**: Most models use Tier 3 estimates (+-10x uncertainty). See `vetch methodology` for details.
 
 2. **Region inference is approximate**: Without explicit `VETCH_REGION`, timezone-based inference is ~30% accurate. Set the region explicitly for accurate carbon calculations.
 
 3. **Experimental modules**: `vetch.calibrate`, `vetch.storage`, and `vetch.ci` emit `FutureWarning` and may change in future versions.
-
-4. **Provider support**: Currently supports OpenAI, Anthropic, and Vertex AI. Other providers coming soon.
 
 ## Troubleshooting
 
@@ -237,6 +318,10 @@ export VETCH_OUTPUT=none  # Silence all output
 import logging
 logging.getLogger("vetch").setLevel(logging.DEBUG)
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing guidelines, and how to contribute energy data.
 
 ## License
 

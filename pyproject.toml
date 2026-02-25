@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.1.5"
+version = "0.1.6"
 description = "Planet-aware observability for LLM inference"
 readme = "README.md"
 license = "Apache-2.0"
@@ -24,6 +24,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
@@ -99,3 +100,7 @@ python_version = "3.9"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B310"]  # urlopen is used intentionally with validated URLs

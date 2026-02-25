@@ -60,6 +60,8 @@ class Budget:
         carbon_g: Maximum carbon in gCO2e before warning.
         window: Time window for accumulation ("request", "session", "hour", "day").
         warn_at_pct: Percentage threshold for early warning (default 80%).
+        alert_cooldown_seconds: Minimum seconds between alerts for the same
+            budget+metric pair. Prevents flooding in runaway loops. Default 60s.
         tags_filter: Only apply to events matching these tags.
     """
 
@@ -69,6 +71,7 @@ class Budget:
     carbon_g: float | None = None
     window: Literal["request", "session", "hour", "day"] = "request"
     warn_at_pct: float = 80.0
+    alert_cooldown_seconds: float = 60.0
     tags_filter: dict[str, str] | None = None
 
     # Internal tracking
@@ -77,6 +80,7 @@ class Budget:
     _accumulated_carbon: float = field(default=0.0, repr=False)
     _alert_count: int = field(default=0, repr=False)
     _last_reset_at: float = field(default_factory=time.time, repr=False)
+    _last_alert_at: dict[str, float] = field(default_factory=dict, repr=False)
 
     def reset(self) -> None:
         """Reset accumulated values and update timestamp."""
@@ -115,6 +119,7 @@ def set_budget(
     carbon_g: float | None = None,
     window: Literal["request", "session", "hour", "day"] = "request",
     warn_at_pct: float = 80.0,
+    alert_cooldown_seconds: float = 60.0,
     tags_filter: dict[str, str] | None = None,
 ) -> Budget:
     """Configure a budget threshold.
@@ -132,6 +137,8 @@ def set_budget(
             - "hour": Reset every hour (based on wall-clock time)
             - "day": Reset every 24 hours (based on wall-clock time)
         warn_at_pct: Percentage at which to start warning (default 80%).
+        alert_cooldown_seconds: Minimum seconds between alerts for the same
+            budget+metric pair. Prevents flooding in runaway loops. Default 60s.
         tags_filter: Only apply to events with matching tags.
 
     Returns:
@@ -158,6 +165,7 @@ def set_budget(
         carbon_g=carbon_g,
         window=window,
         warn_at_pct=warn_at_pct,
+        alert_cooldown_seconds=alert_cooldown_seconds,
         tags_filter=tags_filter,
     )
     with _lock:
@@ -297,6 +305,14 @@ def check_budgets(
                     any_exceeded = True
 
                 if should_warn:
+                    # Cooldown: skip if alert fired too recently
+                    alert_key = f"{budget.name}:{metric}"
+                    last_alert_time = budget._last_alert_at.get(alert_key, 0.0)
+                    if budget.alert_cooldown_seconds > 0 and (
+                        now - last_alert_time < budget.alert_cooldown_seconds
+                    ):
+                        continue
+
                     alert = BudgetAlert(
                         budget_name=budget.name,
                         metric=metric,  # type: ignore[arg-type]
@@ -309,6 +325,7 @@ def check_budgets(
                     )
                     alerts.append(alert)
                     budget._alert_count += 1
+                    budget._last_alert_at[alert_key] = now
 
                     # Log warning (dedupe per budget+metric combo, bounded LRU)
                     warn_key = f"{budget.name}:{metric}"

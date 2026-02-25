@@ -202,10 +202,12 @@ def configure_otlp_export(
                     headers[k.strip()] = v.strip()
 
         # Create resource
+        from vetch import __version__
+
         resource = Resource.create(
             {
                 "service.name": service_name,
-                "service.version": "0.1.5",
+                "service.version": __version__,
                 "vetch.sdk": True,
             }
         )
@@ -215,7 +217,7 @@ def configure_otlp_export(
         span_exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers or None)
         tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
         trace.set_tracer_provider(tracer_provider)
-        _tracer = trace.get_tracer("vetch", "0.1.5")
+        _tracer = trace.get_tracer("vetch", __version__)
 
         # Configure metrics
         metric_exporter = OTLPMetricExporter(endpoint=endpoint, headers=headers or None)
@@ -224,7 +226,7 @@ def configure_otlp_export(
         )
         meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
         metrics.set_meter_provider(meter_provider)
-        _meter = metrics.get_meter("vetch", "0.1.5")
+        _meter = metrics.get_meter("vetch", __version__)
 
         # Create metric instruments
         _energy_histogram = _meter.create_histogram(

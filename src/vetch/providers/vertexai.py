@@ -459,6 +459,9 @@ def detect_vertexai_model() -> Any | None:
 # Track if module is instrumented
 _module_instrumented = False
 
+# Store original __init__ for uninstrumentation
+_original_generative_model_init: Any | None = None
+
 
 def instrument_vertexai_module() -> bool:
     """Instrument the Vertex AI module to auto-track all model instances.
@@ -469,7 +472,7 @@ def instrument_vertexai_module() -> bool:
     Returns:
         True if instrumentation succeeded, False otherwise.
     """
-    global _module_instrumented
+    global _module_instrumented, _original_generative_model_init
     import sys
 
     if _module_instrumented:
@@ -482,11 +485,11 @@ def instrument_vertexai_module() -> bool:
     try:
         from vertexai.generative_models import GenerativeModel  # type: ignore[import-not-found]
 
-        # Store original __init__
-        original_init = GenerativeModel.__init__
+        # Store original __init__ for later restoration
+        _original_generative_model_init = GenerativeModel.__init__
 
         def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
-            original_init(self, *args, **kwargs)
+            _original_generative_model_init(self, *args, **kwargs)
             # Auto-patch this model instance
             with contextlib.suppress(Exception):
                 patch_vertexai_model(self)
@@ -499,4 +502,51 @@ def instrument_vertexai_module() -> bool:
 
     except Exception as e:
         logger.debug(f"Failed to instrument Vertex AI module: {e}")
+        return False
+
+
+def uninstrument_vertexai_module() -> bool:
+    """Remove Vetch instrumentation from Vertex AI module.
+
+    Restores the original __init__ method and clears tracking state.
+
+    Returns:
+        True if uninstrumentation succeeded, False otherwise.
+    """
+    global _module_instrumented, _original_generative_model_init
+    import sys
+
+    if not _module_instrumented:
+        return True
+
+    # Check for Vertex AI modules
+    if not any(m in sys.modules for m in ["google.cloud.aiplatform", "vertexai"]):
+        _module_instrumented = False
+        return True
+
+    try:
+        from vertexai.generative_models import GenerativeModel
+
+        # Atomic: restore per-model methods first, then __init__
+        with _model_lock:
+            for model, originals in list(_model_originals.items()):
+                try:
+                    if originals.generate:
+                        model.generate_content = originals.generate
+                    if originals.generate_async:
+                        model.generate_content_async = originals.generate_async
+                except Exception:
+                    pass  # Model may have been garbage collected
+            _model_originals.clear()
+
+        if _original_generative_model_init is not None:
+            GenerativeModel.__init__ = _original_generative_model_init
+
+        _module_instrumented = False
+        _original_generative_model_init = None
+        logger.debug("Vertex AI module uninstrumented")
+        return True
+
+    except Exception as e:
+        logger.debug(f"Failed to uninstrument Vertex AI module: {e}")
         return False

@@ -74,9 +74,9 @@ class TestEnergyCalculation:
             1000, 500, "unknown-model"
         )
 
-        # Fallback uses 1.5 in, 4.5 out
-        # (1000 * 1.5 + 500 * 4.5) / 1000 = (1500 + 2250) / 1000 = 3.75 Wh
-        assert energy == 3.75
+        # Fallback uses 1.4 in, 4.2 out
+        # (1000 * 1.4 + 500 * 4.2) / 1000 = (1400 + 2100) / 1000 = 3.5 Wh
+        assert energy == 3.5
         assert tier == 3
         assert uncertainty_pct == 1000
         assert source == "fallback"

@@ -62,20 +62,101 @@ def _load_json_with_override(default_path: Path, override_name: str) -> dict[str
 
 
 def _load_registry() -> None:
-    """Load registry files into memory."""
+    """Load registry files into memory.
+
+    Checks in order:
+    1. VETCH_REGISTRY_PATH (offline/air-gapped mode)
+    2. Local .vetch/ overrides
+    3. Bundled defaults
+    4. Remote registry merge (if enabled)
+    """
     global _ENERGY, _PRICING, _ALIASES
+
+    # Check for offline mode
+    offline_path = os.environ.get("VETCH_REGISTRY_PATH")
+
     if _ENERGY is None:
-        _ENERGY = cast(
-            "dict[str, dict[str, Any]]", _load_json_with_override(_ENERGY_PATH, "energy.json")
-        )
+        if offline_path:
+            from vetch.registry.remote import load_offline_registry
+
+            offline_energy = load_offline_registry(offline_path, "energy.json")
+            if offline_energy is not None:
+                _ENERGY = cast("dict[str, dict[str, Any]]", offline_energy)
+
+        if _ENERGY is None:
+            _ENERGY = cast(
+                "dict[str, dict[str, Any]]",
+                _load_json_with_override(_ENERGY_PATH, "energy.json"),
+            )
+
+        # Merge with remote registry if enabled
+        _ENERGY = _merge_remote_energy(_ENERGY)
 
     if _PRICING is None:
-        _PRICING = cast(
-            "dict[str, dict[str, float]]", _load_json_with_override(_PRICING_PATH, "pricing.json")
-        )
+        if offline_path:
+            from vetch.registry.remote import load_offline_registry
+
+            offline_pricing = load_offline_registry(offline_path, "pricing.json")
+            if offline_pricing is not None:
+                _PRICING = cast("dict[str, dict[str, float]]", offline_pricing)
+
+        if _PRICING is None:
+            _PRICING = cast(
+                "dict[str, dict[str, float]]",
+                _load_json_with_override(_PRICING_PATH, "pricing.json"),
+            )
+
+        # Merge with remote registry if enabled
+        _PRICING = _merge_remote_pricing(_PRICING)
 
     if _ALIASES is None:
-        _ALIASES = cast("dict[str, str]", _load_json_with_override(_ALIASES_PATH, "aliases.json"))
+        if offline_path:
+            from vetch.registry.remote import load_offline_registry
+
+            offline_aliases = load_offline_registry(offline_path, "aliases.json")
+            if offline_aliases is not None:
+                _ALIASES = cast("dict[str, str]", offline_aliases)
+
+        if _ALIASES is None:
+            _ALIASES = cast(
+                "dict[str, str]", _load_json_with_override(_ALIASES_PATH, "aliases.json")
+            )
+
+
+def _merge_remote_energy(bundled: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Merge bundled energy data with remote if available.
+
+    Skips merge if bundled data is empty (indicates load failure).
+    """
+    if not bundled:
+        return bundled
+    try:
+        from vetch.registry.remote import get_remote_fetcher
+
+        fetcher = get_remote_fetcher()
+        if fetcher is not None:
+            return cast("dict[str, dict[str, Any]]", fetcher.get_energy(bundled))
+    except Exception as e:
+        logger.debug(f"Failed to merge remote energy registry: {e}")
+    return bundled
+
+
+def _merge_remote_pricing(bundled: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    """Merge bundled pricing data with remote if available.
+
+    Skips merge if bundled data is empty (indicates load failure).
+    """
+    if not bundled:
+        return bundled
+    try:
+        from vetch.registry.remote import get_remote_fetcher
+
+        fetcher = get_remote_fetcher()
+        if fetcher is not None:
+            return cast("dict[str, dict[str, float]]", fetcher.get_pricing(bundled))
+    except Exception as e:
+        logger.debug(f"Failed to merge remote pricing registry: {e}")
+    return bundled
 
 
 def _reset_registries() -> None:
@@ -127,8 +208,8 @@ def resolve_model(model: str) -> tuple[str, bool]:
 def get_conservative_energy() -> dict[str, Any]:
     """Get conservative fallback values for unknown models."""
     return {
-        "wh_per_1k_input": 1.5,  # Slightly higher than Claude 3 Opus
-        "wh_per_1k_output": 4.5,
+        "wh_per_1k_input": 1.4,  # Slightly higher than Claude 3 Opus
+        "wh_per_1k_output": 4.2,
         "tier": 3,
         "basis": "Conservative fallback for unknown model",
     }
@@ -313,16 +394,18 @@ def calculate_energy(
 
 
 # Default PUE (Power Usage Effectiveness) for data centers
-# Industry average is ~1.58, hyperscalers achieve ~1.1
-# Override with VETCH_DEFAULT_PUE environment variable
-DEFAULT_PUE = 1.1
+# Hyperscalers: Google 1.09, AWS 1.14, Azure 1.12
+# Industry average: ~1.58 (Uptime Institute 2023)
+# We use 1.2 as a reasonable default for cloud inference
+# (Jiang et al. 2025, arXiv:2505.09598). Override with VETCH_DEFAULT_PUE.
+DEFAULT_PUE = 1.2
 
 
 def get_default_pue() -> float:
     """Get the default PUE value, respecting environment override.
 
     Returns:
-        PUE value from VETCH_DEFAULT_PUE env var, or 1.1 if not set/invalid.
+        PUE value from VETCH_DEFAULT_PUE env var, or 1.2 if not set/invalid.
     """
     env_pue = os.environ.get("VETCH_DEFAULT_PUE")
     if env_pue is None:
@@ -355,7 +438,7 @@ def calculate_carbon(
     Args:
         energy_wh: Energy in Watt-hours.
         grid_intensity_gco2e_kwh: Carbon intensity in gCO2e/kWh.
-        pue: Power Usage Effectiveness. Defaults to VETCH_DEFAULT_PUE env var or 1.1.
+        pue: Power Usage Effectiveness. Defaults to VETCH_DEFAULT_PUE env var or 1.2.
 
     Returns:
         Carbon emissions in grams CO2e.
@@ -380,13 +463,20 @@ def calculate_cost(
     input_tokens: int,
     output_tokens: int,
     model: str,
+    cache_read_tokens: int | None = None,
+    cache_creation_tokens: int | None = None,
 ) -> tuple[float, float, float, str]:
     """Calculate estimated cost in USD.
+
+    Supports cache-aware pricing: cache_read tokens are discounted
+    (typically 90% cheaper), cache_creation tokens may have extra cost.
 
     Args:
         input_tokens: Number of input tokens.
         output_tokens: Number of output tokens.
         model: Model identifier.
+        cache_read_tokens: Tokens read from prompt cache (cost savings).
+        cache_creation_tokens: Tokens written to prompt cache (extra cost).
 
     Returns:
         Tuple of (total_cost, input_cost, output_cost, billing_tier).
@@ -403,6 +493,27 @@ def calculate_cost(
         # No pricing for unknown models
         return 0.0, 0.0, 0.0, "none"
 
-    cost_in = (input_tokens * rate_in) / 1000
+    # Cache-aware cost calculation
+    # Cache read tokens are charged at a discount (default: 10% of input price)
+    # Cache creation tokens are charged at a premium (default: 125% of input price)
+    cache_read_discount = entry.get("cache_read_discount", 0.1)
+    cache_creation_premium = entry.get("cache_creation_premium", 1.25)
+
+    # Base input tokens (excluding cached tokens)
+    effective_input = input_tokens
+    cache_cost_adjustment = 0.0
+
+    if cache_read_tokens and cache_read_tokens > 0:
+        # Subtract cache read tokens from base input, add discounted cost
+        effective_input = max(0, input_tokens - cache_read_tokens)
+        cache_cost_adjustment += (cache_read_tokens * rate_in * cache_read_discount) / 1000
+
+    if cache_creation_tokens and cache_creation_tokens > 0:
+        # Cache creation tokens cost extra on top of normal input cost
+        cache_cost_adjustment += (
+            cache_creation_tokens * rate_in * cache_creation_premium
+        ) / 1000
+
+    cost_in = (effective_input * rate_in) / 1000 + cache_cost_adjustment
     cost_out = (output_tokens * rate_out) / 1000
     return cost_in + cost_out, cost_in, cost_out, "list"

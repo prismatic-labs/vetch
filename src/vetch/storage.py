@@ -56,11 +56,18 @@ def _init_db() -> None:
     """Initialize the SQLite database schema."""
     if not DB_PATH.parent.exists():
         try:
-            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         except OSError:
             return  # Fail safe if readonly fs
 
     conn = sqlite3.connect(DB_PATH)
+
+    # Ensure restrictive permissions on the database file
+    try:
+        if DB_PATH.exists():
+            DB_PATH.chmod(0o600)
+    except OSError:
+        pass  # Best effort
     try:
         cursor = conn.cursor()
 

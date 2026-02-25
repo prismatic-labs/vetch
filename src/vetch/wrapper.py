@@ -14,8 +14,8 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -183,6 +183,16 @@ class VetchContext:
     def tracking_disabled(self) -> bool:
         """Check if tracking was disabled due to errors."""
         return self._tracking_disabled
+
+    def _get_session_id(self) -> str | None:
+        """Get the session ID if this event is part of a session."""
+        try:
+            from vetch.session import get_active_session
+
+            session = get_active_session()
+            return session.session_id if session else None
+        except Exception:
+            return None
 
     def __enter__(self) -> VetchContext:
         """Enter context and start tracking.
@@ -395,6 +405,15 @@ class VetchContext:
         )
         from vetch.sensing.grid import get_carbon_intensity
 
+        # Look up active session once (avoids redundant ContextVar lookups)
+        active_session = None
+        try:
+            from vetch.session import get_active_session
+
+            active_session = get_active_session()
+        except Exception:
+            pass
+
         # Get captured data from tracking context
         captured = None
         if self._tracking_ctx is not None:
@@ -418,8 +437,10 @@ class VetchContext:
             usage = captured.usage
             is_stream = captured.is_stream
             accumulated_chars = captured.accumulated_chars
-            cache_read_tokens = captured.cache_read_tokens
-            cache_creation_tokens = captured.cache_creation_tokens
+            raw_crt = captured.cache_read_tokens
+            cache_read_tokens = raw_crt if isinstance(raw_crt, int) else None
+            raw_cct = captured.cache_creation_tokens
+            cache_creation_tokens = raw_cct if isinstance(raw_cct, int) else None
 
             # Override error info from captured call if present
             if captured.error:
@@ -503,9 +524,11 @@ class VetchContext:
                 if energy_wh is not None:
                     carbon_g = calculate_carbon(energy_wh, grid_val)
 
-                # Cost
+                # Cost (pass cache tokens for cache-aware pricing)
                 cost_usd, cost_in_usd, cost_out_usd, billing_tier = calculate_cost(
-                    in_tokens, out_tokens, model
+                    in_tokens, out_tokens, model,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_creation_tokens=cache_creation_tokens,
                 )
 
                 # Apply price multiplier (e.g., enterprise discount)
@@ -564,6 +587,7 @@ class VetchContext:
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
             cache_hit=bool(isinstance(cache_read_tokens, int) and cache_read_tokens > 0),
+            session_id=active_session.session_id if active_session else None,
         )
 
         # Budget checking (warn-only, never blocks)
@@ -635,6 +659,11 @@ class VetchContext:
         except Exception:
             pass
 
+        # Register with active session (if any)
+        if active_session is not None:
+            with contextlib.suppress(Exception):
+                active_session.register_event(self._event)
+
 
 @contextmanager
 def wrap(
@@ -671,4 +700,46 @@ def wrap(
         emit=emit,
     )
     with ctx:
+        yield ctx
+
+
+@asynccontextmanager
+async def awrap(
+    region: str | None = None,
+    tags: dict[str, str] | None = None,
+    energy_override: dict[str, object] | None = None,
+    price_multiplier: float = 1.0,
+    emit: bool = True,
+    _disabled: bool = False,
+) -> AsyncGenerator[VetchContext, None]:
+    """Async context manager for tracking LLM inference.
+
+    First-class async support for async/await patterns. Equivalent to
+    wrap() but designed specifically for async code.
+
+    Args:
+        region: Grid region for carbon calculation.
+        tags: Key-value pairs for cost attribution.
+        energy_override: User-provided energy values.
+        price_multiplier: Factor to adjust list pricing (e.g., 0.8 for 20% discount).
+        emit: If True (default), emit JSON to configured output.
+
+    Example::
+
+        async with awrap(region="us-east-1") as ctx:
+            response = await client.chat.completions.create(...)
+        print(f"Energy: {ctx.event['estimated_energy_wh']} Wh")
+
+    Note:
+        For sync code, use wrap() instead.
+    """
+    ctx = VetchContext(
+        region=region,
+        tags=tags,
+        energy_override=energy_override,
+        price_multiplier=price_multiplier,
+        emit=emit,
+        _disabled=_disabled,
+    )
+    async with ctx:
         yield ctx

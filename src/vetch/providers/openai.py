@@ -517,6 +517,10 @@ def detect_openai_client() -> Any | None:
 # Track if module is instrumented
 _module_instrumented = False
 
+# Store original __init__ methods for uninstrumentation
+_original_openai_init: Any | None = None
+_original_async_openai_init: Any | None = None
+
 
 def instrument_openai_module() -> bool:
     """Instrument the OpenAI module to auto-track all client instances.
@@ -527,7 +531,7 @@ def instrument_openai_module() -> bool:
     Returns:
         True if instrumentation succeeded, False otherwise.
     """
-    global _module_instrumented
+    global _module_instrumented, _original_openai_init, _original_async_openai_init
     import sys
 
     if _module_instrumented:
@@ -539,11 +543,11 @@ def instrument_openai_module() -> bool:
     try:
         import openai
 
-        # Store original __init__
-        original_init = openai.OpenAI.__init__
+        # Store original __init__ for later restoration
+        _original_openai_init = openai.OpenAI.__init__
 
         def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
-            original_init(self, *args, **kwargs)
+            _original_openai_init(self, *args, **kwargs)
             # Auto-patch this client instance
             with contextlib.suppress(Exception):
                 patch_openai_client(self)
@@ -552,10 +556,10 @@ def instrument_openai_module() -> bool:
 
         # Also patch AsyncOpenAI if available
         if hasattr(openai, "AsyncOpenAI"):
-            original_async_init = openai.AsyncOpenAI.__init__
+            _original_async_openai_init = openai.AsyncOpenAI.__init__
 
             def patched_async_init(self: Any, *args: Any, **kwargs: Any) -> None:
-                original_async_init(self, *args, **kwargs)
+                _original_async_openai_init(self, *args, **kwargs)
                 with contextlib.suppress(Exception):
                     patch_openai_client(self)
 
@@ -567,4 +571,54 @@ def instrument_openai_module() -> bool:
 
     except Exception as e:
         logger.debug(f"Failed to instrument OpenAI module: {e}")
+        return False
+
+
+def uninstrument_openai_module() -> bool:
+    """Remove Vetch instrumentation from OpenAI module.
+
+    Restores the original __init__ methods and clears tracking state.
+
+    Returns:
+        True if uninstrumentation succeeded, False otherwise.
+    """
+    global _module_instrumented, _original_openai_init, _original_async_openai_init
+    import sys
+
+    if not _module_instrumented:
+        return True
+
+    if "openai" not in sys.modules:
+        _module_instrumented = False
+        return True
+
+    try:
+        import openai
+
+        # Atomic: restore all methods under lock, then clear state.
+        # Order: restore per-client methods first (so in-flight calls
+        # finish against originals), then restore __init__ (so new
+        # clients stop getting patched), then clear registry.
+        with _client_lock:
+            for completions, original_create in list(_client_originals.items()):
+                with contextlib.suppress(Exception):
+                    completions.create = original_create
+            _client_originals.clear()
+
+        # Restore original __init__ (after per-client cleanup)
+        if _original_openai_init is not None:
+            openai.OpenAI.__init__ = _original_openai_init
+
+        # Restore AsyncOpenAI if we patched it
+        if _original_async_openai_init is not None and hasattr(openai, "AsyncOpenAI"):
+            openai.AsyncOpenAI.__init__ = _original_async_openai_init
+
+        _module_instrumented = False
+        _original_openai_init = None
+        _original_async_openai_init = None
+        logger.debug("OpenAI module uninstrumented")
+        return True
+
+    except Exception as e:
+        logger.debug(f"Failed to uninstrument OpenAI module: {e}")
         return False

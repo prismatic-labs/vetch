@@ -165,7 +165,7 @@ Example: feat(vetch): add OpenAI provider wrapper
 |----------|---------|---------|
 | `VETCH_REGION` | Grid region for carbon calculation | (inferred or unknown) |
 | `VETCH_OUTPUT` | Output target: `stderr`, `none`, or file path | `stderr` |
-| `VETCH_DEFAULT_PUE` | Power Usage Effectiveness multiplier | `1.1` |
+| `VETCH_DEFAULT_PUE` | Power Usage Effectiveness multiplier | `1.2` |
 | `VETCH_CACHE_MODE` | Set to `memory-only` for serverless | (file-based) |
 | `ELECTRICITY_MAPS_API_KEY` | API key for live grid data | (optional) |
 

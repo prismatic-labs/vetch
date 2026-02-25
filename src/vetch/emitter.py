@@ -66,9 +66,22 @@ def _configure_logging() -> None:
             handler.setFormatter(JsonFormatter())
             logger.addHandler(handler)
     else:
-        # Assume file path
+        # Assume file path - validate against path traversal
+        from pathlib import Path
+
+        target_path = Path(target).resolve()
+        if ".." in Path(target).parts:
+            sys.stderr.write(
+                f"Vetch WARNING: VETCH_OUTPUT path '{target}' contains "
+                "traversal sequences. Falling back to stderr.\n"
+            )
+            handler = logging.StreamHandler(sys.stderr)
+            handler.setFormatter(JsonFormatter())
+            logger.addHandler(handler)
+            return
+
         try:
-            handler = logging.FileHandler(target, encoding="utf-8")
+            handler = logging.FileHandler(str(target_path), encoding="utf-8")
             handler.setFormatter(JsonFormatter())
             logger.addHandler(handler)
         except Exception:

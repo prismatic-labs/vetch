@@ -439,3 +439,114 @@ class TestRequireTags:
             assert "feature_id" in required
         finally:
             _reset_config()
+
+
+class TestUninstrument:
+    """Tests for uninstrument() function."""
+
+    def test_uninstrument_returns_true_when_not_instrumented(self) -> None:
+        """uninstrument() returns True when nothing was instrumented."""
+        import vetch
+
+        vetch._instrumented = False
+        result = vetch.uninstrument()
+        assert result is True
+
+    def test_uninstrument_exported(self) -> None:
+        """uninstrument is in __all__ exports."""
+        import vetch
+
+        assert "uninstrument" in vetch.__all__
+
+    def test_uninstrument_resets_instrumented_flag(self) -> None:
+        """uninstrument() resets _instrumented flag."""
+        import vetch
+
+        vetch._instrumented = True
+        vetch.uninstrument()
+        assert vetch._instrumented is False
+
+
+class TestUninstrumentOpenAIModule:
+    """Tests for uninstrument_openai_module()."""
+
+    def test_returns_true_when_not_instrumented(self) -> None:
+        """Returns True if module wasn't instrumented."""
+        import vetch.providers.openai as openai_provider
+
+        openai_provider._module_instrumented = False
+        result = openai_provider.uninstrument_openai_module()
+        assert result is True
+
+    def test_returns_true_when_openai_not_in_modules(self) -> None:
+        """Returns True if openai not in sys.modules."""
+        import vetch.providers.openai as openai_provider
+
+        # Temporarily remove openai from sys.modules if present
+        openai_module = sys.modules.pop("openai", None)
+        openai_provider._module_instrumented = True
+
+        try:
+            result = openai_provider.uninstrument_openai_module()
+            assert result is True
+            assert openai_provider._module_instrumented is False
+        finally:
+            if openai_module:
+                sys.modules["openai"] = openai_module
+
+
+class TestUninstrumentAnthropicModule:
+    """Tests for uninstrument_anthropic_module()."""
+
+    def test_returns_true_when_not_instrumented(self) -> None:
+        """Returns True if module wasn't instrumented."""
+        import vetch.providers.anthropic as anthropic_provider
+
+        anthropic_provider._module_instrumented = False
+        result = anthropic_provider.uninstrument_anthropic_module()
+        assert result is True
+
+
+class TestUninstrumentVertexAIModule:
+    """Tests for uninstrument_vertexai_module()."""
+
+    def test_returns_true_when_not_instrumented(self) -> None:
+        """Returns True if module wasn't instrumented."""
+        import vetch.providers.vertexai as vertexai_provider
+
+        vertexai_provider._module_instrumented = False
+        result = vertexai_provider.uninstrument_vertexai_module()
+        assert result is True
+
+
+class TestAwrap:
+    """Tests for awrap() async context manager."""
+
+    def test_awrap_exported(self) -> None:
+        """awrap is in __all__ exports."""
+        import vetch
+
+        assert "awrap" in vetch.__all__
+
+    @pytest.mark.asyncio
+    async def test_awrap_basic(self) -> None:
+        """awrap() returns an async context manager."""
+        import vetch
+
+        async with vetch.awrap(region="us-east-1") as ctx:
+            # Context should be created
+            assert ctx is not None
+
+    @pytest.mark.asyncio
+    async def test_awrap_disabled(self) -> None:
+        """awrap() returns disabled context when VETCH_DISABLED=true."""
+        import vetch
+
+        original = vetch._DISABLED
+        vetch._DISABLED = True
+
+        try:
+            async with vetch.awrap(region="us-east-1") as ctx:
+                assert ctx._globally_disabled is True
+        finally:
+            vetch._DISABLED = original

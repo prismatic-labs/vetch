@@ -401,6 +401,10 @@ def detect_anthropic_client() -> Any | None:
 # Track if module is instrumented
 _module_instrumented = False
 
+# Store original __init__ methods for uninstrumentation
+_original_anthropic_init: Any | None = None
+_original_async_anthropic_init: Any | None = None
+
 
 def instrument_anthropic_module() -> bool:
     """Instrument the Anthropic module to auto-track all client instances.
@@ -411,7 +415,7 @@ def instrument_anthropic_module() -> bool:
     Returns:
         True if instrumentation succeeded, False otherwise.
     """
-    global _module_instrumented
+    global _module_instrumented, _original_anthropic_init, _original_async_anthropic_init
     import sys
 
     if _module_instrumented:
@@ -423,11 +427,11 @@ def instrument_anthropic_module() -> bool:
     try:
         import anthropic  # type: ignore[import-not-found]
 
-        # Store original __init__
-        original_init = anthropic.Anthropic.__init__
+        # Store original __init__ for later restoration
+        _original_anthropic_init = anthropic.Anthropic.__init__
 
         def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
-            original_init(self, *args, **kwargs)
+            _original_anthropic_init(self, *args, **kwargs)
             # Auto-patch this client instance
             with contextlib.suppress(Exception):
                 patch_anthropic_client(self)
@@ -436,10 +440,10 @@ def instrument_anthropic_module() -> bool:
 
         # Also patch AsyncAnthropic if available
         if hasattr(anthropic, "AsyncAnthropic"):
-            original_async_init = anthropic.AsyncAnthropic.__init__
+            _original_async_anthropic_init = anthropic.AsyncAnthropic.__init__
 
             def patched_async_init(self: Any, *args: Any, **kwargs: Any) -> None:
-                original_async_init(self, *args, **kwargs)
+                _original_async_anthropic_init(self, *args, **kwargs)
                 with contextlib.suppress(Exception):
                     patch_anthropic_client(self)
 
@@ -451,4 +455,49 @@ def instrument_anthropic_module() -> bool:
 
     except Exception as e:
         logger.debug(f"Failed to instrument Anthropic module: {e}")
+        return False
+
+
+def uninstrument_anthropic_module() -> bool:
+    """Remove Vetch instrumentation from Anthropic module.
+
+    Restores the original __init__ methods and clears tracking state.
+
+    Returns:
+        True if uninstrumentation succeeded, False otherwise.
+    """
+    global _module_instrumented, _original_anthropic_init, _original_async_anthropic_init
+    import sys
+
+    if not _module_instrumented:
+        return True
+
+    if "anthropic" not in sys.modules:
+        _module_instrumented = False
+        return True
+
+    try:
+        import anthropic
+
+        # Atomic: restore per-client methods first, then __init__
+        with _client_lock:
+            for messages, original_create in list(_client_originals.items()):
+                with contextlib.suppress(Exception):
+                    messages.create = original_create
+            _client_originals.clear()
+
+        if _original_anthropic_init is not None:
+            anthropic.Anthropic.__init__ = _original_anthropic_init
+
+        if _original_async_anthropic_init is not None and hasattr(anthropic, "AsyncAnthropic"):
+            anthropic.AsyncAnthropic.__init__ = _original_async_anthropic_init
+
+        _module_instrumented = False
+        _original_anthropic_init = None
+        _original_async_anthropic_init = None
+        logger.debug("Anthropic module uninstrumented")
+        return True
+
+    except Exception as e:
+        logger.debug(f"Failed to uninstrument Anthropic module: {e}")
         return False

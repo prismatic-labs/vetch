@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-02-25
+
+### Added
+- **Session Aggregation**: `vetch.Session()` for grouping multi-call agentic workflows
+  - Hierarchical sessions with parent/child nesting
+  - Distributed propagation via HTTP headers (`X-Vetch-Session-Id`)
+  - Thread-safe metric accumulation (energy, cost, carbon, tokens)
+  - Memory safety: `max_calls` limit (default 10,000) prevents OOM in runaway loops
+  - Metadata set caps (100 unique models/providers tracked)
+  - Cache metrics: `total_cache_read_tokens`, `total_cache_creation_tokens`
+  - `session_id` field in inference events links calls to sessions
+- **Azure OpenAI Provider**: Auto-detected via `vetch.instrument()`
+  - Region inference from Azure endpoint URLs
+  - Full sync/async/streaming support
+- **Dynamic Registry**: Remote registry updates from GitHub without SDK upgrade
+  - Local `.vetch/` overrides for custom energy/pricing values
+  - Offline mode via `VETCH_REGISTRY_PATH` for air-gapped environments
+  - `vetch registry freeze` CLI command for CI/CD
+- **`vetch status` CLI**: Check configuration, environment, and provider detection
+- **`vetch dashboard` CLI**: Export pre-built Grafana dashboard template
+- **Cache-Aware Pricing**: Cost calculation now applies cache read discounts and creation premiums
+- **Alert Cooldown**: `alert_cooldown_seconds` parameter on `set_budget()` prevents alert flooding
+- **Price Multiplier**: `price_multiplier` parameter on `wrap()` and `awrap()` for discount pricing
+- **Quiet Mode**: `emit=False` parameter on `wrap()` and `awrap()` (metrics available in `ctx.event`)
+- **Python 3.13**: Added to CI test matrix
+- **Bandit Security Scanning**: Added to CI pipeline
+
+### Changed
+- **PUE default changed from 1.1 to 1.2** (aligned with cloud provider averages: Google 1.09, AWS 1.14, Azure 1.12)
+- **Energy registry values no longer include PUE** — PUE is applied once in `calculate_carbon()` only. Previous versions double-counted PUE (baked into registry via 1.3x multiplier AND applied in carbon calculation).
+- Registry system multiplier reduced from 1.3x to 1.2x (hardware overhead only)
+- `vetch.wrap()` and `vetch.awrap()` now expose `price_multiplier` and `emit` parameters
+- OTLP service version now uses `__version__` instead of hardcoded string
+
+### Fixed
+- **Cache-aware pricing was not connected**: `calculate_cost()` now receives cache token counts from the wrapper (was silently ignoring them)
+- **Atomic uninstrumentation**: Provider teardown now restores per-client methods under lock before restoring `__init__` (prevents race condition)
+- URL parameter injection: region parameter in Electricity Maps API calls now URL-encoded
+- Path traversal prevention in `VETCH_OUTPUT` file paths
+- Restrictive file permissions on SQLite database (`0o600`) and directory (`0o700`)
+- MagicMock guard on cache token values from captured calls
+
+### Removed
+- `pue_overrides.json` (was never loaded by any code — dead since v0.1.3)
+
 ## [0.1.5] - 2026-02-23
 
 ### Added
@@ -72,7 +117,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `energy_uncertainty_pct` field in events (20/50/100/1000 for tiers 0-3)
 - MoE active parameter accounting in energy registry (fixes ~300% overestimation)
 - Architecture metadata (`architecture`, `total_params_b`, `active_params_b`, `quantization`)
-- Provider-specific PUE table (`registry/pue_overrides.json`)
+- Provider-specific PUE table (removed in v0.1.6 — was never wired up)
 - Expanded model aliases for Claude 3.5, Gemini 2.0, Llama 3.1
 
 ### Changed

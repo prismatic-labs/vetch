@@ -1,7 +1,7 @@
 {
   "gpt-4": {
-    "wh_per_1k_input": 0.27,
-    "wh_per_1k_output": 0.8,
+    "wh_per_1k_input": 0.25,
+    "wh_per_1k_output": 0.74,
     "tier": 3,
     "architecture": "moe",
     "total_params_b": 1800,
@@ -10,8 +10,8 @@
     "basis": "MoE architecture (~1.8T total, ~220B active per token). Energy scaled for active parameters only."
   },
   "gpt-4-turbo": {
-    "wh_per_1k_input": 0.2,
-    "wh_per_1k_output": 0.6,
+    "wh_per_1k_input": 0.18,
+    "wh_per_1k_output": 0.55,
     "tier": 3,
     "architecture": "moe",
     "total_params_b": 1800,
@@ -20,8 +20,8 @@
     "basis": "Estimated ~25% efficiency gain over GPT-4 base, MoE active params."
   },
   "gpt-4o": {
-    "wh_per_1k_input": 0.1,
-    "wh_per_1k_output": 0.27,
+    "wh_per_1k_input": 0.09,
+    "wh_per_1k_output": 0.25,
     "tier": 3,
     "architecture": "moe",
     "total_params_b": 200,
@@ -30,8 +30,8 @@
     "basis": "Smaller MoE (~200B total, ~50B active). Epoch AI benchmark scaled for active params."
   },
   "gpt-3.5-turbo": {
-    "wh_per_1k_input": 0.05,
-    "wh_per_1k_output": 0.15,
+    "wh_per_1k_input": 0.046,
+    "wh_per_1k_output": 0.14,
     "tier": 3,
     "architecture": "dense",
     "total_params_b": 20,
@@ -40,8 +40,8 @@
     "basis": "Dense architecture (~20B), optimized batching. Active = total for dense models."
   },
   "claude-3-opus": {
-    "wh_per_1k_input": 0.35,
-    "wh_per_1k_output": 1.0,
+    "wh_per_1k_input": 0.32,
+    "wh_per_1k_output": 0.92,
     "tier": 3,
     "architecture": "dense",
     "total_params_b": 175,
@@ -50,8 +50,8 @@
     "basis": "Dense ~175B parameter model. Full parameter activation per token."
   },
   "claude-3-sonnet": {
-    "wh_per_1k_input": 0.15,
-    "wh_per_1k_output": 0.45,
+    "wh_per_1k_input": 0.14,
+    "wh_per_1k_output": 0.42,
     "tier": 3,
     "architecture": "dense",
     "total_params_b": 70,
@@ -60,8 +60,8 @@
     "basis": "Dense ~70B parameter model."
   },
   "claude-3-haiku": {
-    "wh_per_1k_input": 0.03,
-    "wh_per_1k_output": 0.09,
+    "wh_per_1k_input": 0.028,
+    "wh_per_1k_output": 0.083,
     "tier": 3,
     "architecture": "dense",
     "total_params_b": 20,
@@ -70,8 +70,8 @@
     "basis": "Dense ~20B parameter model, optimized for speed."
   },
   "claude-3.5-sonnet": {
-    "wh_per_1k_input": 0.12,
-    "wh_per_1k_output": 0.36,
+    "wh_per_1k_input": 0.11,
+    "wh_per_1k_output": 0.33,
     "tier": 3,
     "architecture": "dense",
     "total_params_b": 70,
@@ -80,8 +80,8 @@
     "basis": "Dense ~70B, improved efficiency over Claude 3 Sonnet."
   },
   "gemini-1.5-pro": {
-    "wh_per_1k_input": 0.23,
-    "wh_per_1k_output": 0.7,
+    "wh_per_1k_input": 0.21,
+    "wh_per_1k_output": 0.65,
     "tier": 3,
     "architecture": "moe",
     "total_params_b": 500,
@@ -90,8 +90,8 @@
     "basis": "MoE architecture (~500B total, ~100B active per token)."
   },
   "gemini-1.5-flash": {
-    "wh_per_1k_input": 0.06,
-    "wh_per_1k_output": 0.18,
+    "wh_per_1k_input": 0.055,
+    "wh_per_1k_output": 0.17,
     "tier": 3,
     "architecture": "moe",
     "total_params_b": 100,
@@ -100,8 +100,8 @@
     "basis": "Smaller MoE, optimized for throughput."
   },
   "gemini-2.0-flash": {
-    "wh_per_1k_input": 0.05,
-    "wh_per_1k_output": 0.15,
+    "wh_per_1k_input": 0.046,
+    "wh_per_1k_output": 0.14,
     "tier": 3,
     "architecture": "moe",
     "total_params_b": 100,
@@ -110,8 +110,8 @@
     "basis": "Next-gen distilled MoE architecture."
   },
   "llama-3-70b": {
-    "wh_per_1k_input": 0.13,
-    "wh_per_1k_output": 0.33,
+    "wh_per_1k_input": 0.12,
+    "wh_per_1k_output": 0.30,
     "tier": 3,
     "architecture": "dense",
     "total_params_b": 70,
@@ -120,8 +120,8 @@
     "basis": "Dense 70B. Meta published training energy reverse-scaled for inference."
   },
   "llama-3.1-405b": {
-    "wh_per_1k_input": 0.7,
-    "wh_per_1k_output": 2.1,
+    "wh_per_1k_input": 0.65,
+    "wh_per_1k_output": 1.94,
     "tier": 3,
     "architecture": "dense",
     "total_params_b": 405,
@@ -130,8 +130,8 @@
     "basis": "Dense 405B. Largest open-weight dense model."
   },
   "mixtral-8x7b": {
-    "wh_per_1k_input": 0.04,
-    "wh_per_1k_output": 0.12,
+    "wh_per_1k_input": 0.037,
+    "wh_per_1k_output": 0.11,
     "tier": 3,
     "architecture": "moe",
     "total_params_b": 47,
@@ -140,8 +140,8 @@
     "basis": "MoE with 8 experts, 2 active. 47B total, ~13B active per token."
   },
   "mixtral-8x22b": {
-    "wh_per_1k_input": 0.13,
-    "wh_per_1k_output": 0.39,
+    "wh_per_1k_input": 0.12,
+    "wh_per_1k_output": 0.36,
     "tier": 3,
     "architecture": "moe",
     "total_params_b": 141,

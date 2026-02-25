@@ -336,3 +336,72 @@ class TestGetCleanestRegion:
 
         assert region == "us-west-2"
         assert intensity > 0
+
+
+class TestAlertCooldown:
+    """Tests for alert cooldown throttling."""
+
+    def setup_method(self) -> None:
+        """Clear budgets before each test."""
+        clear_budgets()
+
+    def teardown_method(self) -> None:
+        """Clear budgets after each test."""
+        clear_budgets()
+
+    def test_cooldown_suppresses_repeated_alerts(self) -> None:
+        """Repeated alerts within cooldown window are suppressed."""
+        set_budget(
+            "test",
+            cost_usd=1.0,
+            warn_at_pct=50.0,
+            alert_cooldown_seconds=60.0,
+        )
+
+        # First check triggers alert
+        _, alerts1 = check_budgets(cost_usd=0.6, energy_wh=None, carbon_g=None)
+        assert len(alerts1) == 1
+
+        # Second check within cooldown is suppressed
+        _, alerts2 = check_budgets(cost_usd=0.1, energy_wh=None, carbon_g=None)
+        assert len(alerts2) == 0
+
+    def test_zero_cooldown_allows_all_alerts(self) -> None:
+        """Zero cooldown allows every alert to fire."""
+        set_budget(
+            "test",
+            cost_usd=1.0,
+            warn_at_pct=50.0,
+            alert_cooldown_seconds=0.0,
+            window="session",  # Accumulates across calls
+        )
+
+        _, alerts1 = check_budgets(cost_usd=0.6, energy_wh=None, carbon_g=None)
+        assert len(alerts1) == 1
+
+        # Session window: 0.6 + 0.1 = 0.7 = 70% > 50% warn_at_pct
+        _, alerts2 = check_budgets(cost_usd=0.1, energy_wh=None, carbon_g=None)
+        assert len(alerts2) == 1
+
+    def test_cooldown_per_metric(self) -> None:
+        """Cooldown is tracked per budget+metric pair."""
+        set_budget(
+            "test",
+            cost_usd=1.0,
+            energy_wh=1.0,
+            warn_at_pct=50.0,
+            alert_cooldown_seconds=60.0,
+        )
+
+        # First check: both metrics fire
+        _, alerts1 = check_budgets(cost_usd=0.6, energy_wh=0.6, carbon_g=None)
+        assert len(alerts1) == 2
+
+        # Second check: both suppressed
+        _, alerts2 = check_budgets(cost_usd=0.1, energy_wh=0.1, carbon_g=None)
+        assert len(alerts2) == 0
+
+    def test_default_cooldown_is_60_seconds(self) -> None:
+        """Default alert_cooldown_seconds is 60."""
+        budget = set_budget("test", cost_usd=1.0)
+        assert budget.alert_cooldown_seconds == 60.0

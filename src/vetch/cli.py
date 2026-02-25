@@ -327,7 +327,7 @@ ENVIRONMENT VARIABLES
 =====================
 VETCH_REGION          - Grid region (e.g., us-east-1, eu-west-2)
 VETCH_OUTPUT          - Output target: none, stderr, or file path
-VETCH_DEFAULT_PUE     - Power Usage Effectiveness (default: 1.1)
+VETCH_DEFAULT_PUE     - Power Usage Effectiveness (default: 1.2)
 ELECTRICITY_MAPS_API_KEY - For real-time grid carbon data
 
 DOCUMENTATION
@@ -528,7 +528,7 @@ def config_cmd(args: argparse.Namespace) -> None:
         if not config:
             print("No configuration set.")
             print("\nAvailable settings:")
-            print("  pue      - Power Usage Effectiveness (default: 1.1)")
+            print("  pue      - Power Usage Effectiveness (default: 1.2)")
             print("  region   - Default grid region (e.g., us-east-1)")
             print("  provider - Default local inference provider (e.g., ollama)")
             print()
@@ -548,7 +548,7 @@ def config_cmd(args: argparse.Namespace) -> None:
             else:
                 print(f"  {key}: {value}")
 
-        print(f"\nTo apply PUE to calculations, set VETCH_DEFAULT_PUE={config.get('pue', 1.1)}")
+        print(f"\nTo apply PUE to calculations, set VETCH_DEFAULT_PUE={config.get('pue', 1.2)}")
         return
 
     # Set values
@@ -724,6 +724,197 @@ def report(args: argparse.Namespace) -> None:
             print()
 
 
+def status(args: argparse.Namespace) -> None:
+    """Show Vetch status including registry, connectivity, and providers."""
+    print(f"Vetch v{__version__}\n")
+
+    # 1. Registry status
+    print("Registry:")
+    from vetch.calculation import _ENERGY_PATH
+
+    bundled_mtime = _ENERGY_PATH.stat().st_mtime if _ENERGY_PATH.exists() else 0
+    from datetime import datetime
+
+    if bundled_mtime:
+        bundled_date = datetime.fromtimestamp(bundled_mtime).strftime("%Y-%m-%d")
+    else:
+        bundled_date = "unknown"
+    print(f"  Bundled version: {bundled_date}")
+
+    # Check remote registry
+    remote_status = "disabled"
+    remote_version = "n/a"
+    try:
+        from vetch.registry.remote import get_remote_fetcher
+
+        fetcher = get_remote_fetcher()
+        if fetcher is not None:
+            if fetcher.has_remote_data:
+                import time
+
+                age_s = time.monotonic() - fetcher.last_fetch_time
+                if age_s < 3600:
+                    age_str = f"{int(age_s / 60)}m ago"
+                else:
+                    age_str = f"{int(age_s / 3600)}h ago"
+                remote_version = f"fetched {age_str}"
+                remote_status = "connected"
+            else:
+                remote_status = "no data yet"
+        else:
+            remote_status = "disabled"
+    except Exception:
+        remote_status = "error"
+
+    print(f"  Remote status:   {remote_status}")
+    if remote_version != "n/a":
+        print(f"  Remote data:     {remote_version}")
+
+    offline_path = os.environ.get("VETCH_REGISTRY_PATH")
+    print(f"  Offline mode:    {'true (' + offline_path + ')' if offline_path else 'false'}")
+    print()
+
+    # 2. Grid API
+    print("Grid API:")
+    api_key = os.environ.get("ELECTRICITY_MAPS_API_KEY")
+    if api_key:
+        print("  API key:         configured")
+        try:
+            from vetch.sensing.grid import get_carbon_intensity
+
+            grid = get_carbon_intensity("us-east-1")
+            print(f"  Status:          connected ({grid.signal_quality})")
+        except Exception as e:
+            print(f"  Status:          error ({e})")
+    else:
+        print("  API key:         not set")
+        print("  Status:          using fallback data")
+    print()
+
+    # 3. Providers
+    print("Providers:")
+    providers = {
+        "OpenAI": ("vetch.providers.openai", "_module_instrumented"),
+        "Azure OpenAI": ("vetch.providers.azure_openai", "_module_instrumented"),
+        "Anthropic": ("vetch.providers.anthropic", "_module_instrumented"),
+        "Vertex AI": ("vetch.providers.vertexai", "_module_instrumented"),
+    }
+
+    for name, (module_path, flag) in providers.items():
+        try:
+            import importlib
+
+            mod = importlib.import_module(module_path)
+            instrumented = getattr(mod, flag, False)
+            sdk_name = module_path.split(".")[-1]
+
+            # Check if SDK is installed
+            if sdk_name in ("openai", "azure_openai"):
+                sdk_installed = "openai" in sys.modules
+            elif sdk_name == "anthropic":
+                sdk_installed = "anthropic" in sys.modules
+            elif sdk_name == "vertexai":
+                sdk_installed = (
+                    "google.cloud.aiplatform" in sys.modules
+                    or "vertexai" in sys.modules
+                )
+            else:
+                sdk_installed = False
+
+            if instrumented:
+                print(f"  {name + ':':<17} instrumented")
+            elif sdk_installed:
+                print(f"  {name + ':':<17} detected (not instrumented)")
+            else:
+                print(f"  {name + ':':<17} not detected")
+        except ImportError:
+            print(f"  {name + ':':<17} not detected")
+    print()
+
+    # 4. Budgets
+    print("Budgets:")
+    try:
+        from vetch.budget import get_budget_status
+
+        budgets = get_budget_status()
+        if budgets:
+            for budget_name, budget_info in budgets.items():
+                used = budget_info.get("accumulated", 0)
+                limit = budget_info.get("limit", 0)
+                pct = (used / limit * 100) if limit > 0 else 0
+                print(f"  {budget_name}: {used:.2f} / {limit:.2f} ({pct:.1f}%)")
+        else:
+            print("  No budgets configured")
+    except Exception:
+        print("  No budgets configured")
+    print()
+
+    # 5. Config
+    print("Config:")
+    config_vars = {
+        "VETCH_REGION": os.environ.get("VETCH_REGION", "not set"),
+        "VETCH_DISABLED": os.environ.get("VETCH_DISABLED", "false"),
+        "VETCH_OUTPUT": os.environ.get("VETCH_OUTPUT", "stderr"),
+        "VETCH_DEFAULT_PUE": os.environ.get("VETCH_DEFAULT_PUE", "1.2"),
+        "VETCH_HOME": os.environ.get("VETCH_HOME", str(Path.home() / ".vetch")),
+    }
+    for var, val in config_vars.items():
+        print(f"  {var}: {val}")
+
+
+def dashboard(args: argparse.Namespace) -> None:
+    """Export dashboard templates."""
+    dashboard_dir = Path(__file__).parent / "dashboards"
+
+    if args.list:
+        print("Available dashboard templates:")
+        if dashboard_dir.exists():
+            for f in sorted(dashboard_dir.glob("*.json")):
+                print(f"  - {f.stem}")
+        else:
+            print("  No dashboard templates found.")
+        return
+
+    export_type = args.export
+    if export_type == "grafana":
+        template_path = dashboard_dir / "grafana_vetch.json"
+    else:
+        print(f"Unknown dashboard type: {export_type}")
+        print("Available types: grafana")
+        sys.exit(1)
+
+    if not template_path.exists():
+        print(f"Dashboard template not found: {template_path}")
+        sys.exit(1)
+
+    content = template_path.read_text()
+
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(content)
+        print(f"Dashboard exported to {output_path}")
+    else:
+        print(content)
+
+
+def registry_freeze(args: argparse.Namespace) -> None:
+    """Freeze remote registry to a local file."""
+    from vetch.registry.remote import freeze_registry
+
+    output = args.output or "vetch_registry.json"
+    print(f"Freezing registry to {output}...")
+
+    success = freeze_registry(output)
+    if success:
+        print(f"Registry frozen successfully to {output}")
+        print("Use VETCH_REGISTRY_PATH to load this in CI/CD:")
+        print(f"  export VETCH_REGISTRY_PATH={Path(output).parent}")
+    else:
+        print("Failed to freeze registry. Check network connectivity.")
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="vetch", description="Vetch CLI")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -834,6 +1025,37 @@ def main() -> None:
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
 
+    # Status
+    subparsers.add_parser("status", help="Show Vetch status and configuration")
+
+    # Dashboard
+    dash_parser = subparsers.add_parser(
+        "dashboard", help="Export dashboard templates (Grafana, etc.)"
+    )
+    dash_parser.add_argument(
+        "--export", default="grafana",
+        help="Dashboard type to export (default: grafana)"
+    )
+    dash_parser.add_argument(
+        "--output", "-o", help="Write to file instead of stdout"
+    )
+    dash_parser.add_argument(
+        "--list", action="store_true", help="List available dashboard templates"
+    )
+
+    # Registry
+    reg_parser = subparsers.add_parser(
+        "registry", help="Manage model registry"
+    )
+    reg_subparsers = reg_parser.add_subparsers(dest="registry_command")
+    freeze_parser = reg_subparsers.add_parser(
+        "freeze", help="Freeze remote registry to local file"
+    )
+    freeze_parser.add_argument(
+        "--output", "-o", default="vetch_registry.json",
+        help="Output file path (default: vetch_registry.json)"
+    )
+
     # Config
     config_parser = subparsers.add_parser(
         "config", help="Manage Vetch configuration (PUE, region, etc.)"
@@ -875,6 +1097,16 @@ def main() -> None:
         report(args)
     elif args.command == "config":
         config_cmd(args)
+    elif args.command == "status":
+        status(args)
+    elif args.command == "dashboard":
+        dashboard(args)
+    elif args.command == "registry":
+        if args.registry_command == "freeze":
+            registry_freeze(args)
+        else:
+            # Show registry subcommand help
+            parser.parse_args(["registry", "--help"])
     else:
         parser.print_help()
 

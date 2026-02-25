@@ -2,6 +2,8 @@
 
 This package contains wrappers for:
 - OpenAI (openai.py)
+- Azure OpenAI (azure_openai.py)
+- Anthropic (anthropic.py)
 - Vertex AI (vertexai.py)
 
 Each provider module handles:
@@ -11,4 +13,4 @@ Each provider module handles:
 - Region inference from base URLs
 """
 
-__all__ = ["openai", "vertexai"]
+__all__ = ["openai", "azure_openai", "anthropic", "vertexai"]

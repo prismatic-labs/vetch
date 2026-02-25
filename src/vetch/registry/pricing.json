@@ -9,7 +9,9 @@
   },
   "gpt-4o": {
     "usd_per_1k_input": 0.005,
-    "usd_per_1k_output": 0.015
+    "usd_per_1k_output": 0.015,
+    "cache_read_discount": 0.5,
+    "cache_creation_premium": 1.0
   },
   "gpt-3.5-turbo": {
     "usd_per_1k_input": 0.0005,
@@ -17,19 +19,27 @@
   },
   "claude-3-opus": {
     "usd_per_1k_input": 0.015,
-    "usd_per_1k_output": 0.075
+    "usd_per_1k_output": 0.075,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25
   },
   "claude-3-sonnet": {
     "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015
+    "usd_per_1k_output": 0.015,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25
   },
   "claude-3-haiku": {
     "usd_per_1k_input": 0.00025,
-    "usd_per_1k_output": 0.00125
+    "usd_per_1k_output": 0.00125,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25
   },
   "claude-3.5-sonnet": {
     "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015
+    "usd_per_1k_output": 0.015,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25
   },
   "gemini-1.5-pro": {
     "usd_per_1k_input": 0.007,

@@ -15,6 +15,7 @@ import os
 import random
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,8 +169,8 @@ def _fetch_from_api(
     Returns:
         GridIntensity if successful, None on failure.
     """
-    # Build request
-    url = f"{ELECTRICITY_MAPS_API_URL}?zone={region}"
+    # Build request (URL-encode region to prevent parameter injection)
+    url = f"{ELECTRICITY_MAPS_API_URL}?zone={urllib.parse.quote(region, safe='')}"
     headers = {
         "auth-token": api_key,
         "Accept": "application/json",
