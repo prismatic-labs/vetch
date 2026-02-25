@@ -55,13 +55,13 @@ class TestEnergyCalculation:
     """Tests for energy consumption calculation."""
 
     def test_calculate_energy_known_model(self) -> None:
-        """Calculate energy for a known model (gpt-4o: 0.1 in, 0.27 out)."""
-        # (1000 * 0.1 + 500 * 0.27) / 1000 = (100 + 135) / 1000 = 0.235 Wh
+        """Calculate energy for a known model (gpt-4o: 0.09 in, 0.25 out)."""
+        # (1000 * 0.09 + 500 * 0.25) / 1000 = (90 + 125) / 1000 = 0.215 Wh
         energy, tier, uncertainty_pct, source, basis, known = calculate_energy(
             1000, 500, "gpt-4o"
         )
 
-        assert energy == pytest.approx(0.235)
+        assert energy == pytest.approx(0.215)
         assert tier == 3
         assert uncertainty_pct == 1000  # Tier 3 = order of magnitude
         assert source == "registry"

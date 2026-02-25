@@ -48,6 +48,7 @@ otel = [  # OpenTelemetry OTLP export
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21",
     "hypothesis>=6.0",
     "tiktoken>=0.5.0",  # For token estimation tests
 ]
@@ -103,4 +104,4 @@ warn_unused_configs = true
 
 [tool.bandit]
 exclude_dirs = ["tests"]
-skips = ["B310"]  # urlopen is used intentionally with validated URLs
+skips = ["B101", "B110", "B112", "B311", "B310"]  # B101: asserts for mypy narrowing; B110/B112: fail-open by design; B311: random for jitter, not crypto; B310: urlopen with validated URLs
