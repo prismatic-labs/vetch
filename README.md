@@ -10,6 +10,8 @@ Planet-aware observability for LLM inference.
 
 Vetch is a Python SDK that wraps LLM API calls to log energy consumption, cost, and carbon per inference using live grid data. It never reads prompt or completion content—only metadata from the response usage.
 
+**→ [Get started in 60 seconds (Quickstart)](QUICKSTART.md)**
+
 ## Why Vetch?
 
 **Attributed Spend, Not Just Total Spend**
@@ -76,6 +78,8 @@ import vetch
 import openai
 
 # One line to instrument all providers
+# Non-blocking and fail-open: Vetch failures never break your LLM calls
+# Overhead: <5ms per call, zero added latency for streaming
 vetch.instrument(region="us-east-1", tags={"service": "chat-api"})
 
 # All LLM calls are now automatically tracked
@@ -87,9 +91,11 @@ response = client.chat.completions.create(
 # Energy, cost, and carbon events emitted automatically!
 ```
 
-### Advanced: Context Manager
+**See [QUICKSTART.md](QUICKSTART.md) for a complete 60-second guide.**
 
-For per-call control, use the `wrap()` context manager:
+### Per-Call Control
+
+For granular control or when you prefer explicit wrappers:
 
 ```python
 from vetch import wrap
@@ -100,20 +106,88 @@ with wrap(region="us-east-1", tags={"team": "ml", "env": "prod"}) as ctx:
         messages=[{"role": "user", "content": "Hello world"}]
     )
 
-# Access inference metadata
+# Access inference metadata (cost shown first)
+print(f"Cost:   ${ctx.event['estimated_cost_usd']}")
 print(f"Energy: {ctx.event['estimated_energy_wh']} Wh")
 print(f"Carbon: {ctx.event['estimated_carbon_g']} gCO2e")
-print(f"Cost:   ${ctx.event['estimated_cost_usd']}")
 ```
 
 ### Async Support
 
 ```python
-import vetch
+from openai import AsyncOpenAI
+from vetch import awrap
 
-async with vetch.awrap(region="us-east-1") as ctx:
-    response = await client.chat.completions.create(...)
-print(ctx.event["estimated_energy_wh"])
+client = AsyncOpenAI()
+
+async with awrap(region="us-east-1") as ctx:
+    response = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "Hello"}]
+    )
+    print(f"Cost: ${ctx.event['estimated_cost_usd']}")
+
+await client.close()
+```
+
+## Understanding Region Configuration
+
+The `region` parameter determines which electricity grid is used for carbon intensity calculations. It should match the **Electricity Maps zone identifier** (which typically aligns with cloud provider region names: `us-east-1`, `eu-west-1`, `eastus`, etc.).
+
+Region availability varies by provider:
+
+### Providers with Regional Control
+
+For these providers, **you control where inference happens** and can specify the exact region:
+
+| Provider | How to Control Region | Example Region Format |
+|----------|----------------------|----------------------|
+| **Azure OpenAI** | Region embedded in endpoint URL | `eastus`, `westeurope` (no hyphens) |
+| **Vertex AI (Google)** | Set via `vertexai.init()` | `us-central1`, `europe-west4` (hyphenated) |
+| **AWS Bedrock** | Standard AWS region parameter | `us-east-1`, `eu-west-1` (hyphenated) |
+
+**For these providers:** Specify the region you're actually using for accurate carbon calculations:
+
+```python
+# Azure OpenAI - use the region from your endpoint
+# Vetch attempts auto-detection from endpoint URL, but explicit config is more reliable
+vetch.instrument(region="eastus")  # Matches eastus.openai.azure.com
+
+# Vertex AI - match your vertexai.init() location
+vetch.instrument(region="us-central1")
+
+# AWS Bedrock - match your boto3 region
+vetch.instrument(region="us-east-1")
+```
+
+### Providers without Regional Control
+
+For these providers, **inference location is not exposed** — requests are routed across global infrastructure (Azure, AWS, GCP) and the physical location of a specific inference call is not available to the client:
+
+- **OpenAI** (standard API): Global routing across cloud providers
+- **Anthropic**: Global routing across cloud providers
+
+**For these providers:** Use your best estimate based on your location or expected data center:
+
+```python
+# OpenAI/Anthropic - specify your expected or preferred region
+vetch.instrument(region="us-east-1")  # Reasonable default for US users
+vetch.instrument(region="eu-west-1")  # Reasonable default for EU users
+```
+
+### Region Fallback Behavior
+
+If you don't specify `region`, Vetch uses this fallback hierarchy:
+
+1. **`VETCH_REGION` environment variable** (highest priority)
+2. **Cloud provider env vars** (`AWS_REGION`, `GOOGLE_CLOUD_REGION`, `AZURE_REGION`)
+3. **Timezone-based heuristic** (coarse approximation, often results in significant carbon calculation errors)
+
+**Best practice:** Always set `region` explicitly or via `VETCH_REGION` environment variable for accurate carbon calculations.
+
+```bash
+# Set globally via environment
+export VETCH_REGION=us-east-1
 ```
 
 ## Session Aggregation (Agentic AI)
@@ -297,7 +371,7 @@ This is an alpha release. Please be aware of:
 
 1. **Energy estimates are uncertain**: Most models use Tier 3 estimates (+-10x uncertainty). See `vetch methodology` for details.
 
-2. **Region inference is approximate**: Without explicit `VETCH_REGION`, timezone-based inference is ~30% accurate. Set the region explicitly for accurate carbon calculations.
+2. **Region inference is a coarse heuristic**: Without explicit `VETCH_REGION`, timezone-based fallback often results in significant carbon calculation errors. Always set `region` parameter or `VETCH_REGION` environment variable for accurate carbon calculations. See [Understanding Region Configuration](#understanding-region-configuration) for details.
 
 3. **Experimental modules**: `vetch.calibrate`, `vetch.storage`, and `vetch.ci` emit `FutureWarning` and may change in future versions.
 
