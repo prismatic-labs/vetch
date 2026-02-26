@@ -10,7 +10,8 @@ Planet-aware observability for LLM inference.
 
 Vetch is a Python SDK that wraps LLM API calls to log energy consumption, cost, and carbon per inference using live grid data. It never reads prompt or completion content—only metadata from the response usage.
 
-**→ [Get started in 60 seconds (Quickstart)](QUICKSTART.md)**
+**→ [Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
+**→ [Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
 
 ## Why Vetch?
 
@@ -62,6 +63,8 @@ Vetch is fully thread-safe and supports multi-client isolation. It uses `context
 | vLLM / TGI | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
 
 **OpenAI-compatible endpoints** (OpenRouter, Together.ai, Ollama, vLLM, TGI) work automatically with `vetch.instrument()` since they use the `openai` Python SDK under the hood.
+
+**For local models (Ollama, vLLM, llama.cpp)**: See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md) for setup, GPU calibration, and TCO analysis.
 
 ## Installation
 

@@ -30,7 +30,11 @@ DEFAULT_CACHE_DIR = Path(tempfile.gettempdir()) / "vetch"
 DEFAULT_CACHE_FILE = "grid_intensity_cache.json"
 
 # Lock timeout in seconds
-LOCK_TIMEOUT_SECONDS = 0.1  # 100ms
+# Increased from 0.1s to 1.0s to handle high-concurrency multi-worker environments
+# (e.g., 32 Gunicorn workers starting simultaneously). Since cache operations only
+# happen on misses/refreshes (~every 5-15 mins), this latency is negligible compared
+# to the cost of failed locks and redundant Electricity Maps API calls.
+LOCK_TIMEOUT_SECONDS = 1.0  # 1 second
 
 
 @dataclass
