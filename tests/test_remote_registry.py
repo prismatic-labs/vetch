@@ -37,21 +37,39 @@ class TestGetVetchHome:
 class TestRemoteRegistryFetcher:
     """Tests for RemoteRegistryFetcher."""
 
-    def test_is_enabled_by_default(self) -> None:
-        """Remote registry is enabled by default."""
+    def test_is_disabled_by_default(self) -> None:
+        """Remote registry is disabled by default (opt-in since 0.1.7)."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("VETCH_REGISTRY_REMOTE", None)
             fetcher = RemoteRegistryFetcher()
+            assert fetcher._is_enabled() is False
+
+    def test_enabled_via_env_true(self) -> None:
+        """Remote registry can be enabled via VETCH_REGISTRY_REMOTE=true."""
+        with patch.dict(os.environ, {"VETCH_REGISTRY_REMOTE": "true"}):
+            fetcher = RemoteRegistryFetcher()
             assert fetcher._is_enabled() is True
 
-    def test_disabled_via_env(self) -> None:
-        """Remote registry can be disabled via VETCH_REGISTRY_REMOTE=false."""
+    def test_enabled_via_env_one(self) -> None:
+        """Remote registry enabled via VETCH_REGISTRY_REMOTE=1."""
+        with patch.dict(os.environ, {"VETCH_REGISTRY_REMOTE": "1"}):
+            fetcher = RemoteRegistryFetcher()
+            assert fetcher._is_enabled() is True
+
+    def test_enabled_via_env_yes(self) -> None:
+        """Remote registry enabled via VETCH_REGISTRY_REMOTE=yes."""
+        with patch.dict(os.environ, {"VETCH_REGISTRY_REMOTE": "yes"}):
+            fetcher = RemoteRegistryFetcher()
+            assert fetcher._is_enabled() is True
+
+    def test_disabled_via_env_false(self) -> None:
+        """Remote registry stays disabled via VETCH_REGISTRY_REMOTE=false."""
         with patch.dict(os.environ, {"VETCH_REGISTRY_REMOTE": "false"}):
             fetcher = RemoteRegistryFetcher()
             assert fetcher._is_enabled() is False
 
     def test_disabled_via_env_zero(self) -> None:
-        """Remote registry disabled via VETCH_REGISTRY_REMOTE=0."""
+        """Remote registry stays disabled via VETCH_REGISTRY_REMOTE=0."""
         with patch.dict(os.environ, {"VETCH_REGISTRY_REMOTE": "0"}):
             fetcher = RemoteRegistryFetcher()
             assert fetcher._is_enabled() is False

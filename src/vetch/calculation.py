@@ -461,7 +461,8 @@ def _infer_provider_from_model(model: str) -> str | None:
     model_lower = model.lower()
 
     # OpenAI models (Azure-backed)
-    if any(prefix in model_lower for prefix in ["gpt-", "o1-", "o3-", "text-davinci", "text-embedding"]):
+    openai_prefixes = ["gpt-", "o1-", "o3-", "text-davinci", "text-embedding"]
+    if any(prefix in model_lower for prefix in openai_prefixes):
         return "openai"
 
     # Anthropic models (AWS-backed)
@@ -476,12 +477,15 @@ def _infer_provider_from_model(model: str) -> str | None:
     return None
 
 
-def get_provider_pue(model: str | None = None, provider_hint: str | None = None) -> tuple[float, int, str]:
+def get_provider_pue(
+    model: str | None = None, provider_hint: str | None = None
+) -> tuple[float, int, str]:
     """Get PUE for a model's cloud provider.
 
     Args:
         model: Model identifier for provider inference.
-        provider_hint: Explicit provider override ("openai", "anthropic", "vertexai", "aws", "azure", "google").
+        provider_hint: Explicit provider override
+            ("openai", "anthropic", "vertexai", "aws", "azure", "google").
 
     Returns:
         Tuple of (pue, tier, source)
@@ -501,7 +505,9 @@ def get_provider_pue(model: str | None = None, provider_hint: str | None = None)
     if provider_hint:
         provider_lower = provider_hint.lower()
         if provider_lower in PROVIDER_PUE:
-            return PROVIDER_PUE[provider_lower], 1, PROVIDER_PUE_SOURCES.get(provider_lower, "vendor report")
+            pue_val = PROVIDER_PUE[provider_lower]
+            pue_src = PROVIDER_PUE_SOURCES.get(provider_lower, "vendor report")
+            return pue_val, 1, pue_src
 
     # Infer provider from model name (Tier 1: vendor-published)
     if model:

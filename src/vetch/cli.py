@@ -131,11 +131,17 @@ def estimate(args: argparse.Namespace) -> None:
         return
 
     # Text output with uncertainty indicators
-    uncertainty_label = f"±{uncertainty_pct}%" if uncertainty_pct < 1000 else "order of magnitude"
+    uncertainty_label = (
+        f"±{uncertainty_pct}%" if uncertainty_pct < 1000 else "order of magnitude"
+    )
     print(f"Energy:  ~{energy_wh:.2f} Wh ({uncertainty_label})  [Tier {tier}]")
     intensity = grid.intensity_gco2e_kwh
     pue_label = f"PUE {pue:.2f}" if pue_tier == 1 else f"PUE ~{pue:.2f}"
-    print(f"Carbon:  ~{carbon_g:.2f}g       [{intensity:.0f} gCO2e/kWh, {pue_label}, {grid.signal_quality}]")
+    carbon_line = (
+        f"Carbon:  ~{carbon_g:.2f}g       "
+        f"[{intensity:.0f} gCO2e/kWh, {pue_label}, {grid.signal_quality}]"
+    )
+    print(carbon_line)
     print(f"Cost:    ${cost_usd:.2f}       [list pricing]")
     print()
     print(f"Energy basis: {basis}")
