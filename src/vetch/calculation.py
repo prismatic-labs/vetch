@@ -340,8 +340,12 @@ def calculate_energy(
 ) -> tuple[float, int, int, str, str, bool]:
     """Calculate energy consumption in Watt-hours.
 
-    Formula:
-    energy_wh = (input_tokens * wh_per_1k_input + output_tokens * wh_per_1k_output) / 1000
+    Supports prompt-length-aware coefficients (non-linear model):
+    - Short prompts (< 1000 total tokens)
+    - Medium prompts (1000-5000 total tokens)
+    - Long prompts (> 5000 total tokens)
+
+    Falls back to linear model for entries without prompt-length data.
 
     Args:
         input_tokens: Number of input tokens.
@@ -355,6 +359,7 @@ def calculate_energy(
     # Clamp negative tokens to 0
     in_tokens = max(0, input_tokens)
     out_tokens = max(0, output_tokens)
+    total_tokens = in_tokens + out_tokens
 
     if energy_override:
         wh_in = energy_override["wh_per_1k_input"]
@@ -375,10 +380,29 @@ def calculate_energy(
 
     if known:
         entry = _ENERGY[resolved_model]
-        wh_in = entry["wh_per_1k_input"]
-        wh_out = entry["wh_per_1k_output"]
+
+        # Check if entry has prompt-length-aware coefficients (non-linear model)
+        if "prompt_length" in entry:
+            # Determine prompt length category
+            if total_tokens < 1000:
+                category = "short"
+            elif total_tokens < 5000:
+                category = "medium"
+            else:
+                category = "long"
+
+            # Get coefficients for this prompt length
+            pl_entry = entry["prompt_length"][category]
+            wh_in = pl_entry["wh_per_1k_input"]
+            wh_out = pl_entry["wh_per_1k_output"]
+            basis = entry.get("basis", f"Jegham et al. (2025) measured data ({category} prompt)")
+        else:
+            # Legacy format: flat coefficients (linear model)
+            wh_in = entry["wh_per_1k_input"]
+            wh_out = entry["wh_per_1k_output"]
+            basis = entry["basis"]
+
         tier = entry["tier"]
-        basis = entry["basis"]
         source = "registry"
     else:
         entry = get_conservative_energy()
@@ -394,15 +418,103 @@ def calculate_energy(
 
 
 # Default PUE (Power Usage Effectiveness) for data centers
-# Hyperscalers: Google 1.09, AWS 1.14, Azure 1.12
 # Industry average: ~1.58 (Uptime Institute 2023)
-# We use 1.2 as a reasonable default for cloud inference
-# (Jiang et al. 2025, arXiv:2505.09598). Override with VETCH_DEFAULT_PUE.
+# We use 1.2 as a reasonable default for unknown providers
 DEFAULT_PUE = 1.2
+
+# Provider-specific PUE values from official sustainability reports (Tier 1 data)
+# Sources:
+#   Google: https://datacenters.google/efficiency/ (2023: 1.10)
+#   Azure: https://datacenters.microsoft.com/sustainability/efficiency/ (2024: 1.12)
+#   AWS: https://aws.amazon.com/sustainability/data-centers/ (2024: 1.15)
+PROVIDER_PUE: dict[str, float] = {
+    "google": 1.10,      # Google Cloud (2023 average)
+    "vertexai": 1.10,    # Vertex AI runs on Google Cloud
+    "azure": 1.12,       # Microsoft Azure (2024 newest gen)
+    "openai": 1.12,      # OpenAI primarily uses Azure
+    "aws": 1.15,         # AWS (2024 global average)
+    "anthropic": 1.15,   # Anthropic uses AWS
+    "bedrock": 1.15,     # AWS Bedrock
+}
+
+# Documentation sources for transparency
+PROVIDER_PUE_SOURCES: dict[str, str] = {
+    "google": "Google Data Centers Efficiency Report 2023",
+    "vertexai": "Google Data Centers Efficiency Report 2023",
+    "azure": "Microsoft Datacenters Sustainability 2024",
+    "openai": "Microsoft Datacenters Sustainability 2024 (Azure-backed)",
+    "aws": "AWS Sustainability Report 2024",
+    "anthropic": "AWS Sustainability Report 2024 (AWS-backed)",
+    "bedrock": "AWS Sustainability Report 2024",
+}
+
+
+def _infer_provider_from_model(model: str) -> str | None:
+    """Infer cloud provider from model name patterns.
+
+    Args:
+        model: Model identifier (e.g., "gpt-4o", "claude-3-opus")
+
+    Returns:
+        Provider key for PUE lookup, or None if unknown.
+    """
+    model_lower = model.lower()
+
+    # OpenAI models (Azure-backed)
+    if any(prefix in model_lower for prefix in ["gpt-", "o1-", "o3-", "text-davinci", "text-embedding"]):
+        return "openai"
+
+    # Anthropic models (AWS-backed)
+    if model_lower.startswith("claude-"):
+        return "anthropic"
+
+    # Google models
+    if any(prefix in model_lower for prefix in ["gemini-", "gemma-", "palm-"]):
+        return "google"
+
+    # Unknown
+    return None
+
+
+def get_provider_pue(model: str | None = None, provider_hint: str | None = None) -> tuple[float, int, str]:
+    """Get PUE for a model's cloud provider.
+
+    Args:
+        model: Model identifier for provider inference.
+        provider_hint: Explicit provider override ("openai", "anthropic", "vertexai", "aws", "azure", "google").
+
+    Returns:
+        Tuple of (pue, tier, source)
+        - tier: 1=known value (user config or vendor-published), 3=default fallback
+    """
+    # Check environment variable first (user config, Tier 1: known value)
+    env_pue = os.environ.get("VETCH_DEFAULT_PUE")
+    if env_pue is not None:
+        try:
+            pue = float(env_pue)
+            if pue >= 1.0:
+                return pue, 1, "user config (VETCH_DEFAULT_PUE)"
+        except ValueError:
+            pass
+
+    # Use explicit provider hint if provided (Tier 1: vendor-published)
+    if provider_hint:
+        provider_lower = provider_hint.lower()
+        if provider_lower in PROVIDER_PUE:
+            return PROVIDER_PUE[provider_lower], 1, PROVIDER_PUE_SOURCES.get(provider_lower, "vendor report")
+
+    # Infer provider from model name (Tier 1: vendor-published)
+    if model:
+        inferred = _infer_provider_from_model(model)
+        if inferred and inferred in PROVIDER_PUE:
+            return PROVIDER_PUE[inferred], 1, PROVIDER_PUE_SOURCES[inferred]
+
+    # Fallback to default (Tier 3: unknown)
+    return DEFAULT_PUE, 3, "industry average"
 
 
 def get_default_pue() -> float:
-    """Get the default PUE value, respecting environment override.
+    """Get the default PUE value (deprecated, use get_provider_pue).
 
     Returns:
         PUE value from VETCH_DEFAULT_PUE env var, or 1.2 if not set/invalid.
@@ -428,9 +540,12 @@ def get_default_pue() -> float:
 def calculate_carbon(
     energy_wh: float,
     grid_intensity_gco2e_kwh: float,
-    pue: float | None = None,
-) -> float:
-    """Calculate carbon emissions in grams of CO2e.
+    model: str | None = None,
+    provider_hint: str | None = None,
+    pue_override: float | None = None,
+    pue: float | None = None,  # Backward compatibility alias for pue_override
+) -> tuple[float, float, int, str]:
+    """Calculate carbon emissions in grams of CO2e with provider-specific PUE.
 
     Formula:
     carbon_g = energy_wh * PUE * grid_intensity / 1000
@@ -438,15 +553,27 @@ def calculate_carbon(
     Args:
         energy_wh: Energy in Watt-hours.
         grid_intensity_gco2e_kwh: Carbon intensity in gCO2e/kWh.
-        pue: Power Usage Effectiveness. Defaults to VETCH_DEFAULT_PUE env var or 1.2.
+        model: Model identifier for provider-specific PUE inference.
+        provider_hint: Explicit provider ("openai", "anthropic", "vertexai").
+        pue_override: Explicit PUE value (takes precedence over all).
+        pue: (Deprecated) Alias for pue_override, kept for backward compatibility.
 
     Returns:
-        Carbon emissions in grams CO2e.
+        Tuple of (carbon_g, pue, pue_tier, pue_source)
+        - pue_tier: 1=known value (user config or vendor-published), 3=default fallback
     """
     import math
 
-    if pue is None:
-        pue = get_default_pue()
+    # Determine PUE with provider intelligence
+    # Support legacy 'pue' parameter for backward compatibility
+    effective_override = pue_override if pue_override is not None else pue
+
+    if effective_override is not None:
+        pue_val = effective_override
+        pue_tier = 1
+        pue_source = "explicit override"
+    else:
+        pue_val, pue_tier, pue_source = get_provider_pue(model, provider_hint)
 
     # Defensive handling of NaN and Inf
     intensity = grid_intensity_gco2e_kwh
@@ -456,7 +583,9 @@ def calculate_carbon(
     if math.isinf(intensity) or intensity > 2000:
         intensity = 2000.0
 
-    return (energy_wh * pue * intensity) / 1000
+    carbon_g = (energy_wh * pue_val * intensity) / 1000
+
+    return carbon_g, pue_val, pue_tier, pue_source
 
 
 def calculate_cost(

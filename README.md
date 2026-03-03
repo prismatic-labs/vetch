@@ -21,7 +21,13 @@ Provider dashboards (OpenAI Usage, Anthropic Console, Google Cloud Billing) show
 
 **Sustainability Instrumentation**
 
-Begin tracking AI inference emissions for future CSRD (EU) and SEC (US) Scope 3 reporting. Note: Current estimates are Tier 3 (order-of-magnitude). Vetch provides the instrumentation infrastructure—audit-grade accuracy requires Tier 1/2 energy data from providers or calibrated measurements.
+Begin tracking AI inference emissions for future CSRD (EU) and SEC (US) Scope 3 reporting. Vetch now includes **Tier 1 (±50%)** hardware-measured energy data for popular models:
+- **GPT-4o, o1, o3** - Measured in Azure datacenters
+- **Claude-3.7 Sonnet** - Measured in AWS datacenters
+- **DeepSeek-R1** - Reasoning model benchmarks
+- **200+ models** use Tier 3 (order-of-magnitude) estimates
+
+Source: [Jegham et al. (2025)](https://arxiv.org/abs/2505.09598) - First large-scale LLM energy measurements in commercial datacenters.
 
 ## Design Guarantees
 
@@ -372,7 +378,7 @@ Run `vetch methodology` to see full methodology documentation.
 
 This is an alpha release. Please be aware of:
 
-1. **Energy estimates are uncertain**: Most models use Tier 3 estimates (+-10x uncertainty). See `vetch methodology` for details.
+1. **Energy estimates are uncertain**: Most models use Tier 3 estimates (order of magnitude uncertainty). See `vetch methodology` for details.
 
 2. **Region inference is a coarse heuristic**: Without explicit `VETCH_REGION`, timezone-based fallback often results in significant carbon calculation errors. Always set `region` parameter or `VETCH_REGION` environment variable for accurate carbon calculations. See [Understanding Region Configuration](#understanding-region-configuration) for details.
 

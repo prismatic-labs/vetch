@@ -55,18 +55,21 @@ class TestEnergyCalculation:
     """Tests for energy consumption calculation."""
 
     def test_calculate_energy_known_model(self) -> None:
-        """Calculate energy for a known model (gpt-4o: 0.09 in, 0.25 out)."""
-        # (1000 * 0.09 + 500 * 0.25) / 1000 = (90 + 125) / 1000 = 0.215 Wh
+        """Calculate energy for a known model (gpt-4o with prompt-length-aware coefficients)."""
+        # gpt-4o now uses Tier 1 data from Jegham et al. (2025)
+        # With 1500 total tokens (1000 in + 500 out), uses "medium" category
+        # Medium: 0.304 Wh/1k input, 0.911 Wh/1k output
+        # Energy = (1000 * 0.304 + 500 * 0.911) / 1000 = (304 + 455.5) / 1000 = 0.7595 Wh
         energy, tier, uncertainty_pct, source, basis, known = calculate_energy(
             1000, 500, "gpt-4o"
         )
 
-        assert energy == pytest.approx(0.215)
-        assert tier == 3
-        assert uncertainty_pct == 1000  # Tier 3 = order of magnitude
+        assert energy == pytest.approx(0.7595)
+        assert tier == 1
+        assert uncertainty_pct == 50  # Tier 1 = ±50%
         assert source == "registry"
         assert known is True
-        assert "Epoch AI" in basis
+        assert "Jegham" in basis
 
     def test_calculate_energy_unknown_model(self) -> None:
         """Calculate energy for unknown model using conservative fallback."""
@@ -110,8 +113,11 @@ class TestCarbonCalculation:
         """Calculate carbon from energy and grid intensity."""
         # energy_wh * pue * grid_intensity / 1000
         # 2.0 Wh * 1.1 PUE * 400 gCO2e/kWh / 1000 = 0.88g
-        carbon = calculate_carbon(2.0, 400.0, pue=1.1)
+        carbon, pue, pue_tier, pue_source = calculate_carbon(2.0, 400.0, pue=1.1)
         assert carbon == pytest.approx(0.88)
+        assert pue == 1.1
+        assert pue_tier == 1
+        assert pue_source == "explicit override"
 
 
 class TestCostCalculation:

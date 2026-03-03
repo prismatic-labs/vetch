@@ -28,7 +28,7 @@ All Tier 3 values are derived using a **Proxy Scaling Model**. Since model provi
 *   **Logic**: Uses official 70B parameter count as the anchor point for the registry's linear scaling.
 
 ## Uncertainty Margin
-**Confidence Level: Low (±10x)**
+**Confidence Level: Low (order of magnitude)**
 
 ### The 1.2x Hardware Overhead Multiplier
 

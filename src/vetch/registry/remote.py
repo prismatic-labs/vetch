@@ -8,7 +8,7 @@ Key design decisions:
 - Memory-only cache by default (no file writes for privacy)
 - ETag caching to reduce bandwidth
 - Decorrelated jitter to avoid thundering herd
-- Opt-out via VETCH_REGISTRY_REMOTE=false
+- Opt-in via VETCH_REGISTRY_REMOTE=true (disabled by default in 0.1.7)
 """
 
 from __future__ import annotations
@@ -97,9 +97,13 @@ class RemoteRegistryFetcher:
         self._stopped = False
 
     def _is_enabled(self) -> bool:
-        """Check if remote registry is enabled."""
-        disabled = os.environ.get("VETCH_REGISTRY_REMOTE", "").lower()
-        return disabled not in ("false", "0", "no")
+        """Check if remote registry is enabled.
+
+        Default: DISABLED (opt-in) to prevent silent accuracy regressions
+        when bundled registry is newer than remote (e.g., during releases).
+        """
+        enabled = os.environ.get("VETCH_REGISTRY_REMOTE", "").lower()
+        return enabled in ("true", "1", "yes")
 
     def _fetch_json(self, filename: str) -> dict[str, Any] | None:
         """Fetch a JSON file from remote, using ETag caching.
@@ -370,8 +374,8 @@ def get_remote_fetcher() -> RemoteRegistryFetcher | None:
     """
     global _fetcher
 
-    disabled = os.environ.get("VETCH_REGISTRY_REMOTE", "").lower()
-    if disabled in ("false", "0", "no"):
+    enabled = os.environ.get("VETCH_REGISTRY_REMOTE", "").lower()
+    if enabled not in ("true", "1", "yes"):
         return None
 
     if _fetcher is None:

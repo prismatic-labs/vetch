@@ -84,6 +84,11 @@ class InferenceEvent(TypedDict, total=False):
     grid_intensity_timestamp: Union[str, None]  # ISO8601 UTC
     region: Union[str, None]
 
+    # PUE (Power Usage Effectiveness) metadata
+    pue: Union[float, None]  # Datacenter efficiency (e.g., 1.10 for Google, 1.15 for AWS)
+    pue_tier: Union[int, None]  # 1=known value (user config or vendor), 3=default fallback
+    pue_source: Union[str, None]  # Source description (e.g., "Google Environmental Report 2024")
+
     # Request metadata
     is_stream: bool
     complete: bool

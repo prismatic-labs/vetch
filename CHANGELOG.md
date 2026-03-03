@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-03-03
+
+### Added
+- **Provider-Specific PUE**: Auto-detection of datacenter efficiency from cloud provider sustainability reports
+  - Google Cloud (Vertex AI): 1.10 PUE (2023 average)
+  - Microsoft Azure (OpenAI): 1.12 PUE (2024 newest generation)
+  - AWS (Anthropic, Bedrock): 1.15 PUE (2024 global average)
+  - Fallback to 1.20 for unknown providers (industry average)
+  - Model-based provider inference (gpt-4 → Azure, claude → AWS, gemini → Google)
+  - New event fields: `pue`, `pue_tier`, `pue_source` for transparency
+  - PUE tier system: Tier 1 (known value from vendor or user config), Tier 3 (default fallback)
+- **Tier 1 Energy Data from Jegham et al. (2025)**: First large-scale hardware measurements in commercial datacenters
+  - **GPT-4o upgraded to Tier 1** with non-linear model (short/medium/long prompt awareness)
+  - **New reasoning models**: o1 (12.1 Wh), o3 (21.4 Wh), DeepSeek-R1 (29.0 Wh) - 40-100x more energy than efficient models
+  - **GPT-4.1 nano**: Most efficient model (0.271 Wh per medium prompt)
+  - **Claude-3.7 Sonnet upgraded to Tier 1** (2.781 Wh, highest eco-efficiency among large models)
+  - Source: arXiv:2505.09598 "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference"
+- **Non-Linear Energy Model**: Prompt-length-aware coefficients capture efficiency gains for longer prompts
+  - Short prompts (<1k tokens): Higher per-token cost due to fixed overhead
+  - Medium prompts (1k-5k tokens): Baseline for typical usage
+  - Long prompts (>5k tokens): ~6x more efficient per-token due to amortization
+  - Automatic category selection based on total token count
+- **Updated METHODOLOGY.md**: Comprehensive 2025 research citations, non-linearity explanation, data provenance
+- **Backward Compatibility**: `calculate_carbon()` supports legacy `pue` parameter (alias for `pue_override`)
+
+### Changed
+- **Carbon calculation now returns tuple**: `(carbon_g, pue, pue_tier, pue_source)` instead of just `carbon_g`
+  - Provides full transparency on PUE assumptions used in carbon calculations
+  - Breaking change for direct callers of `calculate_carbon()` (use tuple unpacking)
+- **Language clarity**: "±10x uncertainty" changed to "order of magnitude uncertainty" for Tier 3 estimates
+- **Remote registry is now opt-in**: Set `VETCH_REGISTRY_REMOTE=true` to enable (disabled by default)
+  - Prevents silent accuracy regressions when bundled registry is newer than remote
+  - Will be re-enabled by default in 0.1.8 once remote registry is synced with Tier 1 data
+
+### Fixed
+- User-configured PUE (`VETCH_DEFAULT_PUE`) now correctly classified as Tier 1 (known value) instead of Tier 0
+
 ## [0.1.6] - 2026-02-25
 
 ### Added
@@ -169,7 +206,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Timezone-based region inference has ~30% accuracy - use `VETCH_REGION` for production
 - Experimental modules (`calibrate`, `storage`, `ci`) marked with `FutureWarning`
 - Integration tests require live API credentials
-- Energy estimates are Tier 3 (±10x uncertainty) for most models
+- Energy estimates are Tier 3 (order of magnitude uncertainty) for most models
 
 ### Environment Variables
 | Variable | Purpose | Default |

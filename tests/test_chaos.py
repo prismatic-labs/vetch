@@ -484,7 +484,7 @@ class TestChaosEdgeCases:
         from vetch.calculation import calculate_carbon
 
         # NaN should be handled defensively
-        carbon = calculate_carbon(0.1, float("nan"))
+        carbon, pue, pue_tier, pue_source = calculate_carbon(0.1, float("nan"))
         assert carbon == 0.0  # Returns 0 instead of NaN
 
     def test_inf_in_grid_intensity_capped(self) -> None:
@@ -492,7 +492,7 @@ class TestChaosEdgeCases:
         from vetch.calculation import calculate_carbon
 
         # Inf should be capped
-        carbon = calculate_carbon(0.1, float("inf"))
+        carbon, pue, pue_tier, pue_source = calculate_carbon(0.1, float("inf"))
         assert carbon > 0  # Returns a real value
         assert carbon < float("inf")  # Not infinity
 
@@ -501,7 +501,7 @@ class TestChaosEdgeCases:
         from vetch.calculation import calculate_carbon
 
         # Inf energy with valid grid intensity
-        carbon = calculate_carbon(float("inf"), 100)
+        carbon, pue, pue_tier, pue_source = calculate_carbon(float("inf"), 100)
         assert carbon == float("inf")
 
     def test_unicode_in_tags(self) -> None:

@@ -46,7 +46,7 @@ Please include the following information:
 
 ## Known Limitations (Alpha)
 
-1. **Energy estimates are uncertain**: Tier 3 estimates have ±10x uncertainty
+1. **Energy estimates are uncertain**: Tier 3 estimates have order of magnitude uncertainty
 2. **Region inference**: Timezone-based inference is ~30% accurate
 3. **No encryption**: Local SQLite database is not encrypted at rest
 

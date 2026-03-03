@@ -463,6 +463,9 @@ class VetchContext:
         energy_source = "registry"
         energy_basis = None
         carbon_g = None
+        pue = None
+        pue_tier = 3
+        pue_source = "unknown"
         cost_usd = None
         cost_in_usd = None
         cost_out_usd = None
@@ -520,9 +523,11 @@ class VetchContext:
                         f"Model '{model}' not in registry, using conservative fallback estimates"
                     )
 
-                # Carbon
+                # Carbon with provider-specific PUE
                 if energy_wh is not None:
-                    carbon_g = calculate_carbon(energy_wh, grid_val)
+                    carbon_g, pue, pue_tier, pue_source = calculate_carbon(
+                        energy_wh, grid_val, model=model, provider_hint=provider
+                    )
 
                 # Cost (pass cache tokens for cache-aware pricing)
                 cost_usd, cost_in_usd, cost_out_usd, billing_tier = calculate_cost(
@@ -570,6 +575,9 @@ class VetchContext:
             grid_intensity_gco2e_kwh=grid_val,
             grid_intensity_timestamp=grid_ts,
             region=self.region,
+            pue=pue,
+            pue_tier=pue_tier,
+            pue_source=pue_source,
             is_stream=is_stream,
             complete=not error and (captured.complete if captured else True),
             latency_ms=latency_ms,

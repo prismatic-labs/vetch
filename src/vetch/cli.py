@@ -101,7 +101,9 @@ def estimate(args: argparse.Namespace) -> None:
         args.input_tokens, args.output_tokens, args.model
     )
 
-    carbon_g = calculate_carbon(energy_wh, grid.intensity_gco2e_kwh)
+    carbon_g, pue, pue_tier, pue_source = calculate_carbon(
+        energy_wh, grid.intensity_gco2e_kwh, model=args.model
+    )
 
     cost_usd, _, _, _ = calculate_cost(
         args.input_tokens, args.output_tokens, args.model
@@ -118,6 +120,9 @@ def estimate(args: argparse.Namespace) -> None:
             "cost_usd": cost_usd,
             "energy_tier": tier,
             "energy_uncertainty_pct": uncertainty_pct,
+            "pue": pue,
+            "pue_tier": pue_tier,
+            "pue_source": pue_source,
             "grid_region": args.region or "global",
             "grid_intensity": grid.intensity_gco2e_kwh,
             "signal_quality": grid.signal_quality,
@@ -129,10 +134,12 @@ def estimate(args: argparse.Namespace) -> None:
     uncertainty_label = f"±{uncertainty_pct}%" if uncertainty_pct < 1000 else "order of magnitude"
     print(f"Energy:  ~{energy_wh:.2f} Wh ({uncertainty_label})  [Tier {tier}]")
     intensity = grid.intensity_gco2e_kwh
-    print(f"Carbon:  ~{carbon_g:.2f}g       [{intensity:.0f} gCO2e/kWh, {grid.signal_quality}]")
+    pue_label = f"PUE {pue:.2f}" if pue_tier == 1 else f"PUE ~{pue:.2f}"
+    print(f"Carbon:  ~{carbon_g:.2f}g       [{intensity:.0f} gCO2e/kWh, {pue_label}, {grid.signal_quality}]")
     print(f"Cost:    ${cost_usd:.2f}       [list pricing]")
     print()
-    print(f"Basis: {basis}")
+    print(f"Energy basis: {basis}")
+    print(f"PUE source:   {pue_source}")
     if not known:
         print("\nNote: Model not found in registry. Using conservative fallback.")
         print("Have better data? Run: vetch methodology --contribute")
@@ -151,7 +158,7 @@ def compare(args: argparse.Namespace) -> None:
         energy_wh, tier, uncertainty_pct, _, _, known = calculate_energy(
             args.input_tokens, args.output_tokens, model
         )
-        carbon_g = calculate_carbon(energy_wh, grid.intensity_gco2e_kwh)
+        carbon_g, _, _, _ = calculate_carbon(energy_wh, grid.intensity_gco2e_kwh, model=model)
         cost_usd, _, _, _ = calculate_cost(
             args.input_tokens, args.output_tokens, model
         )
@@ -181,7 +188,7 @@ def compare(args: argparse.Namespace) -> None:
     region_name = args.region or 'global'
     intensity = grid.intensity_gco2e_kwh
     print(f"\nGrid: {region_name} ({intensity:.0f} gCO2e/kWh, {grid.signal_quality})")
-    print("All estimates are tier 3 (±10x uncertainty).")
+    print("All estimates are tier 3 (order of magnitude uncertainty).")
     if any(not r["known"] for r in results):
         print("* Model not in registry, using conservative fallback.")
     print("Run 'vetch estimate --model <name>' for derivation details.")
