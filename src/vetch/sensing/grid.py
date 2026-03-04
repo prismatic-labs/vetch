@@ -288,6 +288,13 @@ def get_carbon_intensity(
             memory_cache.set(region, cached.intensity_gco2e_kwh)
 
             age = time.time() - cached.timestamp
+            # Bounds check for clock jumps: if negative (clock went backward), treat as fresh
+            # if unreasonably large (>7 days), cap it to prevent overflow
+            if age < 0:
+                age = 0
+            elif age > 604800:  # 7 days in seconds
+                age = 604800
+
             return GridIntensity(
                 intensity_gco2e_kwh=cached.intensity_gco2e_kwh,
                 signal_quality=_get_signal_quality(age),

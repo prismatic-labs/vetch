@@ -67,13 +67,15 @@ class FileLock:
     def __enter__(self) -> FileLock:
         """Acquire the lock."""
         # Ensure directory exists
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Create parent directory with restrictive permissions (owner only)
+        self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
         # Open file for writing (creates if doesn't exist)
+        # Use 0o600 (owner read/write only) to prevent other users from reading cache data
         self._fd = os.open(
             str(self._path),
             os.O_RDWR | os.O_CREAT,
-            0o644,
+            0o600,
         )
 
         start_time = time.time()
@@ -229,10 +231,17 @@ class FileCache:
                     "signal_quality": intensity.signal_quality,
                 }
 
-                # Atomic write
-                self._path.parent.mkdir(parents=True, exist_ok=True)
+                # Atomic write with restrictive permissions
+                self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 temp_path = self._path.with_suffix(".tmp")
-                temp_path.write_text(json.dumps(data, indent=2))
+
+                # Write with owner-only permissions (0o600)
+                fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                try:
+                    os.write(fd, json.dumps(data, indent=2).encode("utf-8"))
+                finally:
+                    os.close(fd)
+
                 os.replace(temp_path, self._path)
 
                 return True

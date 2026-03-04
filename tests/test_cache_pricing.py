@@ -18,21 +18,23 @@ class TestCacheAwarePricing:
 
     def test_basic_cost_unchanged_without_cache(self) -> None:
         """Cost calculation without cache tokens is unchanged."""
-        total, input_cost, output_cost, tier = calculate_cost(
+        total, input_cost, output_cost, cache_write, cache_read, tier = calculate_cost(
             1000, 500, "claude-3.5-sonnet"
         )
         assert total > 0
         assert tier == "list"
+        assert cache_write == 0.0
+        assert cache_read == 0.0
 
     def test_cache_read_reduces_cost(self) -> None:
         """Cache read tokens reduce input cost."""
         # Without cache
-        total_no_cache, _, _, _ = calculate_cost(
+        total_no_cache, _, _, _, _, _ = calculate_cost(
             1000, 500, "claude-3.5-sonnet"
         )
 
         # With cache (500 of 1000 input tokens from cache)
-        total_with_cache, _, _, _ = calculate_cost(
+        total_with_cache, _, _, _, _, _ = calculate_cost(
             1000, 500, "claude-3.5-sonnet", cache_read_tokens=500
         )
 
@@ -41,11 +43,11 @@ class TestCacheAwarePricing:
 
     def test_cache_read_all_tokens(self) -> None:
         """All input tokens from cache gives maximum discount."""
-        total_no_cache, _, _, _ = calculate_cost(
+        total_no_cache, _, _, _, _, _ = calculate_cost(
             1000, 500, "claude-3.5-sonnet"
         )
 
-        total_all_cache, _, _, _ = calculate_cost(
+        total_all_cache, _, _, _, _, _ = calculate_cost(
             1000, 500, "claude-3.5-sonnet", cache_read_tokens=1000
         )
 
@@ -54,11 +56,11 @@ class TestCacheAwarePricing:
 
     def test_cache_creation_adds_cost(self) -> None:
         """Cache creation tokens add premium to cost."""
-        total_no_cache, _, _, _ = calculate_cost(
+        total_no_cache, _, _, _, _, _ = calculate_cost(
             1000, 500, "claude-3.5-sonnet"
         )
 
-        total_with_creation, _, _, _ = calculate_cost(
+        total_with_creation, _, _, _, _, _ = calculate_cost(
             1000, 500, "claude-3.5-sonnet", cache_creation_tokens=500
         )
 
@@ -67,11 +69,11 @@ class TestCacheAwarePricing:
 
     def test_openai_cache_discount_different(self) -> None:
         """OpenAI has different cache discount (50%)."""
-        total_no_cache, _, _, _ = calculate_cost(
+        total_no_cache, _, _, _, _, _ = calculate_cost(
             1000, 500, "gpt-4o"
         )
 
-        total_with_cache, _, _, _ = calculate_cost(
+        total_with_cache, _, _, _, _, _ = calculate_cost(
             1000, 500, "gpt-4o", cache_read_tokens=500
         )
 
@@ -80,7 +82,7 @@ class TestCacheAwarePricing:
 
     def test_unknown_model_returns_zero(self) -> None:
         """Unknown model returns zero cost even with cache tokens."""
-        total, _, _, tier = calculate_cost(
+        total, _, _, _, _, tier = calculate_cost(
             1000, 500, "unknown-model",
             cache_read_tokens=100, cache_creation_tokens=100
         )
@@ -89,8 +91,8 @@ class TestCacheAwarePricing:
 
     def test_zero_cache_tokens_same_as_none(self) -> None:
         """Zero cache tokens produces same result as None."""
-        total_none, _, _, _ = calculate_cost(1000, 500, "claude-3.5-sonnet")
-        total_zero, _, _, _ = calculate_cost(
+        total_none, _, _, _, _, _ = calculate_cost(1000, 500, "claude-3.5-sonnet")
+        total_zero, _, _, _, _, _ = calculate_cost(
             1000, 500, "claude-3.5-sonnet",
             cache_read_tokens=0, cache_creation_tokens=0
         )
@@ -98,8 +100,8 @@ class TestCacheAwarePricing:
 
     def test_negative_cache_tokens_ignored(self) -> None:
         """Negative cache tokens are treated as if not provided."""
-        total_base, _, _, _ = calculate_cost(1000, 500, "claude-3.5-sonnet")
-        total_neg, _, _, _ = calculate_cost(
+        total_base, _, _, _, _, _ = calculate_cost(1000, 500, "claude-3.5-sonnet")
+        total_neg, _, _, _, _, _ = calculate_cost(
             1000, 500, "claude-3.5-sonnet",
             cache_read_tokens=-100
         )

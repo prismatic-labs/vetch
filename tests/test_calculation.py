@@ -126,18 +126,22 @@ class TestCostCalculation:
     def test_calculate_cost_known_model(self) -> None:
         """Calculate cost for a known model (gpt-4o: $0.005 in, $0.015 out)."""
         # (1000 * 0.005 + 500 * 0.015) / 1000 = (5.0 + 7.5) / 1000 = $0.0125
-        total, cost_in, cost_out, tier = calculate_cost(1000, 500, "gpt-4o")
+        total, cost_in, cost_out, cache_write, cache_read, tier = calculate_cost(1000, 500, "gpt-4o")
 
         assert total == pytest.approx(0.0125)
         assert cost_in == pytest.approx(0.005)
         assert cost_out == pytest.approx(0.0075)
+        assert cache_write == 0.0
+        assert cache_read == 0.0
         assert tier == "list"
 
     def test_calculate_cost_unknown_model(self) -> None:
         """Return zero cost for unknown models."""
-        total, cost_in, cost_out, tier = calculate_cost(1000, 500, "unknown-model")
+        total, cost_in, cost_out, cache_write, cache_read, tier = calculate_cost(1000, 500, "unknown-model")
 
         assert total == 0.0
+        assert cache_write == 0.0
+        assert cache_read == 0.0
         assert tier == "none"
 
 

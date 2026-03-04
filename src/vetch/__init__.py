@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 # P0: Emergency kill switch - check immediately on import
 _DISABLED = os.environ.get("VETCH_DISABLED", "").lower() in ("true", "1", "yes")
+_default_region: str | None = None  # Default region set via instrument()
 if _DISABLED:
     print("vetch: disabled via VETCH_DISABLED=true", file=sys.stderr)
 
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
 
     from vetch.wrapper import VetchContext
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 __all__ = [
     "wrap",
     "awrap",
@@ -47,6 +48,9 @@ __all__ = [
     "uninstrument",
     "require_tags",
     "add_global_tags",
+    "set_tag_cardinality_limit",
+    "set_tag_allowlist",
+    "set_redacted_tags",
     "configure_storage",
     "query_usage",
     "__version__",
@@ -92,6 +96,73 @@ def require_tags(tags: list[str]) -> None:
     _require_tags(tags)
 
 
+def set_tag_cardinality_limit(limit: int) -> None:
+    """Set maximum unique values per tag key to prevent DoS attacks.
+
+    Default: 1000 unique values per tag key.
+
+    Args:
+        limit: Maximum unique values allowed per tag key.
+
+    Example::
+
+        vetch.set_tag_cardinality_limit(500)  # More restrictive limit
+    """
+    from vetch.config import set_tag_cardinality_limit as _set_limit
+
+    _set_limit(limit)
+
+
+def set_tag_allowlist(allowed_tags: list[str]) -> None:
+    """Set allowed tag keys for strict security environments.
+
+    Only tags in the allowlist are permitted. Use this to prevent
+    accidental leakage of sensitive data via tags.
+
+    Args:
+        allowed_tags: List of allowed tag keys.
+
+    Example::
+
+        vetch.set_tag_allowlist(["team", "env", "service"])
+    """
+    from vetch.config import set_tag_allowlist as _set_allowlist
+
+    _set_allowlist(allowed_tags)
+
+
+def set_redacted_tags(sensitive_keys: list[str]) -> None:
+    """Set tag keys that should be hashed for PII protection.
+
+    Values for these keys will be SHA256-hashed before logging/export.
+    Use this to prevent accidental PII leakage.
+
+    Args:
+        sensitive_keys: List of tag keys to redact.
+
+    Example::
+
+        vetch.set_redacted_tags(["user_email", "customer_id"])
+    """
+    from vetch.config import set_redacted_tags as _set_redacted
+
+    _set_redacted(sensitive_keys)
+
+
+def get_default_region() -> str | None:
+    """Get the default region for auto-instrumentation.
+
+    Checks module-level config first, then falls back to VETCH_REGION env var.
+
+    Returns:
+        Default region or None if not set.
+    """
+    global _default_region
+    if _default_region is not None:
+        return _default_region
+    return os.environ.get("VETCH_REGION")
+
+
 def instrument(
     region: str | None = None,
     tags: dict[str, str] | None = None,
@@ -129,7 +200,7 @@ def instrument(
         - Safe to call multiple times (idempotent)
         - Set VETCH_DISABLED=true to disable all instrumentation
     """
-    global _instrumented
+    global _instrumented, _default_region
 
     if _DISABLED:
         return False
@@ -137,9 +208,10 @@ def instrument(
     if _instrumented:
         return True
 
-    # Store default config for auto-instrumentation
+    # Store default config for auto-instrumentation in module state
+    # IMPORTANT: Do NOT mutate os.environ (affects child processes and other libraries)
     if region:
-        os.environ.setdefault("VETCH_REGION", region)
+        _default_region = region
     if tags:
         add_global_tags(tags)
 

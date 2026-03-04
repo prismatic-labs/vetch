@@ -15,9 +15,9 @@ class TestSchemaVersion:
         """Schema version should be a string."""
         assert isinstance(SCHEMA_VERSION, str)
 
-    def test_schema_version_is_one(self) -> None:
-        """Initial schema version should be 1."""
-        assert SCHEMA_VERSION == "1"
+    def test_schema_version_is_two(self) -> None:
+        """Schema version should be 2 (multimodal support in v0.1.8)."""
+        assert SCHEMA_VERSION == "2"
 
 
 class TestValidateEnergyOverride:

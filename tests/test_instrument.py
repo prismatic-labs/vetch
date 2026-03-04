@@ -50,13 +50,19 @@ class TestInstrument:
         try:
             # Clear region first
             os.environ.pop("VETCH_REGION", None)
+            vetch._default_region = None
 
             with patch.object(vetch, "add_global_tags"):
                 vetch.instrument(region="test-region")
 
-            assert os.environ.get("VETCH_REGION") == "test-region"
+            # Check that region is stored in module state, not os.environ
+            assert vetch._default_region == "test-region"
+            assert vetch.get_default_region() == "test-region"
+            # Environment should NOT be mutated
+            assert os.environ.get("VETCH_REGION") is None
         finally:
             vetch._instrumented = False
+            vetch._default_region = None
             if original_region:
                 os.environ["VETCH_REGION"] = original_region
             else:

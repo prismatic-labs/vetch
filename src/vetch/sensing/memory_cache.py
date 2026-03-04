@@ -82,7 +82,7 @@ class MemoryCache(Generic[T]):
         if entry is None:
             return None, False
 
-        age = time.time() - entry.timestamp
+        age = time.monotonic() - entry.timestamp
         is_fresh = age < self._ttl
 
         return entry.value, is_fresh
@@ -94,7 +94,7 @@ class MemoryCache(Generic[T]):
             key: The cache key.
             value: The value to cache.
         """
-        self._cache[key] = CacheEntry(value=value, timestamp=time.time())
+        self._cache[key] = CacheEntry(value=value, timestamp=time.monotonic())
 
     def get_age(self, key: str) -> float | None:
         """Get the age of a cached entry in seconds.
@@ -109,7 +109,7 @@ class MemoryCache(Generic[T]):
         if entry is None:
             return None
 
-        return time.time() - entry.timestamp
+        return time.monotonic() - entry.timestamp
 
     def invalidate(self, key: str) -> bool:
         """Remove a cached entry.

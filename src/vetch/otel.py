@@ -43,8 +43,16 @@ _cost_histogram: Any = None
 _request_counter: Any = None
 
 # Background export queue (non-blocking export)
-_export_queue: queue.Queue[InferenceEvent | None] = queue.Queue(maxsize=1000)
+# Configurable via VETCH_EXPORT_QUEUE_SIZE (default: 1000)
+_DEFAULT_QUEUE_SIZE = 1000
+_queue_size = int(os.environ.get("VETCH_EXPORT_QUEUE_SIZE", str(_DEFAULT_QUEUE_SIZE)))
+_export_queue: queue.Queue[InferenceEvent | None] = queue.Queue(maxsize=_queue_size)
 _export_thread: threading.Thread | None = None
+
+# Dropped events tracking (for observability and backpressure detection)
+_dropped_events_count: int = 0
+_last_drop_warning: float = 0.0  # Monotonic timestamp of last warning
+_drop_warning_interval: float = 60.0  # Warn at most once per minute
 _shutdown_event = threading.Event()
 
 # Error rate limiting (circuit breaker for logging)
@@ -385,8 +393,13 @@ def _export_worker() -> None:
             # Wait for event with timeout to allow shutdown check
             event = _export_queue.get(timeout=0.5)
             if event is None:  # Shutdown sentinel
+                _export_queue.task_done()
                 break
-            _export_event_sync(event)
+            try:
+                _export_event_sync(event)
+            finally:
+                # Always mark task as done, even if export failed
+                _export_queue.task_done()
         except queue.Empty:
             continue
         except Exception as e:
@@ -405,13 +418,36 @@ def _start_export_worker() -> None:
 
 
 def _shutdown_export_worker() -> None:
-    """Shutdown the background export worker gracefully."""
+    """Shutdown the background export worker gracefully.
+
+    Drains the export queue to ensure all telemetry is transmitted before
+    process exit. Critical for capturing final application state on SIGTERM.
+    """
     global _export_thread
     if _export_thread is None:
         return
+
+    # First, wait for queue to drain (all pending events exported)
+    # This ensures we don't lose the "tail" of telemetry on shutdown
+    # Use a timeout to prevent hanging if OTLP collector is slow/hung
+    import time
+    try:
+        deadline = time.monotonic() + 5.0  # 5 second timeout
+        while not _export_queue.empty() and time.monotonic() < deadline:
+            time.sleep(0.1)  # Poll every 100ms
+        # Final join with minimal timeout (queue should be drained by now)
+        # Note: Queue.join() doesn't support timeout directly, so we use polling above
+        if _export_queue.empty():
+            _export_queue.join()  # Should return immediately if queue is empty
+    except Exception:
+        pass  # Queue may be in invalid state, continue with shutdown
+
+    # Signal worker to stop and send sentinel
     _shutdown_event.set()
     with contextlib.suppress(queue.Full):
         _export_queue.put_nowait(None)  # Sentinel to wake worker
+
+    # Wait for thread to finish (should be quick since queue is drained)
     _export_thread.join(timeout=2.0)
     _export_thread = None
 
@@ -422,12 +458,17 @@ def export_event_otlp(event: InferenceEvent) -> bool:
     Non-blocking: queues the event for background export.
     Events are dropped if the queue is full (backpressure).
 
+    Dropped events are counted and logged with rate limiting to avoid log spam.
+    Check get_otlp_stats() for dropped event count.
+
     Args:
         event: The InferenceEvent to export.
 
     Returns:
         True if queued successfully, False if queue full or not configured.
     """
+    global _dropped_events_count, _last_drop_warning
+
     if not _otlp_configured:
         return False
 
@@ -435,7 +476,29 @@ def export_event_otlp(event: InferenceEvent) -> bool:
         _export_queue.put_nowait(event)
         return True
     except queue.Full:
-        logger.debug("OTLP export queue full, dropping event")
+        import time
+
+        _dropped_events_count += 1
+
+        # Rate-limited warning: log every 1000 drops AND at most once per minute
+        current_time = time.monotonic()
+        should_warn = (
+            _dropped_events_count % 1000 == 1
+            and (current_time - _last_drop_warning) > _drop_warning_interval
+        )
+
+        if should_warn:
+            logger.warning(
+                f"OTLP export queue full, {_dropped_events_count} total events dropped. "
+                f"Consider increasing VETCH_EXPORT_QUEUE_SIZE (current: {_export_queue.maxsize}) "
+                f"or reducing event volume."
+            )
+            _last_drop_warning = current_time
+        else:
+            logger.debug(
+                f"OTLP export queue full, dropping event ({_dropped_events_count} total dropped)"
+            )
+
         return False
 
 
@@ -446,6 +509,30 @@ def is_otlp_configured() -> bool:
         True if configure_otlp_export() was called successfully.
     """
     return _otlp_configured
+
+
+def get_otlp_stats() -> dict[str, Any]:
+    """Get OTLP export queue statistics for monitoring.
+
+    Returns:
+        Dictionary with queue metrics:
+        - queue_size: Maximum queue capacity
+        - queue_current: Current number of items in queue
+        - dropped_events: Total number of dropped events due to queue full
+        - configured: Whether OTLP export is enabled
+
+    Example::
+
+        stats = vetch.otel.get_otlp_stats()
+        if stats["dropped_events"] > 0:
+            logger.warning(f"{stats['dropped_events']} events dropped, queue {stats['queue_current']}/{stats['queue_size']}")
+    """
+    return {
+        "queue_size": _export_queue.maxsize,
+        "queue_current": _export_queue.qsize(),
+        "dropped_events": _dropped_events_count,
+        "configured": _otlp_configured,
+    }
 
 
 # Auto-configure from environment if enabled

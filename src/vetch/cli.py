@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, cast
 
@@ -105,7 +106,7 @@ def estimate(args: argparse.Namespace) -> None:
         energy_wh, grid.intensity_gco2e_kwh, model=args.model
     )
 
-    cost_usd, _, _, _ = calculate_cost(
+    cost_usd, _, _, _, _, _ = calculate_cost(
         args.input_tokens, args.output_tokens, args.model
     )
 
@@ -165,7 +166,7 @@ def compare(args: argparse.Namespace) -> None:
             args.input_tokens, args.output_tokens, model
         )
         carbon_g, _, _, _ = calculate_carbon(energy_wh, grid.intensity_gco2e_kwh, model=model)
-        cost_usd, _, _, _ = calculate_cost(
+        cost_usd, _, _, _, _, _ = calculate_cost(
             args.input_tokens, args.output_tokens, model
         )
         results.append({
@@ -903,7 +904,34 @@ def dashboard(args: argparse.Namespace) -> None:
     content = template_path.read_text()
 
     if args.output:
-        output_path = Path(args.output)
+        output_path = Path(args.output).resolve()
+
+        # Security: Prevent path traversal attacks
+        # Only allow output in current directory, subdirectories, or system temp directory
+        cwd = Path.cwd().resolve()
+        tmp = Path(tempfile.gettempdir()).resolve()
+
+        in_cwd = False
+        in_tmp = False
+        try:
+            output_path.relative_to(cwd)
+            in_cwd = True
+        except ValueError:
+            pass
+
+        try:
+            output_path.relative_to(tmp)
+            in_tmp = True
+        except ValueError:
+            pass
+
+        if not (in_cwd or in_tmp):
+            print(f"Error: Output path must be within current directory or temp directory")
+            print(f"  Current directory: {cwd}")
+            print(f"  Temp directory: {tmp}")
+            print(f"  Attempted path: {output_path}")
+            sys.exit(1)
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(content)
         print(f"Dashboard exported to {output_path}")

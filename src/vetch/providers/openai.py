@@ -36,7 +36,7 @@ _client_lock = threading.Lock()
 
 
 def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
-    """Extract usage metadata from OpenAI response.
+    """Extract usage metadata from OpenAI response including image tokens.
 
     Args:
         response: OpenAI ChatCompletion response object.
@@ -57,23 +57,35 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     if prompt_details:
         cache_read_tokens = getattr(prompt_details, "cached_tokens", None)
 
-    # completion_tokens_details may have reasoning tokens but not cache creation
-    # Cache creation tokens are billed separately in some APIs
+    # Extract image tokens if available (GPT-4 Vision, GPT-4o)
+    # OpenAI API includes image tokens in prompt_tokens_details
+    image_input_tokens = 0
+    if prompt_details:
+        # GPT-4 Vision includes image tokens separately
+        image_input_tokens = getattr(prompt_details, "image_tokens", 0) or getattr(
+            prompt_details, "cached_image_tokens", 0
+        )
 
-    return (
-        cast(
-            "Usage",
-            {
-                "text": {
-                    "input_tokens": getattr(usage, "prompt_tokens", 0),
-                    "output_tokens": getattr(usage, "completion_tokens", 0),
-                    "total_tokens": getattr(usage, "total_tokens", 0),
-                }
-            },
-        ),
-        cache_read_tokens,
-        cache_creation_tokens,
-    )
+    # Build usage dict with text and optional image
+    usage_dict: Usage = {
+        "text": {
+            "input_tokens": getattr(usage, "prompt_tokens", 0),
+            "output_tokens": getattr(usage, "completion_tokens", 0),
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        }
+    }
+
+    # Add image usage if present
+    if isinstance(image_input_tokens, int) and image_input_tokens > 0:
+        usage_dict["image"] = {
+            "input_tokens": image_input_tokens,
+            "output_tokens": 0,
+            "total_tokens": image_input_tokens,
+            "image_count": 0,  # Not provided by OpenAI API
+            "total_pixels": 0,  # Not provided by OpenAI API
+        }
+
+    return usage_dict, cache_read_tokens, cache_creation_tokens
 
 
 def extract_model(response: Any) -> str:
@@ -86,6 +98,31 @@ def extract_model(response: Any) -> str:
         Model identifier string.
     """
     return getattr(response, "model", "unknown")
+
+
+def extract_embeddings_usage(response: Any) -> Usage | None:
+    """Extract usage metadata from OpenAI embeddings response.
+
+    Args:
+        response: OpenAI CreateEmbeddingResponse object.
+
+    Returns:
+        Usage dict with input tokens only (embeddings don't generate output).
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+
+    # Embeddings only consume input tokens, no output generation
+    usage_dict: Usage = {
+        "text": {
+            "input_tokens": getattr(usage, "prompt_tokens", 0),
+            "output_tokens": 0,  # Embeddings don't generate tokens
+            "total_tokens": getattr(usage, "total_tokens", 0),
+        }
+    }
+
+    return usage_dict
 
 
 def infer_region_from_base_url(base_url: str | None) -> str | None:
@@ -158,6 +195,44 @@ def _on_create_error(error: BaseException) -> None:
         provider="openai",
         error=True,
         error_type=type(error).__name__,
+        complete=False,
+    )
+
+
+def _after_embeddings_create(result: Any, *args: Any, **kwargs: Any) -> None:
+    """Hook called after embeddings.create.
+
+    Captures metadata from the embeddings response into the active context.
+    """
+    ctx = get_active_context()
+    if ctx is None:
+        return
+
+    usage = extract_embeddings_usage(result)
+    model = extract_model(result)
+
+    ctx.capture(
+        model=model,
+        provider="openai",
+        usage=usage,
+        is_stream=False,
+        is_embedding=True,  # Mark as embedding request
+        complete=True,
+    )
+
+
+def _on_embeddings_error(error: BaseException) -> None:
+    """Hook called when embeddings.create fails."""
+    ctx = get_active_context()
+    if ctx is None:
+        return
+
+    ctx.capture(
+        model="unknown",
+        provider="openai",
+        error=True,
+        error_type=type(error).__name__,
+        is_embedding=True,
         complete=False,
     )
 
@@ -387,6 +462,48 @@ def _wrapped_create(original: Any) -> Any:
     return wrapper
 
 
+def _wrapped_embeddings_create(original: Any) -> Any:
+    """Create wrapped version of embeddings.create.
+
+    Args:
+        original: The original embeddings create method.
+
+    Returns:
+        Wrapped method that captures metadata.
+    """
+    import inspect
+
+    # Handle async function
+    if inspect.iscoroutinefunction(original):
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                result = await original(*args, **kwargs)
+                _after_embeddings_create(result, *args, **kwargs)
+                return result
+            except BaseException as e:
+                _on_embeddings_error(e)
+                raise
+
+        async_wrapper.vetch_patched = True  # type: ignore[attr-defined]
+        async_wrapper._vetch_original = original  # type: ignore[attr-defined]
+        return async_wrapper
+
+    # Handle sync function
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            result = original(*args, **kwargs)
+            _after_embeddings_create(result, *args, **kwargs)
+            return result
+        except BaseException as e:
+            _on_embeddings_error(e)
+            raise
+
+    wrapper.vetch_patched = True  # type: ignore[attr-defined]
+    wrapper._vetch_original = original  # type: ignore[attr-defined]
+
+    return wrapper
+
+
 def patch_openai_client(client: Any) -> bool:
     """Patch an OpenAI client instance.
 
@@ -441,8 +558,22 @@ def patch_openai_client(client: Any) -> bool:
             # Store original keyed by completions object (unique per client)
             _client_originals[completions] = create
 
-            # Apply patch
+            # Apply patch for chat completions
             completions.create = _wrapped_create(create)
+
+        # 3. Patch embeddings.create if available
+        embeddings = getattr(client, "embeddings", None)
+        if embeddings:
+            embeddings_create = getattr(embeddings, "create", None)
+            if embeddings_create and not is_vetch_patched(embeddings_create):
+                with _client_lock:
+                    # Double-check inside lock
+                    if not is_vetch_patched(getattr(embeddings, "create", None)):
+                        # Store original keyed by embeddings object
+                        _client_originals[embeddings] = embeddings_create
+                        # Apply patch
+                        embeddings.create = _wrapped_embeddings_create(embeddings_create)
+                        logger.debug("OpenAI embeddings endpoint patched successfully")
 
         logger.debug("OpenAI client patched successfully")
         return True
@@ -472,14 +603,19 @@ def unpatch_openai_client(client: Any) -> bool:
         if completions is None:
             return False
 
-        # Thread-safe: retrieve and remove original for this client
+        # Thread-safe: retrieve and remove original for chat completions
         with _client_lock:
             original = _client_originals.pop(completions, None)
-            if original is None:
-                # Not patched by us, or already unpatched
-                return True
+            if original is not None:
+                completions.create = original
 
-            completions.create = original
+        # Unpatch embeddings if it was patched
+        embeddings = getattr(client, "embeddings", None)
+        if embeddings:
+            with _client_lock:
+                embeddings_original = _client_originals.pop(embeddings, None)
+                if embeddings_original is not None:
+                    embeddings.create = embeddings_original
 
         logger.debug("OpenAI client unpatched successfully")
         return True
@@ -516,6 +652,7 @@ def detect_openai_client() -> Any | None:
 
 # Track if module is instrumented
 _module_instrumented = False
+_module_instrumentation_lock = threading.Lock()
 
 # Store original __init__ methods for uninstrumentation
 _original_openai_init: Any | None = None
@@ -528,50 +665,59 @@ def instrument_openai_module() -> bool:
     Patches the OpenAI class __init__ to automatically call patch_openai_client
     on every new client instance.
 
+    Thread-safe: uses lock to prevent race conditions during instrumentation.
+
     Returns:
         True if instrumentation succeeded, False otherwise.
     """
     global _module_instrumented, _original_openai_init, _original_async_openai_init
     import sys
 
+    # Fast path without lock
     if _module_instrumented:
         return True
 
     if "openai" not in sys.modules:
         return False
 
-    try:
-        import openai
+    # Acquire lock for instrumentation
+    with _module_instrumentation_lock:
+        # Double-check after acquiring lock (another thread may have instrumented)
+        if _module_instrumented:
+            return True
 
-        # Store original __init__ for later restoration
-        _original_openai_init = openai.OpenAI.__init__
+        try:
+            import openai
 
-        def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
-            _original_openai_init(self, *args, **kwargs)
-            # Auto-patch this client instance
-            with contextlib.suppress(Exception):
-                patch_openai_client(self)
+            # Store original __init__ for later restoration
+            _original_openai_init = openai.OpenAI.__init__
 
-        openai.OpenAI.__init__ = patched_init
-
-        # Also patch AsyncOpenAI if available
-        if hasattr(openai, "AsyncOpenAI"):
-            _original_async_openai_init = openai.AsyncOpenAI.__init__
-
-            def patched_async_init(self: Any, *args: Any, **kwargs: Any) -> None:
-                _original_async_openai_init(self, *args, **kwargs)
+            def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
+                _original_openai_init(self, *args, **kwargs)
+                # Auto-patch this client instance
                 with contextlib.suppress(Exception):
                     patch_openai_client(self)
 
-            openai.AsyncOpenAI.__init__ = patched_async_init
+            openai.OpenAI.__init__ = patched_init
 
-        _module_instrumented = True
-        logger.debug("OpenAI module instrumented")
-        return True
+            # Also patch AsyncOpenAI if available
+            if hasattr(openai, "AsyncOpenAI"):
+                _original_async_openai_init = openai.AsyncOpenAI.__init__
 
-    except Exception as e:
-        logger.debug(f"Failed to instrument OpenAI module: {e}")
-        return False
+                def patched_async_init(self: Any, *args: Any, **kwargs: Any) -> None:
+                    _original_async_openai_init(self, *args, **kwargs)
+                    with contextlib.suppress(Exception):
+                        patch_openai_client(self)
+
+                openai.AsyncOpenAI.__init__ = patched_async_init
+
+            _module_instrumented = True
+            logger.debug("OpenAI module instrumented")
+            return True
+
+        except Exception as e:
+            logger.debug(f"Failed to instrument OpenAI module: {e}")
+            return False
 
 
 def uninstrument_openai_module() -> bool:

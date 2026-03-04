@@ -341,9 +341,13 @@ def calculate_energy(
     """Calculate energy consumption in Watt-hours.
 
     Supports prompt-length-aware coefficients (non-linear model):
-    - Short prompts (< 1000 total tokens)
-    - Medium prompts (1000-5000 total tokens)
-    - Long prompts (> 5000 total tokens)
+    - Short prompts (< 1000 input tokens)
+    - Medium prompts (1000-5000 input tokens)
+    - Long prompts (> 5000 input tokens)
+
+    Note: Category is determined by input_tokens only, not total_tokens.
+    This reflects the physics: prefill (input) has fixed costs that amortize,
+    while decode (output) is autoregressive and linear per-token.
 
     Falls back to linear model for entries without prompt-length data.
 
@@ -383,10 +387,13 @@ def calculate_energy(
 
         # Check if entry has prompt-length-aware coefficients (non-linear model)
         if "prompt_length" in entry:
-            # Determine prompt length category
-            if total_tokens < 1000:
+            # Determine prompt length category based on INPUT tokens only.
+            # Rationale: Fixed-cost amortization happens during prefill (input).
+            # Autoregressive generation (output) is memory-bandwidth bound and linear.
+            # Using total_tokens incorrectly subsidizes "chatty" responses.
+            if input_tokens < 1000:
                 category = "short"
-            elif total_tokens < 5000:
+            elif input_tokens < 5000:
                 category = "medium"
             else:
                 category = "long"
@@ -594,14 +601,211 @@ def calculate_carbon(
     return carbon_g, pue_val, pue_tier, pue_source
 
 
+# Water Usage Effectiveness (WUE) - liters per kWh
+# Based on datacenter cooling requirements
+# Sources: Google Environmental Report 2023, Microsoft Sustainability Report 2024
+DEFAULT_WUE = 1.8  # L/kWh industry average for air-cooled datacenters
+
+PROVIDER_WUE: dict[str, float] = {
+    "google": 1.1,  # Google's efficient water-free cooling in many DCs
+    "vertexai": 1.1,
+    "azure": 1.7,  # Microsoft's water usage per kWh
+    "openai": 1.7,  # OpenAI primarily uses Azure
+    "aws": 2.2,  # AWS average (higher due to evaporative cooling)
+    "anthropic": 2.2,  # Anthropic uses AWS
+    "bedrock": 2.2,
+}
+
+# Lazy-loaded WUE registry
+_WUE_REGISTRY: dict[str, float] | None = None
+
+
+def _load_wue_registry() -> dict[str, float]:
+    """Load WUE registry from wue.json file.
+
+    Returns:
+        Dictionary mapping region/provider keys to WUE values (L/kWh).
+    """
+    global _WUE_REGISTRY
+    if _WUE_REGISTRY is not None:
+        return _WUE_REGISTRY
+
+    wue_path = _REGISTRY_DIR / "wue.json"
+    try:
+        data = cast("dict[str, Any]", json.loads(wue_path.read_text()))
+        # Filter out metadata keys (starting with _)
+        _WUE_REGISTRY = {k: float(v) for k, v in data.items() if not k.startswith("_")}
+        return _WUE_REGISTRY
+    except Exception as e:
+        logger.debug(f"Failed to load WUE registry: {e}, using defaults")
+        _WUE_REGISTRY = {}
+        return _WUE_REGISTRY
+
+
+def calculate_water(
+    energy_wh: float,
+    model: str | None = None,
+    provider_hint: str | None = None,
+    region: str | None = None,
+    wue_override: float | None = None,
+) -> float:
+    """Calculate water usage in liters for datacenter cooling.
+
+    WUE varies significantly by datacenter location (0.2-3.5 L/kWh):
+    - River cooling (Virginia): ~0.8 L/kWh
+    - Air cooling (Oregon): ~2.8 L/kWh
+
+    Formula:
+    water_l = (energy_wh / 1000) * WUE
+
+    Args:
+        energy_wh: Energy in Watt-hours.
+        model: Model identifier for provider-specific WUE inference.
+        provider_hint: Explicit provider ("openai", "anthropic", "vertexai").
+        region: Cloud region for location-specific WUE (e.g., "us-east-1").
+        wue_override: Explicit WUE value (liters per kWh).
+
+    Returns:
+        Water usage in liters.
+
+    Note:
+        Regional WUE estimates have ±200% uncertainty vs ±50% for carbon.
+    """
+    # Load WUE registry
+    wue_registry = _load_wue_registry()
+
+    # Determine WUE with cascading fallback:
+    # 1. Explicit override
+    # 2. Region-specific (provider-region)
+    # 3. Provider-level default
+    # 4. Global default
+    if wue_override is not None:
+        wue = wue_override
+    elif region and provider_hint:
+        # Try provider-region specific (e.g., "aws-us-east-1")
+        region_key = f"{provider_hint.lower()}-{region.lower()}"
+        if region_key in wue_registry:
+            wue = wue_registry[region_key]
+        # Fall back to provider-level
+        elif provider_hint.lower() in wue_registry:
+            wue = wue_registry[provider_hint.lower()]
+        elif provider_hint.lower() in PROVIDER_WUE:
+            wue = PROVIDER_WUE[provider_hint.lower()]
+        else:
+            wue = DEFAULT_WUE
+    elif provider_hint:
+        # Provider-level lookup
+        if provider_hint.lower() in wue_registry:
+            wue = wue_registry[provider_hint.lower()]
+        elif provider_hint.lower() in PROVIDER_WUE:
+            wue = PROVIDER_WUE[provider_hint.lower()]
+        else:
+            wue = DEFAULT_WUE
+    elif model:
+        # Infer provider from model name
+        inferred = _infer_provider_from_model(model)
+        if inferred and region:
+            # Try provider-region
+            region_key = f"{inferred}-{region.lower()}"
+            if region_key in wue_registry:
+                wue = wue_registry[region_key]
+            elif inferred in wue_registry:
+                wue = wue_registry[inferred]
+            else:
+                wue = PROVIDER_WUE.get(inferred, DEFAULT_WUE)
+        elif inferred:
+            wue = wue_registry.get(inferred, PROVIDER_WUE.get(inferred, DEFAULT_WUE))
+        else:
+            wue = DEFAULT_WUE
+    else:
+        wue = DEFAULT_WUE
+
+    # Convert Wh to kWh and multiply by WUE
+    water_l = (energy_wh / 1000) * wue
+    return water_l
+
+
+def calculate_embodied_carbon(
+    input_tokens: int,
+    output_tokens: int,
+    model: str | None = None,
+) -> float:
+    """Calculate embodied carbon from hardware manufacturing.
+
+    Embodied carbon is the emissions from manufacturing and transporting
+    the hardware used for inference. This is amortized over the hardware
+    lifetime and scaled by usage.
+
+    Model size affects embodied carbon significantly:
+    - H100 cluster for GPT-4: 220x more emissions than L40S for Llama-8B
+    - Embodied carbon scales with active parameters
+
+    Formula:
+    embodied_g = (total_tokens / 1000) * embodied_factor
+
+    Args:
+        input_tokens: Number of input tokens.
+        output_tokens: Number of output tokens.
+        model: Model identifier for size-based scaling.
+
+    Returns:
+        Embodied carbon in grams CO2e.
+    """
+    # Default embodied carbon factor: gCO2e per 1k tokens
+    # Based on GPU manufacturing emissions amortized over lifetime
+    # Source: Patterson et al. (2021)
+    DEFAULT_EMBODIED_FACTOR = 0.075  # Medium models (10-100B params)
+
+    # Get model-specific embodied factor from registry
+    embodied_factor = DEFAULT_EMBODIED_FACTOR
+    if model:
+        resolved_model, known = resolve_model(model)
+        _load_registry()
+        assert _ENERGY is not None
+
+        if known and resolved_model in _ENERGY:
+            entry = _ENERGY[resolved_model]
+            embodied_factor = entry.get("embodied_factor", DEFAULT_EMBODIED_FACTOR)
+        else:
+            # Estimate by parameter count if available
+            # Small (<10B): 0.02, Medium (10-100B): 0.075, Large (>100B): 0.25, MoE (>1T): 0.8
+            embodied_factor = _estimate_embodied_factor_by_model_name(model)
+
+    total_tokens = input_tokens + output_tokens
+    return (total_tokens / 1000) * embodied_factor
+
+
+def _estimate_embodied_factor_by_model_name(model: str) -> float:
+    """Estimate embodied carbon factor from model name patterns.
+
+    Args:
+        model: Model identifier (e.g., "gpt-4o", "llama-3.1-8b").
+
+    Returns:
+        Estimated embodied factor (gCO2e per 1k tokens).
+    """
+    model_lower = model.lower()
+
+    # Large MoE models (>1T active params)
+    if any(x in model_lower for x in ["o1", "o3", "gpt-4", "gpt4", "claude-3-opus"]):
+        return 0.25
+
+    # Small models (<10B params)
+    if any(x in model_lower for x in ["-7b", "-8b", "small", "mini", "nano"]):
+        return 0.02
+
+    # Medium models (10-100B params) - default
+    return 0.075
+
+
 def calculate_cost(
     input_tokens: int,
     output_tokens: int,
     model: str,
     cache_read_tokens: int | None = None,
     cache_creation_tokens: int | None = None,
-) -> tuple[float, float, float, str]:
-    """Calculate estimated cost in USD.
+) -> tuple[float, float, float, float, float, str]:
+    """Calculate estimated cost in USD with cache tier breakdown.
 
     Supports cache-aware pricing: cache_read tokens are discounted
     (typically 90% cheaper), cache_creation tokens may have extra cost.
@@ -614,7 +818,9 @@ def calculate_cost(
         cache_creation_tokens: Tokens written to prompt cache (extra cost).
 
     Returns:
-        Tuple of (total_cost, input_cost, output_cost, billing_tier).
+        Tuple of (total_cost, input_cost, output_cost, cache_write_cost, cache_read_cost, billing_tier).
+        cache_write_cost: Cost to write tokens to cache (included in total)
+        cache_read_cost: Cost for cached token reads (included in total, typically discounted)
     """
     resolved_model, known = resolve_model(model)
     _load_registry()
@@ -626,7 +832,7 @@ def calculate_cost(
         rate_out = entry["usd_per_1k_output"]
     else:
         # No pricing for unknown models
-        return 0.0, 0.0, 0.0, "none"
+        return 0.0, 0.0, 0.0, 0.0, 0.0, "none"
 
     # Cache-aware cost calculation
     # Cache read tokens are charged at a discount (default: 10% of input price)
@@ -636,19 +842,20 @@ def calculate_cost(
 
     # Base input tokens (excluding cached tokens)
     effective_input = input_tokens
-    cache_cost_adjustment = 0.0
+    cache_write_cost = 0.0
+    cache_read_cost = 0.0
 
     if cache_read_tokens and cache_read_tokens > 0:
         # Subtract cache read tokens from base input, add discounted cost
         effective_input = max(0, input_tokens - cache_read_tokens)
-        cache_cost_adjustment += (cache_read_tokens * rate_in * cache_read_discount) / 1000
+        cache_read_cost = (cache_read_tokens * rate_in * cache_read_discount) / 1000
 
     if cache_creation_tokens and cache_creation_tokens > 0:
         # Cache creation tokens cost extra on top of normal input cost
-        cache_cost_adjustment += (
-            cache_creation_tokens * rate_in * cache_creation_premium
-        ) / 1000
+        cache_write_cost = (cache_creation_tokens * rate_in * cache_creation_premium) / 1000
 
-    cost_in = (effective_input * rate_in) / 1000 + cache_cost_adjustment
+    cost_in = (effective_input * rate_in) / 1000 + cache_write_cost + cache_read_cost
     cost_out = (output_tokens * rate_out) / 1000
-    return cost_in + cost_out, cost_in, cost_out, "list"
+    total_cost = cost_in + cost_out
+
+    return total_cost, cost_in, cost_out, cache_write_cost, cache_read_cost, "list"

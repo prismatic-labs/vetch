@@ -1,18 +1,23 @@
 """Inference event schema definitions.
 
 This module defines the TypedDict for inference events logged by Vetch.
+Schema version 2 adds multimodal support (images, audio, video).
+
 Schema version 1 guarantees:
 - Fields not removed
 - Field names not changed
 - Field types not changed
 - New fields may be added
 
-Breaking changes require schema_version: "2".
+Schema version 2 changes:
+- Added ImageUsage and AudioUsage TypedDicts
+- Added multimodal flag to InferenceEvent
+- Updated Usage container to support image and audio modalities
 """
 
 from typing import Literal, TypedDict, Union
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 class TextUsage(TypedDict):
@@ -23,15 +28,43 @@ class TextUsage(TypedDict):
     total_tokens: int
 
 
+class ImageUsage(TypedDict, total=False):
+    """Token usage for image modality.
+
+    Images are tokenized by LLM providers for processing.
+    Token counts vary by resolution and model.
+    """
+
+    input_tokens: int  # Tokens from input images
+    output_tokens: int  # Tokens from generated images (e.g., DALL-E)
+    total_tokens: int
+    image_count: int  # Number of images processed
+    total_pixels: int  # Total pixels across all images (for energy estimation)
+
+
+class AudioUsage(TypedDict, total=False):
+    """Token usage for audio modality.
+
+    Audio is tokenized or measured in seconds depending on provider.
+    """
+
+    input_tokens: int  # Tokens from input audio (e.g., Whisper)
+    output_tokens: int  # Tokens from generated audio (e.g., TTS)
+    total_tokens: int
+    input_seconds: float  # Duration of input audio in seconds
+    output_seconds: float  # Duration of output audio in seconds
+
+
 class Usage(TypedDict, total=False):
     """Multi-modal usage container.
 
     The nested structure supports future extension without breaking schema.
+    Schema v2 adds image and audio support.
     """
 
     text: Union[TextUsage, None]
-    image: None  # Reserved for v2
-    audio: None  # Reserved for v2
+    image: Union[ImageUsage, None]
+    audio: Union[AudioUsage, None]
 
 
 class InferenceEvent(TypedDict, total=False):
@@ -58,6 +91,7 @@ class InferenceEvent(TypedDict, total=False):
     model: str
     provider: str
     model_known: bool
+    multimodal: bool  # True if request includes non-text modalities (image/audio/video)
 
     # Usage
     usage: Union[Usage, None]
@@ -66,9 +100,12 @@ class InferenceEvent(TypedDict, total=False):
     # Estimates
     estimated_energy_wh: Union[float, None]
     estimated_carbon_g: Union[float, None]
+    estimated_water_l: Union[float, None]  # Water usage in liters
     estimated_cost_usd: Union[float, None]
     estimated_cost_input_usd: Union[float, None]
     estimated_cost_output_usd: Union[float, None]
+    estimated_cost_cache_write_usd: Union[float, None]  # Cost to write tokens to cache
+    estimated_cost_cache_read_usd: Union[float, None]  # Cost savings from cache reads
     billing_tier: str  # Always "list" for v1
 
     # Signal quality
@@ -82,7 +119,9 @@ class InferenceEvent(TypedDict, total=False):
     # Grid data
     grid_intensity_gco2e_kwh: Union[float, None]
     grid_intensity_timestamp: Union[str, None]  # ISO8601 UTC
+    grid_intensity_time_of_day: bool  # True if using hourly grid data
     region: Union[str, None]
+    embodied_carbon_g: Union[float, None]  # Hardware manufacturing emissions
 
     # PUE (Power Usage Effectiveness) metadata
     pue: Union[float, None]  # Datacenter efficiency (e.g., 1.10 for Google, 1.15 for AWS)
@@ -91,6 +130,8 @@ class InferenceEvent(TypedDict, total=False):
 
     # Request metadata
     is_stream: bool
+    is_batch: bool  # True if using batch API (50% discount)
+    is_embedding: bool  # True if embedding generation (different energy profile)
     complete: bool
     latency_ms: Union[float, None]
 
@@ -103,6 +144,7 @@ class InferenceEvent(TypedDict, total=False):
 
     # Tracking status
     tracking_disabled: bool
+    tracking_degraded: bool  # True if tracking is active but with reduced accuracy
 
     # Diagnostic warnings (fail-loud transparency)
     vetch_warnings: Union[list[str], None]
@@ -124,6 +166,14 @@ class InferenceEvent(TypedDict, total=False):
 
     # Session tracking (v0.1.6)
     session_id: Union[str, None]  # ID of parent session if event is part of a session
+
+    # Distributed tracing (v0.1.8)
+    trace_id: Union[str, None]  # W3C trace ID for correlation with APM tools
+    span_id: Union[str, None]  # W3C span ID for correlation with APM tools
+    parent_span_id: Union[str, None]  # Parent span ID for nested operations
+
+    # Deduplication (v0.1.8)
+    request_fingerprint: Union[str, None]  # SHA256 hash for duplicate detection (16-char)
 
 
 class EnergyOverride(TypedDict, total=False):
@@ -208,3 +258,48 @@ def validate_energy_override(
         result["source"] = source
 
     return result, warnings
+
+
+def normalize_usage_v1_to_v2(event: InferenceEvent) -> InferenceEvent:
+    """Convert Schema v1 flat usage to Schema v2 nested structure.
+
+    Schema v1 had `usage: TextUsage` (flat structure with input_tokens, output_tokens).
+    Schema v2 has `usage: {text: TextUsage | None, image: ..., audio: ...}` (nested).
+
+    This helper provides backward compatibility for consumers parsing v1 events.
+
+    Args:
+        event: InferenceEvent (may be v1 or v2 format).
+
+    Returns:
+        InferenceEvent in v2 format (nested usage structure).
+
+    Example::
+
+        # v1 event (flat usage):
+        event_v1 = {"usage": {"input_tokens": 100, "output_tokens": 50, ...}}
+
+        # Convert to v2 (nested usage):
+        event_v2 = normalize_usage_v1_to_v2(event_v1)
+        # Result: {"usage": {"text": {"input_tokens": 100, "output_tokens": 50, ...}, ...}}
+    """
+    if not event:
+        return event
+
+    usage = event.get("usage")
+    if not usage:
+        return event
+
+    # Check if already in v2 format (has "text", "image", or "audio" keys)
+    if isinstance(usage, dict) and any(k in usage for k in ("text", "image", "audio")):
+        return event  # Already v2 format
+
+    # v1 format detected (flat TextUsage) - convert to v2
+    if isinstance(usage, dict):
+        event["usage"] = {
+            "text": usage,  # type: ignore[typeddict-item]
+            "image": None,
+            "audio": None,
+        }
+
+    return event

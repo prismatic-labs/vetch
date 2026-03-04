@@ -195,28 +195,28 @@ def query_usage(
     try:
         cursor = conn.cursor()
 
-        # Grouped aggregation logic for Alpha
-        cursor.execute(
-            "SELECT * FROM events WHERE timestamp BETWEEN ? AND ?",
-            (start.isoformat(), end.isoformat())
-        )
+        # Build SQL query with filters pushed down to database
+        query = "SELECT * FROM events WHERE timestamp BETWEEN ? AND ?"
+        params = [start.isoformat(), end.isoformat()]
 
+        # Add model filter at SQL level
+        if model:
+            query += " AND model = ?"
+            params.append(model)
+
+        # Add tag filters at SQL level using JSON1 functions
+        if tags:
+            for key, value in tags.items():
+                # Use json_extract to check tag value at database level
+                # This avoids loading all rows into Python memory
+                query += " AND json_extract(tags_json, ?) = ?"
+                params.append(f"$.{key}")
+                params.append(value)
+
+        cursor.execute(query, params)
         summary = UsageSummary(start, end)
 
         for row in cursor:
-            # Filter
-            if model and row['model'] != model:
-                continue
-
-            row_tags = json.loads(row['tags_json'])
-            if tags:
-                match = True
-                for k, v in tags.items():
-                    if row_tags.get(k) != v:
-                        match = False
-                        break
-                if not match:
-                    continue
 
             # Aggregate
             summary.total_requests += 1
@@ -234,7 +234,8 @@ def query_usage(
             summary.by_model[m]['cost_usd'] += (row['cost_usd'] or 0.0)
             summary.by_model[m]['energy_wh'] += (row['energy_wh'] or 0.0)
 
-            # Group by Tags
+            # Group by Tags (load JSON only for aggregation, not filtering)
+            row_tags = json.loads(row['tags_json'])
             for k, v in row_tags.items():
                 if k not in summary.by_tag:
                     summary.by_tag[k] = {}

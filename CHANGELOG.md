@@ -5,6 +5,83 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-03-03
+
+### Added - Schema v2 & Multimodal Support
+- **Schema Version 2**: Upgraded event schema to support multimodal inference (images, audio, video)
+  - New `ImageUsage` TypedDict with `input_tokens`, `output_tokens`, `image_count`, `total_pixels`
+  - New `AudioUsage` TypedDict with `input_tokens`, `output_tokens`, `input_seconds`, `output_seconds`
+  - Updated `Usage` container to support `text`, `image`, and `audio` modalities
+  - New `multimodal` flag on InferenceEvent (True if request includes non-text modalities)
+  - Image token extraction from OpenAI GPT-4 Vision API responses (`prompt_tokens_details.image_tokens`)
+- **Distributed Tracing Support**: W3C trace propagation for APM integration
+  - New fields: `trace_id`, `span_id`, `parent_span_id` for correlation with Datadog, New Relic, etc.
+  - Ready for OpenTelemetry context extraction (implementation in future release)
+- **Water Usage Tracking**: Datacenter cooling water consumption
+  - New `estimated_water_l` field (liters per inference)
+  - Provider-specific WUE (Water Usage Effectiveness) values
+  - Google: 1.1 L/kWh (efficient water-free cooling), Azure: 1.7 L/kWh, AWS: 2.2 L/kWh (evaporative cooling)
+  - Formula: `water_l = (energy_wh / 1000) * WUE`
+- **Embodied Carbon Tracking**: Hardware manufacturing emissions
+  - New `embodied_carbon_g` field (gCO2e from GPU/TPU manufacturing amortized over lifetime)
+  - Factor: ~0.075 gCO2e per 1k tokens (based on Patterson et al. 2021)
+  - Adds 5-15% to operational carbon footprint
+- **Degraded Mode Indicator**: Transparency on tracking accuracy
+  - New `tracking_degraded` flag (True if tracking is active but with reduced accuracy)
+  - Triggers when: unknown model, token estimation used, Tier 3 energy data, or Tier 3 PUE
+  - Helps users understand confidence level of metrics
+- **Batch API Support Placeholders**: Schema fields for OpenAI Batch API (50% pricing discount)
+  - New `is_batch` flag (ready for implementation)
+  - New `is_embedding` flag for embedding generation (different energy profile than text generation)
+- **Time-of-Day Carbon Tracking**: Hourly grid intensity awareness
+  - New `grid_intensity_time_of_day` flag (False for now, True when hourly data implemented)
+  - Schema ready for future hourly Electricity Maps integration
+
+### Added - Security & Compliance
+- **Tag Cardinality Limits**: DoS protection for unbounded tag values
+  - Default limit: 1000 unique values per tag key
+  - Configurable via `vetch.set_tag_cardinality_limit(limit)`
+  - Automatic warnings when limit exceeded, values filtered
+- **Tag Allowlist Mode**: Strict security filtering for sensitive environments
+  - `vetch.set_tag_allowlist(['team', 'env', 'service'])` for whitelisting
+  - Non-allowlisted tags filtered with warnings
+  - Prevents accidental leakage of PII or sensitive data via tags
+- **Sensitive Tag Redaction**: PII protection via SHA256 hashing
+  - `vetch.set_redacted_tags(['user_email', 'customer_id'])` to hash sensitive values
+  - Redacted values shown as `redacted-{hash8}` in logs and exports
+  - Prevents accidental PII leakage (GDPR/CCPA compliance)
+- **Circuit Breaker for Remote Registry**: Prevents hammering GitHub on repeated failures
+  - Opens after 3 consecutive fetch failures
+  - 5-minute timeout before retry
+  - Exponential backoff with jitter
+  - New properties: `circuit_breaker_open`, `failure_count` for diagnostics
+- **Registry Signature Verification**: Supply chain attack prevention
+  - SHA256 checksum validation for registry files
+  - Opt-in via `VETCH_REGISTRY_VERIFY_SIGNATURES=true`
+  - Loads `checksums.json` from remote, verifies all downloads
+  - Logs errors on mismatch, rejects updates (possible supply chain attack)
+- **SSRF Protection**: Validates registry URLs to prevent internal network access
+  - Blocks private/internal IPs (10.x, 192.168.x, 127.x, link-local, etc.)
+  - Only allows http/https schemes (blocks file://, ftp://, etc.)
+  - DNS resolution validation before fetch
+
+### Added - Observability
+- **Configurable OTLP Queue Size**: Tunable export buffer for high-throughput environments
+  - Environment variable: `VETCH_EXPORT_QUEUE_SIZE` (default: 1000)
+  - Prevents memory growth in high-traffic services
+  - Events dropped if queue full (backpressure documented)
+
+### Added - Framework Integrations
+- **Native LangChain Callback Handler**: First-class LangChain integration
+  - `from vetch.integrations.langchain import VetchCallbackHandler`
+  - Automatic tracking for all LLM calls in chains, agents, and LCEL pipelines
+  - Aggregates metrics across multiple calls: `handler.total_cost`, `handler.total_energy_wh`
+  - Session support for distributed tracing across LangChain chains
+
+### Fixed
+- Tag validation now happens after allowlist filtering (correct order)
+- SSRF validation prevents registry from resolving private hostnames
+
 ## [0.1.7] - 2026-03-03
 
 ### Added

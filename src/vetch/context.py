@@ -35,6 +35,7 @@ class CapturedCall:
     provider: str
     usage: Usage | None = None
     is_stream: bool = False
+    is_embedding: bool = False  # True if embedding generation (not text completion)
     accumulated_chars: int = 0
     complete: bool = True
     error: bool = False
@@ -102,6 +103,7 @@ class TrackingContext:
         provider: str,
         usage: Usage | None = None,
         is_stream: bool = False,
+        is_embedding: bool = False,
         accumulated_chars: int = 0,
         complete: bool = True,
         error: bool = False,
@@ -117,6 +119,7 @@ class TrackingContext:
             provider: Provider name (openai, vertexai).
             usage: Token usage from response.
             is_stream: Whether this was a streaming call.
+            is_embedding: Whether this is an embedding generation call.
             accumulated_chars: Character count for streams.
             complete: Whether the call completed successfully.
             error: Whether an error occurred.
@@ -130,6 +133,7 @@ class TrackingContext:
             provider=provider,
             usage=usage,
             is_stream=is_stream,
+            is_embedding=is_embedding,
             accumulated_chars=accumulated_chars,
             complete=complete,
             error=error,

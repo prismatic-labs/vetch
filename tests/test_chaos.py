@@ -418,7 +418,7 @@ class TestChaosPricing:
 
         _reset_registries()
         with patch("pathlib.Path.read_text", side_effect=FileNotFoundError()):
-            cost, input_cost, output_cost, tier_info = calculate_cost(1000, 500, "gpt-4o")
+            cost, input_cost, output_cost, cache_write, cache_read, tier_info = calculate_cost(1000, 500, "gpt-4o")
             # Should return 0 rather than crash
             assert cost == 0.0
             # tier_info is "none" when registry fails to load
@@ -431,7 +431,7 @@ class TestChaosPricing:
 
         _reset_registries()
         with patch("pathlib.Path.read_text", return_value="NOT JSON {"):
-            cost, input_cost, output_cost, tier_info = calculate_cost(1000, 500, "gpt-4o")
+            cost, input_cost, output_cost, cache_write, cache_read, tier_info = calculate_cost(1000, 500, "gpt-4o")
             assert cost == 0.0
             assert tier_info == "none"
         _reset_registries()

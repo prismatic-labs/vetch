@@ -323,3 +323,60 @@ class TestStreamWrapperNoContext:
 
         assert wrapper._error is True
         assert wrapper._error_type == "ValueError"
+
+
+class TestEmbeddingsExtraction:
+    """Tests for embeddings usage extraction."""
+
+    def test_extract_embeddings_usage(self) -> None:
+        """Extract usage from embeddings response."""
+        from vetch.providers.openai import extract_embeddings_usage
+
+        usage = MockUsage(prompt=50, completion=0, total=50)
+        response = MockResponse(model="text-embedding-3-small", usage=usage)
+
+        result = extract_embeddings_usage(response)
+
+        assert result is not None
+        assert result["text"]["input_tokens"] == 50
+        assert result["text"]["output_tokens"] == 0  # Embeddings don't generate output
+        assert result["text"]["total_tokens"] == 50
+
+    def test_extract_embeddings_usage_no_usage(self) -> None:
+        """Return None when usage is missing."""
+        from vetch.providers.openai import extract_embeddings_usage
+
+        response = MockResponse(model="text-embedding-3-small", usage=None)
+
+        result = extract_embeddings_usage(response)
+
+        assert result is None
+
+    def test_embeddings_capture_sets_is_embedding_flag(self) -> None:
+        """Embeddings capture should set is_embedding=True."""
+        from vetch.providers.openai import _after_embeddings_create
+
+        with TrackingContext(region="us-east-1") as ctx:
+            usage = MockUsage(prompt=100, completion=0, total=100)
+            response = MockResponse(model="text-embedding-3-small", usage=usage)
+
+            _after_embeddings_create(response)
+
+            assert ctx.captured_call is not None
+            assert ctx.captured_call.model == "text-embedding-3-small"
+            assert ctx.captured_call.provider == "openai"
+            assert ctx.captured_call.is_embedding is True
+            assert ctx.captured_call.complete is True
+
+    def test_embeddings_error_sets_flag(self) -> None:
+        """Embeddings error capture should set is_embedding=True."""
+        from vetch.providers.openai import _on_embeddings_error
+
+        with TrackingContext(region="us-east-1") as ctx:
+            error = ValueError("API error")
+            _on_embeddings_error(error)
+
+            assert ctx.captured_call is not None
+            assert ctx.captured_call.is_embedding is True
+            assert ctx.captured_call.error is True
+            assert ctx.captured_call.error_type == "ValueError"

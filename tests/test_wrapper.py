@@ -32,7 +32,7 @@ class TestVetchContext:
             pass
 
         assert ctx.event is not None
-        assert ctx.event["schema_version"] == "1"
+        assert ctx.event["schema_version"] == "2"
 
     def test_event_has_required_fields(self) -> None:
         """Event contains all required fields."""

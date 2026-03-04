@@ -14,15 +14,19 @@ Key design decisions:
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import ipaddress
 import json
 import logging
 import os
 import random
+import socket
 import threading
 import time
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
@@ -53,11 +57,68 @@ def get_vetch_home() -> Path:
     return DEFAULT_VETCH_HOME
 
 
+def _is_private_ip(ip: str) -> bool:
+    """Check if IP address is private/internal.
+
+    Args:
+        ip: IP address string (IPv4 or IPv6).
+
+    Returns:
+        True if IP is private, loopback, link-local, or reserved.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+        return addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved
+    except ValueError:
+        return False
+
+
+def validate_registry_url(url: str) -> tuple[bool, str | None]:
+    """Validate registry URL to prevent SSRF attacks.
+
+    Blocks:
+    - Private/internal IP addresses (10.x, 192.168.x, 127.x, etc.)
+    - Non-HTTP(S) schemes (file://, ftp://, etc.)
+    - Invalid URLs
+
+    Args:
+        url: URL to validate.
+
+    Returns:
+        Tuple of (is_valid, error_message).
+    """
+    try:
+        parsed = urlparse(url)
+
+        # Only allow HTTP/HTTPS
+        if parsed.scheme not in ("http", "https"):
+            return False, f"Invalid URL scheme '{parsed.scheme}', only http/https allowed"
+
+        # Ensure hostname is present
+        if not parsed.hostname:
+            return False, "URL must have a hostname"
+
+        # Resolve hostname to IP and check if private
+        try:
+            ip = socket.gethostbyname(parsed.hostname)
+            if _is_private_ip(ip):
+                return False, f"Registry URL resolves to private IP {ip}, SSRF blocked"
+        except socket.gaierror:
+            # Hostname doesn't resolve - let urlopen handle the error
+            pass
+
+        return True, None
+
+    except Exception as e:
+        return False, f"Invalid URL: {e}"
+
+
 class RemoteRegistryFetcher:
     """Fetches and caches remote registry data.
 
     Thread-safe. Uses background timer for periodic refresh.
     ETag caching minimizes bandwidth usage.
+    Circuit breaker prevents hammering remote on repeated failures.
     """
 
     def __init__(
@@ -66,7 +127,7 @@ class RemoteRegistryFetcher:
         refresh_hours: float | None = None,
         timeout_seconds: float = 5.0,
     ) -> None:
-        """Initialize the remote registry fetcher.
+        """Initialize the remote registry fetcher with SSRF protection.
 
         Args:
             base_url: Base URL for registry files. Defaults to GitHub raw URL.
@@ -76,6 +137,13 @@ class RemoteRegistryFetcher:
         self._base_url = base_url or os.environ.get(
             "VETCH_REGISTRY_URL", DEFAULT_REGISTRY_URL
         )
+
+        # Validate base URL for SSRF
+        valid, error = validate_registry_url(self._base_url)
+        if not valid:
+            logger.error(f"Invalid registry URL: {error}. Remote registry disabled.")
+            self._base_url = ""  # Disable remote fetching
+
         self._refresh_hours = refresh_hours or float(
             os.environ.get("VETCH_REGISTRY_REFRESH_HOURS", str(DEFAULT_REFRESH_HOURS))
         )
@@ -89,12 +157,34 @@ class RemoteRegistryFetcher:
         # ETag tracking per file
         self._etags: dict[str, str] = {}
 
+        # Merged registry caching (optimization to avoid re-merging when ETag unchanged)
+        # Only re-merge if remote data's ETag changes
+        self._merged_energy_cache: dict[str, Any] | None = None
+        self._merged_pricing_cache: dict[str, Any] | None = None
+        self._last_energy_etag: str | None = None
+        self._last_pricing_etag: str | None = None
+
         # Last fetch timestamps
         self._last_fetch: float = 0.0
 
         # Background timer
         self._timer: threading.Timer | None = None
         self._stopped = False
+
+        # Circuit breaker state
+        self._failure_count: int = 0
+        self._circuit_open_until: float = 0.0  # Monotonic timestamp
+        self._max_failures: int = 3  # Open circuit after 3 consecutive failures
+        self._circuit_timeout_seconds: float = 300.0  # 5 minutes
+
+        # Signature verification (opt-in for high-security environments)
+        self._verify_signatures: bool = os.environ.get(
+            "VETCH_REGISTRY_VERIFY_SIGNATURES", ""
+        ).lower() in ("true", "1", "yes")
+        self._expected_checksums: dict[str, str] = {}  # filename -> sha256 hex
+
+        # Load persisted circuit breaker state from disk
+        self._load_circuit_state()
 
     def _is_enabled(self) -> bool:
         """Check if remote registry is enabled.
@@ -105,8 +195,163 @@ class RemoteRegistryFetcher:
         enabled = os.environ.get("VETCH_REGISTRY_REMOTE", "").lower()
         return enabled in ("true", "1", "yes")
 
+    def _is_circuit_open(self) -> bool:
+        """Check if circuit breaker is open (blocking requests).
+
+        Returns:
+            True if circuit is open and should block requests.
+        """
+        now = time.monotonic()
+        if now < self._circuit_open_until:
+            return True
+        # Circuit timeout expired, close the circuit and reset failure count
+        if self._circuit_open_until > 0:
+            logger.info("Remote registry circuit breaker closed, resuming requests")
+            self._circuit_open_until = 0.0
+            self._failure_count = 0
+        return False
+
+    def _record_failure(self) -> None:
+        """Record a fetch failure and potentially open circuit breaker."""
+        self._failure_count += 1
+        if self._failure_count >= self._max_failures:
+            self._circuit_open_until = time.monotonic() + self._circuit_timeout_seconds
+            logger.warning(
+                f"Remote registry circuit breaker opened after {self._failure_count} "
+                f"consecutive failures. Blocking requests for {self._circuit_timeout_seconds}s"
+            )
+        self._save_circuit_state()
+
+    def _record_success(self) -> None:
+        """Record a successful fetch and reset circuit breaker."""
+        if self._failure_count > 0:
+            logger.info(f"Remote registry fetch succeeded after {self._failure_count} failures")
+        self._failure_count = 0
+        self._circuit_open_until = 0.0
+        self._save_circuit_state()
+
+    def _load_circuit_state(self) -> None:
+        """Load circuit breaker state from persisted file.
+
+        Loads state from ~/.vetch/circuit_state.json with 24-hour TTL.
+        This allows circuit breaker to survive process restarts and prevents
+        hammering remote registry immediately after restart.
+        """
+        try:
+            vetch_home = get_vetch_home()
+            state_path = vetch_home / "circuit_state.json"
+
+            if not state_path.exists():
+                return
+
+            with open(state_path) as f:
+                state = json.load(f)
+
+            # Check TTL (24 hours = 86400 seconds)
+            timestamp = state.get("timestamp", 0)
+            if time.time() - timestamp > 86400:
+                # State expired, clean up
+                with contextlib.suppress(Exception):
+                    state_path.unlink()
+                return
+
+            # Load state
+            self._failure_count = state.get("failure_count", 0)
+            self._circuit_open_until = state.get("open_until", 0.0)
+
+            if self._is_circuit_open():
+                logger.info(
+                    f"Circuit breaker loaded from disk: open until "
+                    f"{self._circuit_open_until - time.monotonic():.0f}s from now"
+                )
+
+        except Exception as e:
+            logger.debug(f"Failed to load circuit breaker state: {e}")
+
+    def _save_circuit_state(self) -> None:
+        """Persist circuit breaker state to disk.
+
+        Saves state to ~/.vetch/circuit_state.json with timestamp.
+        """
+        try:
+            vetch_home = get_vetch_home()
+            vetch_home.mkdir(parents=True, exist_ok=True)
+            state_path = vetch_home / "circuit_state.json"
+
+            state = {
+                "failure_count": self._failure_count,
+                "open_until": self._circuit_open_until,
+                "timestamp": time.time(),
+            }
+
+            with open(state_path, "w") as f:
+                json.dump(state, f)
+
+        except Exception as e:
+            logger.debug(f"Failed to save circuit breaker state: {e}")
+
+    def _verify_checksum(self, filename: str, data: bytes) -> bool:
+        """Verify SHA256 checksum of fetched data.
+
+        Checks against expected checksums loaded from checksums.json.
+        If verification is not enabled, always returns True.
+
+        Args:
+            filename: Name of the file being verified.
+            data: Raw bytes of the file content.
+
+        Returns:
+            True if checksum matches or verification is disabled.
+        """
+        if not self._verify_signatures:
+            return True
+
+        if filename not in self._expected_checksums:
+            logger.warning(
+                f"No checksum found for {filename}, skipping verification. "
+                f"Set VETCH_REGISTRY_VERIFY_SIGNATURES=false to suppress this warning."
+            )
+            return True
+
+        computed = hashlib.sha256(data).hexdigest()
+        expected = self._expected_checksums[filename]
+
+        if computed != expected:
+            logger.error(
+                f"Checksum verification failed for {filename}. "
+                f"Expected: {expected}, Got: {computed}. "
+                f"Possible supply chain attack or corrupted download."
+            )
+            return False
+
+        logger.debug(f"Checksum verified for {filename}")
+        return True
+
+    def _load_checksums(self) -> None:
+        """Load expected checksums from remote checksums.json file.
+
+        This file should contain a JSON object mapping filenames to SHA256 hashes.
+        """
+        if not self._verify_signatures:
+            return
+
+        try:
+            url = f"{self._base_url.rstrip('/')}/checksums.json"
+            req = Request(url)
+            req.add_header("User-Agent", "vetch-sdk")
+            response = urlopen(req, timeout=self._timeout)  # noqa: S310
+            checksums = json.loads(response.read().decode("utf-8"))
+
+            if isinstance(checksums, dict):
+                self._expected_checksums = checksums
+                logger.info(f"Loaded {len(checksums)} registry checksums for verification")
+            else:
+                logger.warning("checksums.json is not a valid dict, skipping verification")
+        except Exception as e:
+            logger.warning(f"Failed to load checksums.json: {e}. Signature verification disabled.")
+
     def _fetch_json(self, filename: str) -> dict[str, Any] | None:
-        """Fetch a JSON file from remote, using ETag caching.
+        """Fetch a JSON file from remote with ETag caching, circuit breaker, and verification.
 
         Args:
             filename: Name of the file (e.g., "energy.json").
@@ -114,7 +359,20 @@ class RemoteRegistryFetcher:
         Returns:
             Parsed JSON dict, or None if fetch failed or not modified.
         """
+        # Check circuit breaker
+        if self._is_circuit_open():
+            logger.debug(f"Circuit breaker open, skipping fetch of {filename}")
+            return None
+
         url = f"{self._base_url.rstrip('/')}/{filename}"
+
+        # Re-validate URL immediately before fetch to prevent TOCTOU
+        # DNS could have changed since initialization
+        is_valid, err = validate_registry_url(url)
+        if not is_valid:
+            logger.warning(f"Registry URL failed re-validation: {err}. Skipping fetch of {filename}")
+            self._record_failure()
+            return None
 
         try:
             req = Request(url)
@@ -127,23 +385,36 @@ class RemoteRegistryFetcher:
 
             response = urlopen(req, timeout=self._timeout)  # noqa: S310
 
+            # Read response data
+            raw_data = response.read()
+
+            # Verify checksum before parsing
+            if not self._verify_checksum(filename, raw_data):
+                logger.error(f"Checksum verification failed for {filename}, rejecting update")
+                self._record_failure()
+                return None
+
             # Store new ETag
             new_etag = response.headers.get("ETag")
             if new_etag:
                 self._etags[filename] = new_etag
 
-            data = json.loads(response.read().decode("utf-8"))
+            data = json.loads(raw_data.decode("utf-8"))
+            self._record_success()
             return data  # type: ignore[no-any-return]
 
         except URLError as e:
-            # Check for 304 Not Modified
+            # Check for 304 Not Modified (not a failure)
             if hasattr(e, "code") and getattr(e, "code", None) == 304:
                 logger.debug(f"Registry {filename} not modified (304)")
+                self._record_success()  # 304 is a successful response
                 return None
             logger.debug(f"Failed to fetch remote registry {filename}: {e}")
+            self._record_failure()
             return None
         except Exception as e:
             logger.debug(f"Failed to fetch remote registry {filename}: {e}")
+            self._record_failure()
             return None
 
     def _merge_registry(
@@ -187,7 +458,7 @@ class RemoteRegistryFetcher:
         return merged
 
     def fetch_and_cache(self) -> bool:
-        """Fetch remote registries and update cache.
+        """Fetch remote registries and update cache with circuit breaker protection.
 
         Thread-safe. Called by background timer or manually.
 
@@ -197,9 +468,18 @@ class RemoteRegistryFetcher:
         if not self._is_enabled():
             return False
 
+        # Check circuit breaker before attempting fetch
+        if self._is_circuit_open():
+            logger.debug("Circuit breaker open, skipping registry fetch")
+            return False
+
         updated = False
 
         with self._lock:
+            # Load checksums for verification (if enabled)
+            if self._verify_signatures and not self._expected_checksums:
+                self._load_checksums()
+
             # Fetch energy registry
             energy_data = self._fetch_json("energy.json")
             if energy_data is not None:
@@ -219,6 +499,8 @@ class RemoteRegistryFetcher:
     def get_energy(self, bundled: dict[str, Any]) -> dict[str, Any]:
         """Get energy registry, merging remote cache with bundled.
 
+        Uses cached merge result if remote ETag unchanged (performance optimization).
+
         Args:
             bundled: The bundled energy registry.
 
@@ -227,11 +509,31 @@ class RemoteRegistryFetcher:
         """
         with self._lock:
             if self._energy_cache is not None:
-                return self._merge_registry(bundled, self._energy_cache)
+                # Get current ETag for energy.json
+                current_etag = self._etags.get("energy.json")
+
+                # Return cached merge if ETag unchanged
+                if (
+                    self._merged_energy_cache is not None
+                    and current_etag == self._last_energy_etag
+                ):
+                    return self._merged_energy_cache
+
+                # ETag changed or no cache - perform merge
+                merged = self._merge_registry(bundled, self._energy_cache)
+
+                # Cache the merge result with its ETag
+                self._merged_energy_cache = merged
+                self._last_energy_etag = current_etag
+
+                return merged
+
         return bundled
 
     def get_pricing(self, bundled: dict[str, Any]) -> dict[str, Any]:
         """Get pricing registry, merging remote cache with bundled.
+
+        Uses cached merge result if remote ETag unchanged (performance optimization).
 
         Args:
             bundled: The bundled pricing registry.
@@ -241,7 +543,25 @@ class RemoteRegistryFetcher:
         """
         with self._lock:
             if self._pricing_cache is not None:
-                return self._merge_registry(bundled, self._pricing_cache)
+                # Get current ETag for pricing.json
+                current_etag = self._etags.get("pricing.json")
+
+                # Return cached merge if ETag unchanged
+                if (
+                    self._merged_pricing_cache is not None
+                    and current_etag == self._last_pricing_etag
+                ):
+                    return self._merged_pricing_cache
+
+                # ETag changed or no cache - perform merge
+                merged = self._merge_registry(bundled, self._pricing_cache)
+
+                # Cache the merge result with its ETag
+                self._merged_pricing_cache = merged
+                self._last_pricing_etag = current_etag
+
+                return merged
+
         return bundled
 
     @property
@@ -254,6 +574,16 @@ class RemoteRegistryFetcher:
         """Whether remote data has been fetched."""
         with self._lock:
             return self._energy_cache is not None or self._pricing_cache is not None
+
+    @property
+    def circuit_breaker_open(self) -> bool:
+        """Whether circuit breaker is currently open."""
+        return self._is_circuit_open()
+
+    @property
+    def failure_count(self) -> int:
+        """Number of consecutive failures."""
+        return self._failure_count
 
     def start_background_refresh(self) -> None:
         """Start background refresh timer with decorrelated jitter."""
