@@ -555,8 +555,11 @@ def patch_openai_client(client: Any) -> bool:
             if is_vetch_patched(getattr(completions, "create", None)):
                 return True
 
-            # Store original keyed by completions object (unique per client)
-            _client_originals[completions] = create
+            # Store original function (not bound method) to avoid circular reference
+            # Bound methods hold a reference to the object, preventing garbage collection
+            _client_originals[completions] = (
+                create.__func__ if hasattr(create, "__func__") else create
+            )
 
             # Apply patch for chat completions
             completions.create = _wrapped_create(create)
@@ -569,8 +572,12 @@ def patch_openai_client(client: Any) -> bool:
                 with _client_lock:
                     # Double-check inside lock
                     if not is_vetch_patched(getattr(embeddings, "create", None)):
-                        # Store original keyed by embeddings object
-                        _client_originals[embeddings] = embeddings_create
+                        # Store original function (not bound method) to avoid circular reference
+                        _client_originals[embeddings] = (
+                            embeddings_create.__func__
+                            if hasattr(embeddings_create, "__func__")
+                            else embeddings_create
+                        )
                         # Apply patch
                         embeddings.create = _wrapped_embeddings_create(embeddings_create)
                         logger.debug("OpenAI embeddings endpoint patched successfully")

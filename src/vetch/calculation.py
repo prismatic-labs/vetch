@@ -363,7 +363,6 @@ def calculate_energy(
     # Clamp negative tokens to 0
     in_tokens = max(0, input_tokens)
     out_tokens = max(0, output_tokens)
-    total_tokens = in_tokens + out_tokens
 
     if energy_override:
         wh_in = energy_override["wh_per_1k_input"]
@@ -818,8 +817,8 @@ def calculate_cost(
         cache_creation_tokens: Tokens written to prompt cache (extra cost).
 
     Returns:
-        Tuple of (total_cost, input_cost, output_cost, cache_write_cost, cache_read_cost, billing_tier).
-        cache_write_cost: Cost to write tokens to cache (included in total)
+        Tuple of (total_cost, input_cost, output_cost, cache_write_cost, cache_read_cost,
+        billing_tier). cache_write_cost: Cost to write tokens to cache (included in total)
         cache_read_cost: Cost for cached token reads (included in total, typically discounted)
     """
     resolved_model, known = resolve_model(model)

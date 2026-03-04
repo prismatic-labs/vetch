@@ -8,9 +8,24 @@ This module handles:
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import logging
+import os
+import secrets
+import socket
 from collections import OrderedDict, deque
 from collections.abc import Iterable
 from time import time
+from typing import TypedDict
+
+
+class _TagCardinalityTracker(TypedDict):
+    """Tracker for tag cardinality with LRU eviction."""
+
+    values: OrderedDict[str, float]  # tag_value -> timestamp
+    hourly_new: deque[float]  # timestamps of new values in last hour
+
 
 # Global state
 _required_tags: set[str] = set()
@@ -22,8 +37,7 @@ _generated_redaction_key: bytes | None = None  # Ephemeral key if VETCH_REDACTIO
 _redaction_key_warning_shown: bool = False  # Rate limit security warning
 
 # Advanced cardinality tracking with rate limiting and LRU eviction
-_tag_cardinality_tracker: dict[str, dict[str, object]] = {}
-# Structure: {tag_key: {"values": OrderedDict[str, float], "hourly_new": deque[float]}}
+_tag_cardinality_tracker: dict[str, _TagCardinalityTracker] = {}
 _MAX_TRACKER_ENTRIES: int = 10000  # Global limit across all tag keys
 _MAX_NEW_PER_HOUR: int = 100  # Max new values per tag key per hour
 _current_tracker_size: int = 0  # Track total entries for global LRU
@@ -32,7 +46,8 @@ _current_tracker_size: int = 0  # Track total entries for global LRU
 # Each unique tag combination creates a new time series in metrics backends (Prometheus/Datadog)
 _tag_combinations_seen: set[frozenset[tuple[str, str]]] = set()
 _tag_key_frequencies: dict[str, int] = {}  # Running count of how many times each key appears
-_MAX_TAG_COMBINATIONS: int = 5000  # Max unique tag combinations before dropping high-cardinality tags
+# Max unique tag combinations before dropping high-cardinality tags
+_MAX_TAG_COMBINATIONS: int = 5000
 _tag_combination_limit_exceeded: bool = False
 _last_combination_warning: float = 0.0  # Rate limit warnings
 
@@ -215,24 +230,21 @@ def get_redacted_tags() -> set[str]:
 def redact_tags(tags: dict[str, str] | None) -> dict[str, str]:
     """Redact sensitive tag values by hashing them with HMAC-SHA256.
 
-    Uses HMAC-SHA256 with a secret key from VETCH_REDACTION_KEY environment variable
-    (defaults to hostname if not set). Output is 16 characters (64 bits of entropy)
-    which provides collision resistance up to ~5 billion values (birthday paradox).
+    Uses HMAC-SHA256 with a cryptographically secure key from VETCH_REDACTION_KEY
+    environment variable (generates ephemeral key if not set). Output is 32 characters
+    (128 bits of entropy) which provides collision resistance for enterprise scale
+    (~10^19 values before 50% collision probability via birthday paradox).
 
     Args:
         tags: Input tags dictionary.
 
     Returns:
-        Tags with sensitive values hashed (HMAC-SHA256 first 16 chars).
+        Tags with sensitive values hashed (HMAC-SHA256 first 32 chars).
     """
     if not tags or not _redacted_tags:
         return tags or {}
 
-    import hmac
-    import hashlib
     import os
-    import secrets
-    import logging
     global _generated_redaction_key, _redaction_key_warning_shown
 
     # Get HMAC key from environment variable
@@ -257,11 +269,11 @@ def redact_tags(tags: dict[str, str] | None) -> dict[str, str]:
     redacted = {}
     for key_name, value in tags.items():
         if key_name in _redacted_tags:
-            # HMAC-SHA256 with 16-char output = 64 bits of entropy
-            # Birthday paradox: ~5 billion values for 50% collision probability
-            # (vs 8 chars = 32 bits = ~77k values)
+            # HMAC-SHA256 with 32-char output = 128 bits of entropy
+            # Birthday paradox: ~10^19 values for 50% collision probability
+            # Enterprise-safe for billions of unique user/request IDs
             h = hmac.new(key, value.encode("utf-8"), hashlib.sha256)
-            hashed = h.hexdigest()[:16]
+            hashed = h.hexdigest()[:32]
             redacted[key_name] = f"redacted-{hashed}"
         else:
             redacted[key_name] = value
@@ -299,17 +311,16 @@ def check_tag_cardinality(tags: dict[str, str] | None) -> list[str]:
             }
 
         tracker = _tag_cardinality_tracker[key]
-        values = tracker["values"]  # type: ignore[assignment]
-        hourly_new = tracker["hourly_new"]  # type: ignore[assignment]
-
+        values = tracker["values"]
+        hourly_new = tracker["hourly_new"]
         # Clean up old hourly_new entries (older than 1 hour)
         while hourly_new and hourly_new[0] < one_hour_ago:
             hourly_new.popleft()
 
         # Check if value already exists (update timestamp and move to end for LRU)
         if value in values:
-            values.move_to_end(value)  # type: ignore[attr-defined]
-            values[value] = now  # type: ignore[index]
+            values.move_to_end(value)
+            values[value] = now
             continue
 
         # New value - check hourly rate limit
@@ -334,8 +345,8 @@ def check_tag_cardinality(tags: dict[str, str] | None) -> list[str]:
             _evict_oldest_global_entry()
 
         # Add new value
-        values[value] = now  # type: ignore[index]
-        hourly_new.append(now)  # type: ignore[attr-defined]
+        values[value] = now
+        hourly_new.append(now)
         _current_tracker_size += 1
 
     return warnings
@@ -354,20 +365,20 @@ def _evict_oldest_global_entry() -> None:
 
     # Find oldest entry across all keys
     for key, tracker in _tag_cardinality_tracker.items():
-        values = tracker["values"]  # type: ignore[index]
+        values = tracker["values"]
         if values:
             # First item in OrderedDict is oldest
-            first_value, first_timestamp = next(iter(values.items()))  # type: ignore[arg-type,call-overload]
-            if first_timestamp < oldest_timestamp:  # type: ignore[operator]
-                oldest_timestamp = first_timestamp  # type: ignore[assignment]
+            first_value, first_timestamp = next(iter(values.items()))
+            if first_timestamp < oldest_timestamp:
+                oldest_timestamp = first_timestamp
                 oldest_key = key
-                oldest_value = first_value  # type: ignore[assignment]
+                oldest_value = first_value
 
     # Evict oldest entry
     if oldest_key and oldest_value:
         tracker = _tag_cardinality_tracker[oldest_key]
-        values = tracker["values"]  # type: ignore[index]
-        del values[oldest_value]  # type: ignore[arg-type]
+        values = tracker["values"]
+        del values[oldest_value]
         _current_tracker_size -= 1
 
         # Clean up empty tracker
@@ -390,7 +401,6 @@ def check_global_tag_combination_limit(
         Tuple of (sanitized_tags, warnings).
         If limit exceeded, returns tags with high-cardinality keys removed.
     """
-    import logging
     global _tag_combinations_seen, _MAX_TAG_COMBINATIONS
     global _tag_combination_limit_exceeded, _last_combination_warning
     global _tag_key_frequencies
@@ -425,7 +435,9 @@ def check_global_tag_combination_limit(
             # Heuristic: Keep tags where the key appears in >10% of combinations
             # Use pre-computed frequency map for O(1) lookup instead of O(N*M) recomputation
             threshold = len(_tag_combinations_seen) * 0.1
-            low_cardinality_keys = {k for k, count in _tag_key_frequencies.items() if count > threshold}
+            low_cardinality_keys = {
+                k for k, count in _tag_key_frequencies.items() if count > threshold
+            }
 
             # Filter to only low-cardinality tags
             sanitized = {k: v for k, v in tags.items() if k in low_cardinality_keys}
@@ -484,13 +496,9 @@ def process_tags_single_pass(
     # Prepare HMAC key for redaction (only if needed)
     hmac_key: bytes | None = None
     if _redacted_tags:
-        import hmac
-        import hashlib
-        import os
 
         hmac_key = os.environ.get("VETCH_REDACTION_KEY", "").encode("utf-8")
         if not hmac_key:
-            import socket
             try:
                 hmac_key = socket.gethostname().encode("utf-8")
             except Exception:
@@ -507,10 +515,10 @@ def process_tags_single_pass(
     for key, value in tags.items():
         # STEP 1: Redact sensitive values (if key is marked for redaction)
         if _redacted_tags and key in _redacted_tags and hmac_key:
-            import hmac
             import hashlib
+            import hmac
             h = hmac.new(hmac_key, value.encode("utf-8"), hashlib.sha256)
-            hashed = h.hexdigest()[:16]  # 64 bits entropy
+            hashed = h.hexdigest()[:32]  # 128 bits entropy (enterprise-safe)
             value = f"redacted-{hashed}"
 
         # STEP 2: Filter by allowlist (if configured)
@@ -530,23 +538,22 @@ def process_tags_single_pass(
             }
 
         tracker = _tag_cardinality_tracker[key]
-        values = tracker["values"]  # type: ignore[assignment]
-        hourly_new = tracker["hourly_new"]  # type: ignore[assignment]
-
+        values = tracker["values"]
+        hourly_new = tracker["hourly_new"]
         # Clean up old hourly_new entries (older than 1 hour)
         while hourly_new and hourly_new[0] < one_hour_ago:
             hourly_new.popleft()
 
         # Check if value already exists (update timestamp and move to end for LRU)
         if value in values:
-            values.move_to_end(value)  # type: ignore[attr-defined]
-            values[value] = now  # type: ignore[index]
+            values.move_to_end(value)
+            values[value] = now
         else:
             # New value - check hourly rate limit
             if len(hourly_new) >= _MAX_NEW_PER_HOUR:
                 warnings.append(
-                    f"Tag '{key}' exceeds hourly rate limit of {_MAX_NEW_PER_HOUR} new values/hour. "
-                    f"Value '{value}' ignored. Reduce tag value churn."
+                    f"Tag '{key}' exceeds hourly rate limit of {_MAX_NEW_PER_HOUR} "
+                    f"new values/hour. Value '{value}' ignored. Reduce tag value churn."
                 )
                 # Note: We still include the tag in processed dict, just warn
                 # (cardinality is for observability, not security)
@@ -566,8 +573,8 @@ def process_tags_single_pass(
                     _evict_oldest_global_entry()
 
                 # Add new value to tracker
-                values[value] = now  # type: ignore[index]
-                hourly_new.append(now)  # type: ignore[attr-defined]
+                values[value] = now
+                hourly_new.append(now)
                 _current_tracker_size += 1
 
         # Add to processed dict (after redaction and filtering)
@@ -579,7 +586,7 @@ def process_tags_single_pass(
         warnings.extend(combo_warnings)
 
     # STEP 5: Validate required tags are present (after all filtering)
-    missing: list[str] = []
+    missing = []
     if _required_tags:
         current_keys = set(processed.keys())
         missing = sorted(list(_required_tags - current_keys))

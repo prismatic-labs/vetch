@@ -11,9 +11,11 @@ and is never uploaded unless explicitly configured via sync (future).
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import sqlite3
+import threading
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -29,10 +31,44 @@ _EXPERIMENTAL_WARNING_ISSUED = False
 DB_PATH = Path.home() / ".vetch" / "usage.db"
 _STORAGE_ENABLED = False
 
+# Connection pool for efficient SQLite access
+_connection_pool: sqlite3.Connection | None = None
+_connection_lock = threading.Lock()
+
+
+def _get_connection() -> sqlite3.Connection:
+    """Get or create a reusable SQLite connection (thread-safe).
+
+    Maintains a single connection per process to avoid repeated open/close overhead.
+    Connection is automatically closed on process exit.
+    """
+    global _connection_pool
+    with _connection_lock:
+        if _connection_pool is None:
+            # Lazy init database if needed
+            if not DB_PATH.exists():
+                _init_db()
+            _connection_pool = sqlite3.connect(DB_PATH, check_same_thread=False)
+            _connection_pool.row_factory = sqlite3.Row
+            # Register cleanup on exit
+            atexit.register(_close_connection)
+        return _connection_pool
+
+
+def _close_connection() -> None:
+    """Close the pooled connection on shutdown."""
+    global _connection_pool
+    if _connection_pool is not None:
+        try:
+            _connection_pool.close()
+        except Exception:
+            pass
+        _connection_pool = None
+
 
 def configure_storage(enabled: bool = True, path: Path | None = None) -> None:
     """Enable or disable local storage."""
-    global _STORAGE_ENABLED, DB_PATH, _EXPERIMENTAL_WARNING_ISSUED
+    global _STORAGE_ENABLED, DB_PATH, _EXPERIMENTAL_WARNING_ISSUED, _connection_pool
 
     # Issue warning only once when storage is first enabled
     if enabled and not _EXPERIMENTAL_WARNING_ISSUED:
@@ -44,7 +80,14 @@ def configure_storage(enabled: bool = True, path: Path | None = None) -> None:
         )
 
     _STORAGE_ENABLED = enabled
-    if path:
+    if path and path != DB_PATH:
+        # Close existing connection if path changed
+        if _connection_pool is not None:
+            try:
+                _connection_pool.close()
+            except Exception:
+                pass
+            _connection_pool = None
         DB_PATH = path
 
 
@@ -98,17 +141,14 @@ def _init_db() -> None:
 
 
 def store_event(event: InferenceEvent) -> None:
-    """Store an event in the local database."""
+    """Store an event in the local database using pooled connection."""
     if not _STORAGE_ENABLED:
         return
 
     try:
-        # Lazy init
-        if not DB_PATH.exists():
-            _init_db()
-
-        conn = sqlite3.connect(DB_PATH)
-        try:
+        # Use pooled connection (thread-safe)
+        conn = _get_connection()
+        with _connection_lock:
             cursor = conn.cursor()
 
             # Extract fields for columns
@@ -139,8 +179,6 @@ def store_event(event: InferenceEvent) -> None:
                 )
             )
             conn.commit()
-        finally:
-            conn.close()
     except Exception as e:
         logger.debug(f"Failed to store event locally: {e}")
 
@@ -190,9 +228,13 @@ def query_usage(
     if not DB_PATH.exists():
         return UsageSummary(start, end)
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
+    # Use connection pool for efficiency (avoids repeated open/close overhead)
+    # Note: We don't close the pooled connection - it's managed by _close_connection() at exit
+    conn = _get_connection()
+
+    # Thread-safety: Use lock for query execution since connection has check_same_thread=False
+    # While SQLite allows concurrent reads, we use the lock for simplicity and safety
+    with _connection_lock:
         cursor = conn.cursor()
 
         # Build SQL query with filters pushed down to database
@@ -245,9 +287,6 @@ def query_usage(
                 summary.by_tag[k][v]['cost_usd'] += (row['cost_usd'] or 0.0)
 
         return summary
-
-    finally:
-        conn.close()
 
 
 def get_db_path() -> Path:

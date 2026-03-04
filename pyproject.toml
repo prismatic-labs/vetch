@@ -91,7 +91,7 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
-ignore = ["SIM102", "SIM108"]  # Allow nested if and if-else blocks for readability
+ignore = ["SIM102", "SIM105", "SIM108"]  # Allow nested if, try-except-pass, and if-else blocks
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "SIM105", "SIM117", "F841"]  # Allow unused vars in context managers
@@ -101,6 +101,7 @@ python_version = "3.9"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+warn_unused_ignores = false  # Allow ignores for optional dependencies (CI vs local)
 
 [tool.bandit]
 exclude_dirs = ["tests"]

@@ -1,0 +1,354 @@
+Run started:2026-03-04 09:55:51.404319
+
+Test results:
+>> Issue: [B101:assert_used] Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html
+   Location: src/vetch/calculation.py:180:4
+179	    _load_registry()
+180	    assert _ENERGY is not None
+181	    assert _ALIASES is not None
+
+--------------------------------------------------
+>> Issue: [B101:assert_used] Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html
+   Location: src/vetch/calculation.py:181:4
+180	    assert _ENERGY is not None
+181	    assert _ALIASES is not None
+182	
+
+--------------------------------------------------
+>> Issue: [B101:assert_used] Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html
+   Location: src/vetch/calculation.py:383:4
+382	    _load_registry()
+383	    assert _ENERGY is not None
+384	
+
+--------------------------------------------------
+>> Issue: [B101:assert_used] Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html
+   Location: src/vetch/calculation.py:764:8
+763	        _load_registry()
+764	        assert _ENERGY is not None
+765	
+
+--------------------------------------------------
+>> Issue: [B101:assert_used] Use of assert detected. The enclosed code will be removed when compiling to optimised byte code.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b101_assert_used.html
+   Location: src/vetch/calculation.py:827:4
+826	    _load_registry()
+827	    assert _PRICING is not None
+828	
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: src/vetch/emitter.py:164:25
+163	                    )
+164	                    with urllib.request.urlopen(req, timeout=self._timeout):
+165	                        pass
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/emitter.py:166:16
+165	                        pass
+166	                except Exception:
+167	                    # Fail silently - never block or crash the host app
+168	                    pass
+169	                finally:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/emitter.py:183:8
+182	            pass
+183	        except Exception:
+184	            # Fail silently - never block or crash the host app
+185	            pass
+186	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/otel.py:442:4
+441	            _export_queue.join()  # Should return immediately if queue is empty
+442	    except Exception:
+443	        pass  # Queue may be in invalid state, continue with shutdown
+444	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/providers/anthropic.py:276:12
+275	                    close()
+276	            except Exception:
+277	                pass
+278	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/providers/openai.py:407:12
+406	                    close()
+407	            except Exception:
+408	                pass
+409	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/providers/vertexai.py:538:16
+537	                        model.generate_content_async = originals.generate_async
+538	                except Exception:
+539	                    pass  # Model may have been garbage collected
+540	            _model_originals.clear()
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: src/vetch/registry/remote.py:342:23
+341	            req.add_header("User-Agent", "vetch-sdk")
+342	            response = urlopen(req, timeout=self._timeout)  # noqa: S310
+343	            checksums = json.loads(response.read().decode("utf-8"))
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: src/vetch/registry/remote.py:386:23
+385	
+386	            response = urlopen(req, timeout=self._timeout)  # noqa: S310
+387	
+
+--------------------------------------------------
+>> Issue: [B311:blacklist] Standard pseudo-random generators are not suitable for security/cryptographic purposes.
+   Severity: Low   Confidence: High
+   CWE: CWE-330 (https://cwe.mitre.org/data/definitions/330.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b311-random
+   Location: src/vetch/registry/remote.py:595:17
+594	        base_seconds = self._refresh_hours * 3600
+595	        jitter = random.uniform(0.5 * base_seconds, 1.5 * base_seconds)
+596	
+
+--------------------------------------------------
+>> Issue: [B112:try_except_continue] Try, Except, Continue detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b112_try_except_continue.html
+   Location: src/vetch/sensing/cache.py:384:12
+383	                    lock_file.unlink(missing_ok=True)
+384	            except Exception:
+385	                continue
+386	    except Exception:
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/sensing/cache.py:386:4
+385	                continue
+386	    except Exception:
+387	        pass
+388	
+
+--------------------------------------------------
+>> Issue: [B310:blacklist] Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.
+   Severity: Medium   Confidence: High
+   CWE: CWE-22 (https://cwe.mitre.org/data/definitions/22.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b310-urllib-urlopen
+   Location: src/vetch/sensing/grid.py:183:17
+182	        try:
+183	            with urllib.request.urlopen(
+184	                request,
+185	                timeout=CONNECT_TIMEOUT_SECONDS + READ_TIMEOUT_SECONDS,
+186	            ) as response:
+187	                data = json.loads(response.read().decode("utf-8"))
+
+--------------------------------------------------
+>> Issue: [B311:blacklist] Standard pseudo-random generators are not suitable for security/cryptographic purposes.
+   Severity: Low   Confidence: High
+   CWE: CWE-330 (https://cwe.mitre.org/data/definitions/330.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b311-random
+   Location: src/vetch/sensing/grid.py:205:77
+204	                if attempt < MAX_RETRIES:
+205	                    delay = RETRY_DELAY_BASE_SECONDS * (2**attempt) * (0.5 + random.random())
+206	                    logger.debug(f"Rate limited, retrying in {delay:.2f}s")
+
+--------------------------------------------------
+>> Issue: [B311:blacklist] Standard pseudo-random generators are not suitable for security/cryptographic purposes.
+   Severity: Low   Confidence: High
+   CWE: CWE-330 (https://cwe.mitre.org/data/definitions/330.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b311-random
+   Location: src/vetch/sensing/grid.py:212:77
+211	                if attempt < MAX_RETRIES:
+212	                    delay = RETRY_DELAY_BASE_SECONDS * (2**attempt) * (0.5 + random.random())
+213	                    logger.debug(f"Server error {e.code}, retrying in {delay:.2f}s")
+
+--------------------------------------------------
+>> Issue: [B311:blacklist] Standard pseudo-random generators are not suitable for security/cryptographic purposes.
+   Severity: Low   Confidence: High
+   CWE: CWE-330 (https://cwe.mitre.org/data/definitions/330.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/blacklists/blacklist_calls.html#b311-random
+   Location: src/vetch/sensing/grid.py:222:73
+221	            if attempt < MAX_RETRIES:
+222	                delay = RETRY_DELAY_BASE_SECONDS * (2**attempt) * (0.5 + random.random())
+223	                logger.debug(f"Request failed ({e}), retrying in {delay:.2f}s")
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/storage.py:64:8
+63	            _connection_pool.close()
+64	        except Exception:
+65	            pass
+66	        _connection_pool = None
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/storage.py:88:12
+87	                _connection_pool.close()
+88	            except Exception:
+89	                pass
+90	            _connection_pool = None
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/wrapper.py:104:4
+103	            return inferred, warning
+104	    except Exception:
+105	        pass
+106	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/wrapper.py:470:8
+469	            active_session = get_active_session()
+470	        except Exception:
+471	            pass
+472	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/wrapper.py:798:8
+797	                        self._event["budget_carbon_g"] = alert.threshold
+798	        except Exception:
+799	            pass  # Fail-open: budget checks never block
+800	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/wrapper.py:810:8
+809	            store_event(self._event)
+810	        except Exception:
+811	            pass
+812	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/wrapper.py:818:8
+817	            track_session_event(cast("dict[str, Any]", self._event))
+818	        except Exception:
+819	            pass
+820	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/wrapper.py:826:8
+825	            track_ci_event(cast("dict[str, Any]", self._event))
+826	        except Exception:
+827	            pass
+828	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/wrapper.py:834:8
+833	            attach_to_otel_span(self._event)
+834	        except Exception:
+835	            pass
+836	
+
+--------------------------------------------------
+>> Issue: [B110:try_except_pass] Try, Except, Pass detected.
+   Severity: Low   Confidence: High
+   CWE: CWE-703 (https://cwe.mitre.org/data/definitions/703.html)
+   More Info: https://bandit.readthedocs.io/en/1.8.6/plugins/b110_try_except_pass.html
+   Location: src/vetch/wrapper.py:843:8
+842	                export_event_otlp(self._event)
+843	        except Exception:
+844	            pass
+845	
+
+--------------------------------------------------
+
+Code scanned:
+	Total lines of code: 8923
+	Total lines skipped (#nosec): 0
+	Total potential issues skipped due to specifically being disabled (e.g., #nosec BXXX): 0
+
+Run metrics:
+	Total issues (by severity):
+		Undefined: 0
+		Low: 27
+		Medium: 4
+		High: 0
+	Total issues (by confidence):
+		Undefined: 0
+		Low: 0
+		Medium: 0
+		High: 31
+Files skipped (0):

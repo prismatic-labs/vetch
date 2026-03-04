@@ -58,7 +58,7 @@ jobs:
         run: ruff check src/ tests/
 
       - name: Run mypy
-        run: mypy src/ --strict
+        run: mypy src/
 
   security:
     runs-on: ubuntu-latest

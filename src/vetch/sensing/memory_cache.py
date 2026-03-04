@@ -10,6 +10,7 @@ Default TTL: 5 minutes (configurable via VETCH_MEMORY_CACHE_TTL)
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Generic, TypeVar
@@ -61,6 +62,7 @@ class MemoryCache(Generic[T]):
                 self._ttl = DEFAULT_TTL_SECONDS
 
         self._cache: dict[str, CacheEntry[T]] = {}
+        self._lock = threading.RLock()  # Reentrant lock for thread safety
 
     @property
     def ttl(self) -> int:
@@ -68,7 +70,7 @@ class MemoryCache(Generic[T]):
         return self._ttl
 
     def get(self, key: str) -> tuple[T | None, bool]:
-        """Get a cached value.
+        """Get a cached value (thread-safe).
 
         Args:
             key: The cache key (typically a region identifier).
@@ -78,26 +80,28 @@ class MemoryCache(Generic[T]):
             there's no cached entry. is_fresh indicates whether
             the value is within TTL.
         """
-        entry = self._cache.get(key)
-        if entry is None:
-            return None, False
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None, False
 
-        age = time.monotonic() - entry.timestamp
-        is_fresh = age < self._ttl
+            age = time.monotonic() - entry.timestamp
+            is_fresh = age < self._ttl
 
-        return entry.value, is_fresh
+            return entry.value, is_fresh
 
     def set(self, key: str, value: T) -> None:
-        """Set a cached value.
+        """Set a cached value (thread-safe).
 
         Args:
             key: The cache key.
             value: The value to cache.
         """
-        self._cache[key] = CacheEntry(value=value, timestamp=time.monotonic())
+        with self._lock:
+            self._cache[key] = CacheEntry(value=value, timestamp=time.monotonic())
 
     def get_age(self, key: str) -> float | None:
-        """Get the age of a cached entry in seconds.
+        """Get the age of a cached entry in seconds (thread-safe).
 
         Args:
             key: The cache key.
@@ -105,11 +109,12 @@ class MemoryCache(Generic[T]):
         Returns:
             Age in seconds, or None if not cached.
         """
-        entry = self._cache.get(key)
-        if entry is None:
-            return None
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
 
-        return time.monotonic() - entry.timestamp
+            return time.monotonic() - entry.timestamp
 
     def invalidate(self, key: str) -> bool:
         """Remove a cached entry.

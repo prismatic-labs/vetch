@@ -298,9 +298,9 @@ class VetchContext:
                 for warning in tag_warnings:
                     if "not in allowlist" in warning:
                         _tracking_errors["allowlist_filtered"] += 1
-                    elif "exceeds" in warning and "cardinality" in warning:
-                        _tracking_errors["cardinality_exceeded"] += 1
-                    elif "exceeds" in warning and "rate limit" in warning:
+                    elif ("exceeds" in warning and "cardinality" in warning) or (
+                        "exceeds" in warning and "rate limit" in warning
+                    ):
                         _tracking_errors["cardinality_exceeded"] += 1
 
             # Handle missing required tags (compliance error)
@@ -348,22 +348,20 @@ class VetchContext:
             import traceback
             import urllib.parse
 
-            # Sanitize traceback to remove local variables (may contain API keys/PII)
-            # Only include exception type, message, file names, line numbers
-            tb_lines = traceback.format_exc().splitlines()
-            sanitized_tb = []
-            for line in tb_lines:
-                # Skip lines that show local variable values (contain " = " after initial indent)
-                if " = " not in line or line.startswith("  File ") or line.startswith("Traceback"):
-                    sanitized_tb.append(line)
-            sanitized = "\n".join(sanitized_tb)
+            from vetch._security import sanitize_for_url, sanitize_traceback
+
+            # Sanitize both traceback and exception message for security
+            # This prevents leaking API keys, passwords, or file paths in URLs
+            tb_string = traceback.format_exc()
+            sanitized_tb = sanitize_traceback(tb_string, remove_local_vars=True)
+            sanitized_msg = sanitize_for_url(str(e), max_length=200)
 
             params = {
                 "title": f"Alpha Error: {type(e).__name__}",
                 "body": (
                     f"Vetch version: {__version__}\n"
-                    f"Exception: {type(e).__name__}: {str(e)}\n\n"
-                    f"Sanitized Traceback (local variables removed):\n```\n{sanitized}\n```"
+                    f"Exception: {type(e).__name__}: {sanitized_msg}\n\n"
+                    f"Sanitized Traceback (secrets/local vars removed):\n```\n{sanitized_tb}\n```"
                 ),
             }
             issue_url = (
@@ -649,9 +647,9 @@ class VetchContext:
             # 1. Model name contains "batch"
             # 2. Provider is OpenAI and billing_tier indicates batch
             # 3. Future: Check response metadata for batch_id
-            if "batch" in model_lower:
-                is_batch = True
-            elif provider == "openai" and billing_tier and "batch" in billing_tier.lower():
+            if "batch" in model_lower or (
+                provider == "openai" and billing_tier and "batch" in billing_tier.lower()
+            ):
                 is_batch = True
             # TODO: Add provider-specific batch detection in providers/openai.py
             # by checking response.batch_id or request metadata
@@ -659,8 +657,8 @@ class VetchContext:
         # Apply batch API discount (OpenAI Batch API is 50% off list price)
         if is_batch and cost_usd is not None:
             cost_usd *= 0.5
-            cost_in_usd *= 0.5 if cost_in_usd is not None else None
-            cost_out_usd *= 0.5 if cost_out_usd is not None else None
+            cost_in_usd = cost_in_usd * 0.5 if cost_in_usd is not None else None
+            cost_out_usd = cost_out_usd * 0.5 if cost_out_usd is not None else None
             if billing_tier and "batch" not in billing_tier.lower():
                 billing_tier = f"{billing_tier} (batch 50% discount)"
 
@@ -708,7 +706,8 @@ class VetchContext:
                 in_tok = text.get("input_tokens", 0)
                 out_tok = text.get("output_tokens", 0)
                 # Round timestamp to minute for grouping
-                timestamp_minute = datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
+                ts_minute = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+                timestamp_minute = ts_minute.isoformat()
                 fingerprint_input = f"{model}:{in_tok}:{out_tok}:{timestamp_minute}"
                 request_fingerprint = hashlib.sha256(fingerprint_input.encode()).hexdigest()[:16]
 
@@ -730,8 +729,12 @@ class VetchContext:
             estimated_cost_usd=cost_usd,
             estimated_cost_input_usd=cost_in_usd,
             estimated_cost_output_usd=cost_out_usd,
-            estimated_cost_cache_write_usd=cost_cache_write_usd if cost_cache_write_usd > 0 else None,
-            estimated_cost_cache_read_usd=cost_cache_read_usd if cost_cache_read_usd > 0 else None,
+            estimated_cost_cache_write_usd=(
+                cost_cache_write_usd if cost_cache_write_usd > 0 else None
+            ),
+            estimated_cost_cache_read_usd=(
+                cost_cache_read_usd if cost_cache_read_usd > 0 else None
+            ),
             billing_tier=billing_tier,
             signal_quality=signal_quality,
             energy_tier=energy_tier,

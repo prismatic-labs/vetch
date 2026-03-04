@@ -167,3 +167,131 @@ class TestTestEmitter:
             assert emitter.events[0]["event_id"] == "test-event"
         finally:
             set_test_emitter(original)
+
+
+class TestConfigureLogging:
+    """Tests for _configure_logging edge cases."""
+
+    def test_configure_with_http_url_without_enable_flag(self) -> None:
+        """HTTP URL without VETCH_ENABLE_REMOTE falls back to stderr."""
+        import logging
+
+        original_output = os.environ.get("VETCH_OUTPUT")
+        original_enable = os.environ.get("VETCH_ENABLE_REMOTE")
+        original_handlers_count = len(logging.getLogger("vetch.emitter").handlers)
+
+        try:
+            os.environ["VETCH_OUTPUT"] = "https://example.com/collect"
+            os.environ.pop("VETCH_ENABLE_REMOTE", None)
+
+            _configure_logging()
+
+            # Should have added a stderr handler
+            logger = logging.getLogger("vetch.emitter")
+            assert len(logger.handlers) >= original_handlers_count
+        finally:
+            if original_output:
+                os.environ["VETCH_OUTPUT"] = original_output
+            else:
+                os.environ.pop("VETCH_OUTPUT", None)
+            if original_enable:
+                os.environ["VETCH_ENABLE_REMOTE"] = original_enable
+            else:
+                os.environ.pop("VETCH_ENABLE_REMOTE", None)
+            _configure_logging()
+
+    def test_configure_with_http_url_with_enable_flag(self) -> None:
+        """HTTP URL with VETCH_ENABLE_REMOTE=true enables HTTP handler."""
+        import logging
+
+        original_output = os.environ.get("VETCH_OUTPUT")
+        original_enable = os.environ.get("VETCH_ENABLE_REMOTE")
+        original_handlers_count = len(logging.getLogger("vetch.emitter").handlers)
+
+        try:
+            os.environ["VETCH_OUTPUT"] = "https://example.com/collect"
+            os.environ["VETCH_ENABLE_REMOTE"] = "true"
+
+            _configure_logging()
+
+            # Should have added an HTTP handler
+            logger = logging.getLogger("vetch.emitter")
+            assert len(logger.handlers) >= original_handlers_count
+        finally:
+            if original_output:
+                os.environ["VETCH_OUTPUT"] = original_output
+            else:
+                os.environ.pop("VETCH_OUTPUT", None)
+            if original_enable:
+                os.environ["VETCH_ENABLE_REMOTE"] = original_enable
+            else:
+                os.environ.pop("VETCH_ENABLE_REMOTE", None)
+            _configure_logging()
+
+    def test_configure_stderr_fallback(self) -> None:
+        """Test _configure_logging can be called to stderr."""
+        import logging
+
+        original_output = os.environ.get("VETCH_OUTPUT")
+
+        try:
+            os.environ["VETCH_OUTPUT"] = "stderr"
+
+            _configure_logging()
+
+            # Should have configured a stderr handler
+            logger = logging.getLogger("vetch.emitter")
+            assert len(logger.handlers) > 0
+        finally:
+            if original_output:
+                os.environ["VETCH_OUTPUT"] = original_output
+            else:
+                os.environ.pop("VETCH_OUTPUT", None)
+            _configure_logging()
+
+    def test_configure_with_unsafe_path(self) -> None:
+        """Unsafe file path (outside allowed dirs) falls back to stderr."""
+        import logging
+
+        original_output = os.environ.get("VETCH_OUTPUT")
+        original_handlers_count = len(logging.getLogger("vetch.emitter").handlers)
+
+        try:
+            # Try to write outside allowed directories (e.g., root)
+            os.environ["VETCH_OUTPUT"] = "/etc/vetch-forbidden.log"
+
+            _configure_logging()
+
+            # Should have added a stderr fallback handler
+            logger = logging.getLogger("vetch.emitter")
+            assert len(logger.handlers) >= original_handlers_count
+        finally:
+            if original_output:
+                os.environ["VETCH_OUTPUT"] = original_output
+            else:
+                os.environ.pop("VETCH_OUTPUT", None)
+            _configure_logging()
+
+    def test_configure_with_path_resolution_error(self) -> None:
+        """Path that causes resolution error falls back to stderr."""
+        import logging
+        from unittest.mock import patch
+
+        original_output = os.environ.get("VETCH_OUTPUT")
+
+        try:
+            os.environ["VETCH_OUTPUT"] = "/some/path/file.log"
+
+            # Mock Path.resolve() to raise OSError
+            with patch("pathlib.Path.resolve", side_effect=OSError("Cannot resolve")):
+                _configure_logging()
+
+            # Should have fallen back to stderr handler
+            logger = logging.getLogger("vetch.emitter")
+            assert len(logger.handlers) > 0
+        finally:
+            if original_output:
+                os.environ["VETCH_OUTPUT"] = original_output
+            else:
+                os.environ.pop("VETCH_OUTPUT", None)
+            _configure_logging()

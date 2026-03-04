@@ -17,10 +17,11 @@ Usage::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from collections import deque
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from llama_index.core.callbacks.schema import CBEventType, EventPayload
+    from llama_index.core.callbacks.schema import CBEventType  # type: ignore[import-not-found]
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class VetchCallbackHandler:
         self.call_count: int = 0
 
         # Track individual events for detailed analysis
-        self.events: list[dict[str, Any]] = []
+        self.events: deque[dict[str, Any]] = deque(maxlen=1000)  # Bounded to prevent OOM
 
         # Try to import vetch (fail gracefully if not installed)
         try:
@@ -78,7 +79,7 @@ class VetchCallbackHandler:
     def on_event_start(
         self,
         event_type: CBEventType,
-        payload: Optional[dict[str, Any]] = None,
+        payload: dict[str, Any] | None = None,
         event_id: str = "",
         parent_id: str = "",
         **kwargs: Any,
@@ -101,7 +102,7 @@ class VetchCallbackHandler:
     def on_event_end(
         self,
         event_type: CBEventType,
-        payload: Optional[dict[str, Any]] = None,
+        payload: dict[str, Any] | None = None,
         event_id: str = "",
         **kwargs: Any,
     ) -> None:
@@ -190,7 +191,7 @@ class VetchCallbackHandler:
                     active_ctx.capture(
                         model=model or "unknown",
                         provider=provider,
-                        usage=usage_dict,
+                        usage=usage_dict,  # type: ignore[arg-type]
                         is_stream=False,
                         complete=True,
                     )
@@ -207,14 +208,14 @@ class VetchCallbackHandler:
         except Exception as e:
             logger.debug(f"Vetch tracking failed for LlamaIndex call: {e}")
 
-    def start_trace(self, trace_id: Optional[str] = None) -> None:
+    def start_trace(self, trace_id: str | None = None) -> None:
         """Start a new trace (no-op for compatibility)."""
         pass
 
     def end_trace(
         self,
-        trace_id: Optional[str] = None,
-        trace_map: Optional[dict[str, list[str]]] = None,
+        trace_id: str | None = None,
+        trace_map: dict[str, list[str]] | None = None,
     ) -> None:
         """End a trace (no-op for compatibility)."""
         pass
@@ -229,7 +230,7 @@ class VetchCallbackHandler:
         self.total_carbon_g = 0.0
         self.total_water_l = 0.0
         self.call_count = 0
-        self.events = []
+        self.events = deque(maxlen=1000)
 
     def get_summary(self) -> dict[str, Any]:
         """Get summary of aggregated metrics.

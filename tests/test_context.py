@@ -139,3 +139,53 @@ class TestHasActiveContext:
         """Returns True when inside a context."""
         with TrackingContext():
             assert has_active_context() is True
+
+
+class TestContextUsage:
+    """Test usage tracking in context."""
+
+    def test_context_usage_dict(self):
+        """Test Usage dict creation."""
+        from vetch.schema import Usage
+
+        usage: Usage = {
+            "text": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
+        }
+
+        assert usage["text"]["input_tokens"] == 100
+        assert usage["text"]["output_tokens"] == 50
+
+
+class TestContextCapture:
+    """Test context capture method."""
+
+    def test_context_capture_with_usage(self):
+        """Test capture method accepts usage dict."""
+        with TrackingContext(region="us-east-1", tags={"test": "capture"}) as ctx:
+            # Simulate capture
+            ctx.capture(
+                model="gpt-4",
+                provider="openai",
+                usage={"text": {"input_tokens": 10, "output_tokens": 5}},
+                is_stream=False,
+                complete=True,
+            )
+
+            assert ctx.captured_call is not None
+            assert ctx.captured_call.model == "gpt-4"
+            assert ctx.captured_call.provider == "openai"
+
+
+    def test_context_capture_marks_complete(self):
+        """Test capture marks context as complete."""
+        with TrackingContext(region="us-east-1") as ctx:
+            ctx.capture(
+                model="gpt-4",
+                provider="openai",
+                usage=None,
+                is_stream=False,
+                complete=True,
+            )
+
+            assert ctx.captured_call is not None
+            assert ctx.captured_call.complete is True

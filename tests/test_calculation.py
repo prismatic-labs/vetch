@@ -126,7 +126,9 @@ class TestCostCalculation:
     def test_calculate_cost_known_model(self) -> None:
         """Calculate cost for a known model (gpt-4o: $0.005 in, $0.015 out)."""
         # (1000 * 0.005 + 500 * 0.015) / 1000 = (5.0 + 7.5) / 1000 = $0.0125
-        total, cost_in, cost_out, cache_write, cache_read, tier = calculate_cost(1000, 500, "gpt-4o")
+        total, cost_in, cost_out, cache_write, cache_read, tier = calculate_cost(
+            1000, 500, "gpt-4o"
+        )
 
         assert total == pytest.approx(0.0125)
         assert cost_in == pytest.approx(0.005)
@@ -137,7 +139,9 @@ class TestCostCalculation:
 
     def test_calculate_cost_unknown_model(self) -> None:
         """Return zero cost for unknown models."""
-        total, cost_in, cost_out, cache_write, cache_read, tier = calculate_cost(1000, 500, "unknown-model")
+        total, cost_in, cost_out, cache_write, cache_read, tier = calculate_cost(
+            1000, 500, "unknown-model"
+        )
 
         assert total == 0.0
         assert cache_write == 0.0
@@ -215,3 +219,113 @@ class TestTokenEstimationWithTiktoken:
         except ImportError:
             # Skip if not installed in this environment
             pytest.skip("tiktoken not installed")
+
+
+class TestWaterCalculation:
+    """Test water consumption calculations for scientific completeness."""
+
+    def test_calculate_water_for_standard_inference(self) -> None:
+        """Water calculation returns reasonable values for standard inference."""
+        from vetch.calculation import calculate_water
+
+        # Standard 1Wh inference should use ~1.8L water (data center cooling)
+        water_liters = calculate_water(
+            energy_wh=1.0,
+            model="gpt-4o",
+            provider_hint="openai",
+            region="us-east-1",
+        )
+
+        # Water usage should be positive and in reasonable range (0.5-5 L/Wh)
+        assert water_liters > 0.0
+        assert water_liters < 10.0  # Sanity check: shouldn't be > 10L per Wh
+
+    def test_water_scales_with_energy(self) -> None:
+        """Water consumption scales linearly with energy."""
+        from vetch.calculation import calculate_water
+
+        water_1wh = calculate_water(
+            energy_wh=1.0, model="gpt-4", provider_hint="openai", region="us-west-2"
+        )
+
+        water_10wh = calculate_water(
+            energy_wh=10.0, model="gpt-4", provider_hint="openai", region="us-west-2"
+        )
+
+        # Should scale approximately linearly
+        ratio = water_10wh / water_1wh
+        assert 8.0 < ratio < 12.0  # Allow some variance for region differences
+
+
+class TestEmbodiedCarbonCalculation:
+    """Test embodied carbon calculations for lifecycle assessment."""
+
+    def test_calculate_embodied_carbon_for_inference(self) -> None:
+        """Embodied carbon calculation accounts for hardware manufacturing."""
+        from vetch.calculation import calculate_embodied_carbon
+
+        # Calculate embodied carbon for standard inference (1K input, 100 output tokens)
+        embodied_gco2e = calculate_embodied_carbon(
+            input_tokens=1000, output_tokens=100, model="gpt-4o"
+        )
+
+        # Embodied carbon should be non-zero and reasonable
+        # Typical values: 0.01-1.0 gCO2e per 1K tokens
+        assert embodied_gco2e > 0.0
+        assert embodied_gco2e < 10.0  # Sanity check
+
+    def test_embodied_carbon_scales_with_tokens(self) -> None:
+        """Embodied carbon scales with token count."""
+        from vetch.calculation import calculate_embodied_carbon
+
+        embodied_small = calculate_embodied_carbon(
+            input_tokens=100, output_tokens=10, model="gpt-3.5-turbo"
+        )
+
+        embodied_large = calculate_embodied_carbon(
+            input_tokens=10000, output_tokens=1000, model="gpt-4"
+        )
+
+        # More tokens should have higher embodied carbon
+        assert embodied_large > embodied_small
+
+    def test_full_lifecycle_assessment(self) -> None:
+        """Complete lifecycle: operational carbon + embodied carbon + water."""
+        from vetch.calculation import calculate_carbon, calculate_embodied_carbon, calculate_water
+
+        # Standard inference scenario
+        energy_wh = 1.0
+        grid_intensity = 400.0  # gCO2e/kWh (typical US average)
+        model = "gpt-4o"
+        provider = "openai"
+        input_tokens = 1000
+        output_tokens = 500
+
+        # Operational carbon (grid electricity)
+        operational_gco2e, _, _, _ = calculate_carbon(
+            energy_wh=energy_wh,
+            grid_intensity_gco2e_kwh=grid_intensity,
+            model=model,
+            provider_hint=provider,
+            pue=1.2,
+        )
+
+        # Embodied carbon (hardware manufacturing)
+        embodied_gco2e = calculate_embodied_carbon(
+            input_tokens=input_tokens, output_tokens=output_tokens, model=model
+        )
+
+        # Water usage (cooling)
+        water_liters = calculate_water(
+            energy_wh=energy_wh, model=model, provider_hint=provider, region="us-east-1"
+        )
+
+        # All components should contribute to full assessment
+        assert operational_gco2e > 0
+        assert embodied_gco2e > 0
+        assert water_liters > 0
+
+        # Total carbon = operational + embodied
+        total_gco2e = operational_gco2e + embodied_gco2e
+        # Total should be dominated by operational (typically 80-95%)
+        assert operational_gco2e > embodied_gco2e

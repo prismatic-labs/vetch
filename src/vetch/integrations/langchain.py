@@ -20,10 +20,11 @@ Usage::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Union
+from collections import deque
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from langchain.schema import LLMResult
+    from langchain.schema import LLMResult  # type: ignore[import-not-found]
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class VetchCallbackHandler:
         self.call_count: int = 0
 
         # Track individual events for detailed analysis
-        self.events: list[dict[str, Any]] = []
+        self.events: deque[dict[str, Any]] = deque(maxlen=1000)  # Bounded to prevent OOM
 
         # Try to import vetch (fail gracefully if not installed)
         try:
@@ -151,7 +152,7 @@ class VetchCallbackHandler:
                     active_ctx.capture(
                         model=model or "unknown",
                         provider=provider,
-                        usage=usage,
+                        usage=usage,  # type: ignore[arg-type]
                         is_stream=False,
                         complete=True,
                     )
@@ -170,7 +171,7 @@ class VetchCallbackHandler:
 
     def on_llm_error(
         self,
-        error: Union[Exception, KeyboardInterrupt],
+        error: Exception | KeyboardInterrupt,
         **kwargs: Any,
     ) -> None:
         """Called when LLM errors."""
@@ -202,7 +203,7 @@ class VetchCallbackHandler:
         self.total_carbon_g = 0.0
         self.total_water_l = 0.0
         self.call_count = 0
-        self.events = []
+        self.events = deque(maxlen=1000)
 
     def get_summary(self) -> dict[str, Any]:
         """Get summary of aggregated metrics.

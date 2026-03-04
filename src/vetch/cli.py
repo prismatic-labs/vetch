@@ -267,7 +267,7 @@ def check(args: argparse.Namespace) -> None:
     # 4. Observability
     print("Checking observability bridges...")
     try:
-        from opentelemetry import trace  # type: ignore[import-not-found]
+        from opentelemetry import trace  # type: ignore[import-not-found, import-untyped]
         span = trace.get_current_span()
         status = "Active" if span.is_recording() else "Installed, but no active span"
         print(f"  OpenTelemetry: {status}")
@@ -926,7 +926,7 @@ def dashboard(args: argparse.Namespace) -> None:
             pass
 
         if not (in_cwd or in_tmp):
-            print(f"Error: Output path must be within current directory or temp directory")
+            print("Error: Output path must be within current directory or temp directory")
             print(f"  Current directory: {cwd}")
             print(f"  Temp directory: {tmp}")
             print(f"  Attempted path: {output_path}")

@@ -134,3 +134,195 @@ class TestValidateTags:
 
         missing = validate_tags({})
         assert missing == ["apple", "mango", "zebra"]
+
+
+class TestRedactedTags:
+    """Test PII redaction functionality."""
+
+    def test_redact_sensitive_tag_hashes_value(self):
+        """Test that redacted tags are hashed, not plaintext."""
+        import vetch.config as config
+
+        # Set a tag for redaction
+        config.set_redacted_tags(["email"])
+
+        # Process tags with a sensitive value
+        processed, warnings, missing = config.process_tags_single_pass(
+            {"email": "user@example.com", "tier": "free"}
+        )
+
+        # Email should be hashed (starts with "redacted-")
+        assert "email" in processed
+        assert processed["email"].startswith("redacted-")
+        assert "user@example.com" not in processed["email"]
+
+        # Non-sensitive tags should be unchanged
+        assert processed["tier"] == "free"
+
+        # Cleanup
+        config._reset_config()
+
+
+class TestTagAllowlist:
+    """Test tag allowlist filtering."""
+
+    def test_allowlist_filters_unwanted_tags(self):
+        """Test that tags not in allowlist are filtered out."""
+        import vetch.config as config
+
+        # Set allowlist
+        config.set_tag_allowlist({"environment", "region"})
+
+        # Process tags with some not in allowlist
+        processed, warnings, missing = config.process_tags_single_pass(
+            {"environment": "prod", "region": "us-east-1", "internal_id": "abc123"}
+        )
+
+        # Only allowlisted tags should remain
+        assert "environment" in processed
+        assert "region" in processed
+        assert "internal_id" not in processed
+
+        # Should have warning about filtered tag
+        assert len(warnings) > 0
+        assert any("internal_id" in w and "allowlist" in w for w in warnings)
+
+        # Cleanup
+        config._reset_config()
+
+
+class TestCardinalityLimits:
+    """Test tag cardinality protection."""
+
+    def test_cardinality_limit_enforced(self):
+        """Test that cardinality limits prevent explosion."""
+        import vetch.config as config
+
+        # Set low cardinality limit for testing
+        config.set_tag_cardinality_limit(5)
+
+        # Try to add more than limit
+        for i in range(10):
+            processed, warnings, missing = config.process_tags_single_pass(
+                {"user_id": f"user_{i}"}
+            )
+
+        # Should have warnings after limit
+        # (warnings appear when trying to add beyond limit)
+        config._reset_config()
+
+    def test_cardinality_prevents_memory_exhaustion(self):
+        """Cardinality limits prevent unbounded memory growth from high-cardinality tags."""
+        import vetch.config as config
+
+        # Simulate real-world scenario: user_id tag with millions of unique values
+        config.set_tag_cardinality_limit(100)
+
+        warning_count = 0
+        for i in range(500):
+            processed, warnings, missing = config.process_tags_single_pass(
+                {"user_id": f"user_{i}", "environment": "production"}
+            )
+            if warnings:
+                warning_count += 1
+
+        # After hitting limit, should start warning
+        assert warning_count > 0
+
+        # Cleanup
+        config._reset_config()
+
+
+class TestSecurityFeatures:
+    """Test security-critical tag processing features."""
+
+    def test_redaction_prevents_pii_leakage(self):
+        """Redacted tags never expose plaintext PII in logs."""
+        import vetch.config as config
+
+        config.set_redacted_tags(["email", "ssn", "credit_card"])
+
+        # Process tags with sensitive data
+        processed, warnings, missing = config.process_tags_single_pass(
+            {
+                "email": "john.doe@company.com",
+                "ssn": "123-45-6789",
+                "credit_card": "4111-1111-1111-1111",
+                "user_tier": "premium",
+            }
+        )
+
+        # Critical: Plaintext PII must not appear in processed tags
+        assert "john.doe@company.com" not in str(processed.values())
+        assert "123-45-6789" not in str(processed.values())
+        assert "4111-1111-1111-1111" not in str(processed.values())
+
+        # Redacted tags should have deterministic hashes (same input = same hash)
+        processed2, _, _ = config.process_tags_single_pass(
+            {"email": "john.doe@company.com"}
+        )
+        assert processed["email"] == processed2["email"]
+
+        # Different values should have different hashes
+        processed3, _, _ = config.process_tags_single_pass(
+            {"email": "jane.smith@company.com"}
+        )
+        assert processed["email"] != processed3["email"]
+
+        # Non-sensitive tags should pass through unchanged
+        assert processed["user_tier"] == "premium"
+
+        config._reset_config()
+
+    def test_allowlist_blocks_internal_tags(self):
+        """Allowlist prevents internal/debugging tags from reaching production logs."""
+        import vetch.config as config
+
+        # Scenario: Only allow specific production tags
+        config.set_tag_allowlist({"environment", "service", "version", "region"})
+
+        # Developer accidentally includes internal debugging tags
+        processed, warnings, missing = config.process_tags_single_pass(
+            {
+                "environment": "production",
+                "service": "api",
+                "internal_user_id": "12345",
+                "debug_session": "test-session-xyz",
+                "developer_name": "Alice",
+            }
+        )
+
+        # Critical: Internal tags must not appear in output
+        assert "internal_user_id" not in processed
+        assert "debug_session" not in processed
+        assert "developer_name" not in processed
+
+        # Allowed tags should pass through
+        assert "environment" in processed
+        assert "service" in processed
+
+        # Should warn about filtered tags
+        assert len(warnings) > 0
+
+        config._reset_config()
+
+    def test_required_tags_enforce_compliance(self):
+        """Required tags enforce organizational compliance policies."""
+        import vetch.config as config
+        from vetch.config import require_tags, validate_tags
+
+        # Scenario: Company policy requires cost_center and data_classification
+        require_tags(["cost_center", "data_classification"])
+
+        # Compliant request
+        missing = validate_tags(
+            {"cost_center": "eng-ml", "data_classification": "internal", "model": "gpt-4"}
+        )
+        assert len(missing) == 0
+
+        # Non-compliant request (missing required tags)
+        missing = validate_tags({"model": "gpt-4", "user": "alice"})
+        assert "cost_center" in missing
+        assert "data_classification" in missing
+
+        config._reset_config()

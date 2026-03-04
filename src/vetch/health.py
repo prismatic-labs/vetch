@@ -9,7 +9,7 @@ Provides status checks for Vetch components:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 
 def get_health_status() -> dict[str, Any]:
@@ -55,10 +55,10 @@ def get_health_status() -> dict[str, Any]:
         from vetch.registry.remote import get_remote_fetcher
 
         fetcher = get_remote_fetcher()
-        if fetcher._circuit_open_until > 0:  # type: ignore[attr-defined]
+        if fetcher and fetcher._circuit_open_until > 0:
             import time
 
-            if time.monotonic() < fetcher._circuit_open_until:  # type: ignore[attr-defined]
+            if time.monotonic() < fetcher._circuit_open_until:
                 components["circuit_breaker"] = {
                     "status": "open",
                     "healthy": False,
@@ -174,7 +174,7 @@ def get_health_status() -> dict[str, Any]:
     }
 
 
-def create_health_endpoint() -> tuple[callable, callable]:
+def create_health_endpoint() -> tuple[Callable[[], Any], Callable[[], Any]]:
     """Create HTTP health check endpoint handlers.
 
     Returns functions for both Flask and FastAPI that can be used as
@@ -202,10 +202,10 @@ def create_health_endpoint() -> tuple[callable, callable]:
         app.get("/health")(fastapi_health)
     """
 
-    def flask_handler():
+    def flask_handler() -> Any:
         """Flask health check endpoint handler."""
         try:
-            from flask import jsonify, Response
+            from flask import jsonify  # type: ignore[import-not-found]
         except ImportError:
             return {"error": "Flask not installed"}, 500
 
@@ -213,16 +213,18 @@ def create_health_endpoint() -> tuple[callable, callable]:
         status_code = 200 if health["status"] in ("healthy", "degraded") else 503
         return jsonify(health), status_code
 
-    async def fastapi_handler():
+    async def fastapi_handler() -> Any:
         """FastAPI health check endpoint handler."""
         try:
-            from fastapi import Response
-            from fastapi.responses import JSONResponse
-        except ImportError:
-            return JSONResponse(
-                {"error": "FastAPI not installed"},
-                status_code=500,
+            from fastapi.responses import (  # type: ignore[import-not-found, import-untyped]
+                JSONResponse,
             )
+        except ImportError:
+            # Return dict since JSONResponse is not available
+            return {
+                "error": "FastAPI not installed",
+                "status_code": 500,
+            }
 
         health = get_health_status()
         status_code = 200 if health["status"] in ("healthy", "degraded") else 503

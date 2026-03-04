@@ -80,7 +80,7 @@ def attach_to_otel_span(event: InferenceEvent) -> bool:
         return False
 
     try:
-        from opentelemetry import trace  # type: ignore[import-not-found]
+        from opentelemetry import trace  # type: ignore[import-not-found, import-untyped]
 
         span = trace.get_current_span()
         if not span.is_recording():
@@ -170,19 +170,27 @@ def configure_otlp_export(
     try:
         # Try importing OTel SDK components
         from opentelemetry import metrics, trace
-        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (  # type: ignore
+        from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (  # type: ignore[import-not-found]
             OTLPMetricExporter,
         )
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-not-found, import-untyped]
             OTLPSpanExporter,
         )
-        from opentelemetry.sdk.metrics import MeterProvider  # type: ignore
-        from opentelemetry.sdk.metrics.export import (  # type: ignore
+        from opentelemetry.sdk.metrics import (  # type: ignore[import-not-found, import-untyped]
+            MeterProvider,
+        )
+        from opentelemetry.sdk.metrics.export import (  # type: ignore[import-not-found, import-untyped]
             PeriodicExportingMetricReader,
         )
-        from opentelemetry.sdk.resources import Resource  # type: ignore
-        from opentelemetry.sdk.trace import TracerProvider  # type: ignore
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore
+        from opentelemetry.sdk.resources import (  # type: ignore[import-not-found, import-untyped]
+            Resource,
+        )
+        from opentelemetry.sdk.trace import (  # type: ignore[import-not-found, import-untyped]
+            TracerProvider,
+        )
+        from opentelemetry.sdk.trace.export import (  # type: ignore[import-not-found, import-untyped]
+            BatchSpanProcessor,
+        )
 
     except ImportError as e:
         logger.warning(
@@ -525,7 +533,10 @@ def get_otlp_stats() -> dict[str, Any]:
 
         stats = vetch.otel.get_otlp_stats()
         if stats["dropped_events"] > 0:
-            logger.warning(f"{stats['dropped_events']} events dropped, queue {stats['queue_current']}/{stats['queue_size']}")
+            logger.warning(
+                f"{stats['dropped_events']} events dropped, "
+                f"queue {stats['queue_current']}/{stats['queue_size']}"
+            )
     """
     return {
         "queue_size": _export_queue.maxsize,

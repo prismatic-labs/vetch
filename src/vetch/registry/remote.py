@@ -370,7 +370,9 @@ class RemoteRegistryFetcher:
         # DNS could have changed since initialization
         is_valid, err = validate_registry_url(url)
         if not is_valid:
-            logger.warning(f"Registry URL failed re-validation: {err}. Skipping fetch of {filename}")
+            logger.warning(
+                f"Registry URL failed re-validation: {err}. Skipping fetch of {filename}"
+            )
             self._record_failure()
             return None
 
