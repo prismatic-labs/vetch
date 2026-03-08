@@ -803,13 +803,16 @@ def _calculate_tiered_cost(
     tier_threshold: int | None,
     tier_multiplier: float | None,
 ) -> float:
-    """Calculate cost with optional tiered pricing.
+    """Calculate cost with optional threshold-based tiered pricing.
+
+    IMPORTANT: Uses THRESHOLD pricing (Google Cloud model), not bracket pricing.
+    When token count exceeds threshold, ALL tokens are charged at the higher rate.
 
     Args:
         tokens: Number of tokens
         base_rate_per_1k: Base rate per 1000 tokens
-        tier_threshold: Token count where higher tier starts (None = no tiers)
-        tier_multiplier: Multiplier for tokens above threshold (None = no tiers)
+        tier_threshold: Token count where higher tier kicks in (None = no tiers)
+        tier_multiplier: Multiplier for ALL tokens when over threshold (None = no tiers)
 
     Returns:
         Total cost in USD
@@ -819,34 +822,32 @@ def _calculate_tiered_cost(
         >>> _calculate_tiered_cost(1000, 0.001, None, None)
         0.001
 
-        >>> # With tiering: 100k tokens, $1.25/M base, 2x over 128k
-        >>> # Base tier: 100k @ $1.25/M = $0.125
+        >>> # Under threshold: 100k tokens, $1.25/M base, threshold at 128k
+        >>> # ALL tokens @ $1.25/M = $0.125
         >>> _calculate_tiered_cost(100000, 0.00125, 128000, 2.0)
         0.125
 
         >>> # Over threshold: 200k tokens, $1.25/M base, 2x over 128k
-        >>> # Base: 128k @ $1.25/M = $0.16
-        >>> # Over: 72k @ $2.50/M = $0.18
-        >>> # Total: $0.34
+        >>> # ALL 200k tokens @ $2.50/M (base * multiplier) = $0.50
         >>> _calculate_tiered_cost(200000, 0.00125, 128000, 2.0)
-        0.34
+        0.5
+
+    Note:
+        Previous implementation used bracket pricing (tax-style), which
+        under-reported Gemini costs by ~32% for long-context workloads.
     """
     if tier_threshold is None or tier_multiplier is None:
         # No tiering - standard calculation
         return (tokens * base_rate_per_1k) / 1000
 
     if tokens <= tier_threshold:
-        # Under threshold - standard calculation
+        # Under threshold - base rate for all tokens
         return (tokens * base_rate_per_1k) / 1000
 
-    # Over threshold - split calculation
-    base_tier_tokens = tier_threshold
-    over_tier_tokens = tokens - tier_threshold
-
-    base_tier_cost = (base_tier_tokens * base_rate_per_1k) / 1000
-    over_tier_cost = (over_tier_tokens * base_rate_per_1k * tier_multiplier) / 1000
-
-    return base_tier_cost + over_tier_cost
+    # Over threshold - THRESHOLD PRICING: ALL tokens at higher rate
+    # This matches Google Cloud's actual billing model
+    higher_rate = base_rate_per_1k * tier_multiplier
+    return (tokens * higher_rate) / 1000
 
 
 def calculate_cost(
@@ -899,7 +900,12 @@ def calculate_cost(
         rate_out = entry["usd_per_1k_output"]
         tier_threshold_raw = entry.get("tier_threshold")
         tier_threshold = int(tier_threshold_raw) if tier_threshold_raw is not None else None
-        tier_multiplier = entry.get("tier_multiplier")
+
+        # Support both old (single tier_multiplier) and new (separate input/output) formats
+        # New format: tier_multiplier_input/tier_multiplier_output (e.g., Gemini 2.5 Pro)
+        # Old format: tier_multiplier (applies to both, e.g., Gemini 1.5 Pro)
+        tier_multiplier_input = entry.get("tier_multiplier_input") or entry.get("tier_multiplier")
+        tier_multiplier_output = entry.get("tier_multiplier_output") or entry.get("tier_multiplier")
     else:
         # No pricing for unknown models
         return 0.0, 0.0, 0.0, 0.0, 0.0, "none"
@@ -926,13 +932,13 @@ def calculate_cost(
 
     # Calculate input cost with tiered pricing
     cost_in = (
-        _calculate_tiered_cost(effective_input, rate_in, tier_threshold, tier_multiplier)
+        _calculate_tiered_cost(effective_input, rate_in, tier_threshold, tier_multiplier_input)
         + cache_write_cost
         + cache_read_cost
     )
 
     # Calculate output cost with tiered pricing
-    cost_out = _calculate_tiered_cost(output_tokens, rate_out, tier_threshold, tier_multiplier)
+    cost_out = _calculate_tiered_cost(output_tokens, rate_out, tier_threshold, tier_multiplier_output)
 
     total_cost = cost_in + cost_out
 

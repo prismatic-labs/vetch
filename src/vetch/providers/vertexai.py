@@ -18,6 +18,7 @@ import contextlib
 import logging
 import re
 import threading
+import weakref
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from weakref import WeakKeyDictionary
 
@@ -40,6 +41,78 @@ class _ModelOriginals(NamedTuple):
 # Thread-safe per-model storage for original methods
 _model_originals: WeakKeyDictionary[Any, _ModelOriginals] = WeakKeyDictionary()
 _model_lock = threading.Lock()
+
+
+class _WeakGenerateWrapper:
+    """Wrapper for sync generate_content with weak reference.
+
+    Problem: Closures that capture `original` and `model_obj` create reference cycles:
+      model -> generate_content (wrapper) -> closure -> original/model_obj -> model
+
+    Solution: Use weak reference to model object and retrieve original from dict.
+    """
+
+    __slots__ = ("_model_ref", "_originals_dict")
+
+    def __init__(self, model: Any, originals_dict: WeakKeyDictionary) -> None:
+        self._model_ref = weakref.ref(model)
+        self._originals_dict = originals_dict
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        model = self._model_ref()
+        if model is None:
+            raise RuntimeError("Model object was garbage collected")
+
+        originals = self._originals_dict[model]
+        original = originals.generate
+        model_name = extract_model(model)
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = original(*args, **kwargs)
+
+            if is_stream:
+                return StreamWrapper(result, model_name)
+
+            _after_generate(result, model, *args, **kwargs)
+            return result
+
+        except Exception as e:
+            _on_generate_error(e)
+            raise
+
+
+class _WeakGenerateAsyncWrapper:
+    """Async wrapper for generate_content_async with weak reference."""
+
+    __slots__ = ("_model_ref", "_originals_dict")
+
+    def __init__(self, model: Any, originals_dict: WeakKeyDictionary) -> None:
+        self._model_ref = weakref.ref(model)
+        self._originals_dict = originals_dict
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        model = self._model_ref()
+        if model is None:
+            raise RuntimeError("Model object was garbage collected")
+
+        originals = self._originals_dict[model]
+        original = originals.generate_async
+        model_name = extract_model(model)
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = await original(*args, **kwargs)
+
+            if is_stream:
+                return AsyncStreamWrapper(result, model_name)
+
+            _after_generate(result, model, *args, **kwargs)
+            return result
+
+        except Exception as e:
+            _on_generate_error(e)
+            raise
 
 
 def extract_usage(response: Any) -> Usage | None:
@@ -401,13 +474,19 @@ def patch_vertexai_model(model: Any) -> bool:
                 generate_async=generate_async_unbound,
             )
 
-            # Patch sync method
+            # Patch sync method using weak reference wrapper to avoid GC cycles
             if generate:
-                model.generate_content = _wrapped_generate(generate, model)
+                sync_wrapper = _WeakGenerateWrapper(model, _model_originals)
+                sync_wrapper.vetch_patched = True  # type: ignore[attr-defined]
+                sync_wrapper._vetch_original = generate_unbound  # type: ignore[attr-defined]
+                model.generate_content = sync_wrapper
 
-            # Patch async method if it exists
+            # Patch async method if it exists using weak reference wrapper to avoid GC cycles
             if generate_async:
-                model.generate_content_async = _wrapped_generate_async(generate_async, model)
+                async_wrapper = _WeakGenerateAsyncWrapper(model, _model_originals)
+                async_wrapper.vetch_patched = True  # type: ignore[attr-defined]
+                async_wrapper._vetch_original = generate_async_unbound  # type: ignore[attr-defined]
+                model.generate_content_async = async_wrapper
 
         logger.debug("Vertex AI model patched successfully")
         return True

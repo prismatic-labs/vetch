@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import weakref
 from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakKeyDictionary
 
@@ -29,6 +30,74 @@ logger = logging.getLogger(__name__)
 # Thread-safe per-client storage for original methods
 _client_originals: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
 _client_lock = threading.Lock()
+
+
+class _WeakMessagesWrapper:
+    """Wrapper for sync messages.create with weak reference.
+
+    Problem: Closures that capture `original` (bound method) create reference cycles:
+      messages -> create (wrapper) -> closure -> original (bound) -> messages
+
+    Solution: Use weak reference to messages object and retrieve original from dict.
+    """
+
+    __slots__ = ("_messages_ref", "_originals_dict")
+
+    def __init__(self, messages: Any, originals_dict: WeakKeyDictionary) -> None:
+        self._messages_ref = weakref.ref(messages)
+        self._originals_dict = originals_dict
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        messages = self._messages_ref()
+        if messages is None:
+            raise RuntimeError("Messages object was garbage collected")
+
+        original = self._originals_dict[messages]
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = original(*args, **kwargs)
+
+            if is_stream:
+                return StreamWrapper(result)
+
+            _after_create(result, *args, **kwargs)
+            return result
+
+        except Exception as e:
+            _on_create_error(e)
+            raise
+
+
+class _WeakAsyncMessagesWrapper:
+    """Async wrapper for messages.create with weak reference."""
+
+    __slots__ = ("_messages_ref", "_originals_dict")
+
+    def __init__(self, messages: Any, originals_dict: WeakKeyDictionary) -> None:
+        self._messages_ref = weakref.ref(messages)
+        self._originals_dict = originals_dict
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        messages = self._messages_ref()
+        if messages is None:
+            raise RuntimeError("Messages object was garbage collected")
+
+        original = self._originals_dict[messages]
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = await original(*args, **kwargs)
+
+            if is_stream:
+                return AsyncStreamWrapper(result)
+
+            _after_create(result, *args, **kwargs)
+            return result
+
+        except Exception as e:
+            _on_create_error(e)
+            raise
 
 
 def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
@@ -350,7 +419,17 @@ def patch_anthropic_client(client: Any) -> bool:
             _client_originals[messages] = (
                 create.__func__ if hasattr(create, "__func__") else create
             )
-            messages.create = _wrapped_create(create)
+
+            # Apply patch using weak reference wrapper to avoid GC cycles
+            import inspect
+            if inspect.iscoroutinefunction(create):
+                wrapper = _WeakAsyncMessagesWrapper(messages, _client_originals)
+            else:
+                wrapper = _WeakMessagesWrapper(messages, _client_originals)
+
+            wrapper.vetch_patched = True  # type: ignore[attr-defined]
+            wrapper._vetch_original = _client_originals[messages]  # type: ignore[attr-defined]
+            messages.create = wrapper
 
         logger.debug("Anthropic client patched successfully")
         return True

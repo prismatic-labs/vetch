@@ -369,28 +369,26 @@ class TestTieredPricing:
         """Test tiered cost when over threshold (split calculation)."""
         from vetch.calculation import _calculate_tiered_cost
 
-        # 200k tokens @ $1.25/M base, 2x over 128k
-        # Base tier: 128k @ $1.25/M = $0.16
-        # Over tier: 72k @ $2.50/M = $0.18
-        # Total: $0.34
+        # 200k tokens @ $1.25/M base, 2x over 128k (THRESHOLD pricing)
+        # Since 200k > 128k threshold: ALL 200k @ $2.50/M (base * multiplier)
+        # Total: 200k * $0.0025/1k = $0.50
         cost = _calculate_tiered_cost(
             tokens=200000, base_rate_per_1k=0.00125, tier_threshold=128000, tier_multiplier=2.0
         )
-        assert abs(cost - 0.34) < 0.0001
+        assert abs(cost - 0.50) < 0.0001
 
     def test_tiered_pricing_with_output_tokens(self) -> None:
         """Test tiered pricing applies to both input and output tokens."""
         from vetch.calculation import _calculate_tiered_cost
 
-        # Output tokens should also use tiered pricing
-        # 200k output @ $10/M base, 2x over 128k
-        # Base: 128k @ $10/M = $1.28
-        # Over: 72k @ $20/M = $1.44
-        # Total: $2.72
+        # Output tokens should also use threshold-based tiered pricing
+        # 200k output @ $10/M base, 2x over 128k (THRESHOLD pricing)
+        # Since 200k > 128k threshold: ALL 200k @ $20/M (base * multiplier)
+        # Total: 200k * $0.020/1k = $4.00
         cost = _calculate_tiered_cost(
             tokens=200000, base_rate_per_1k=0.010, tier_threshold=128000, tier_multiplier=2.0
         )
-        assert abs(cost - 2.72) < 0.01
+        assert abs(cost - 4.00) < 0.01
 
     def test_calculate_tiered_cost_zero_tokens(self) -> None:
         """Test tiered cost with zero tokens."""

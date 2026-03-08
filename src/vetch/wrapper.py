@@ -564,7 +564,16 @@ class VetchContext:
                 in_tokens = text.get("input_tokens", 0)
                 out_tokens = text.get("output_tokens", 0)
 
-                # Energy
+                # Add reasoning tokens to input (o1/o3 thinking models)
+                # Reasoning tokens are "hidden" tokens used for internal CoT
+                # They consume energy like input tokens but aren't visible in the response
+                if usage.get("reasoning"):
+                    reasoning = usage["reasoning"]
+                    if reasoning:  # Type guard
+                        reasoning_tokens = reasoning.get("input_tokens", 0)
+                        in_tokens += reasoning_tokens  # Add to input for energy calc
+
+                # Energy (including reasoning tokens in input)
                 (
                     energy_wh,
                     energy_tier,

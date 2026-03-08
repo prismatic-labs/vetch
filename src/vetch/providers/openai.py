@@ -18,6 +18,7 @@ import contextlib
 import logging
 import re
 import threading
+import weakref
 from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakKeyDictionary
 
@@ -33,6 +34,126 @@ logger = logging.getLogger(__name__)
 # Using WeakKeyDictionary so clients can be garbage collected
 _client_originals: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
 _client_lock = threading.Lock()
+
+
+class _WeakChatWrapper:
+    """Wrapper for sync chat.completions.create with weak reference.
+
+    Problem: Closures that capture `original` (bound method) create reference cycles:
+      completions -> create (wrapper) -> closure -> original (bound) -> completions
+
+    Solution: Use weak reference to completions object and retrieve original from dict.
+    """
+
+    __slots__ = ("_completions_ref", "_originals_dict")
+
+    def __init__(self, completions: Any, originals_dict: WeakKeyDictionary) -> None:
+        self._completions_ref = weakref.ref(completions)
+        self._originals_dict = originals_dict
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        completions = self._completions_ref()
+        if completions is None:
+            raise RuntimeError("Completions object was garbage collected")
+
+        original = self._originals_dict[completions]
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = original(*args, **kwargs)
+
+            if is_stream:
+                return StreamWrapper(result)
+
+            _after_create(result, *args, **kwargs)
+            return result
+
+        except Exception as e:
+            _on_create_error(e)
+            raise
+
+
+class _WeakAsyncChatWrapper:
+    """Async wrapper for chat.completions.create with weak reference."""
+
+    __slots__ = ("_completions_ref", "_originals_dict")
+
+    def __init__(self, completions: Any, originals_dict: WeakKeyDictionary) -> None:
+        self._completions_ref = weakref.ref(completions)
+        self._originals_dict = originals_dict
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        completions = self._completions_ref()
+        if completions is None:
+            raise RuntimeError("Completions object was garbage collected")
+
+        original = self._originals_dict[completions]
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = await original(*args, **kwargs)
+
+            if is_stream:
+                return AsyncStreamWrapper(result)
+
+            _after_create(result, *args, **kwargs)
+            return result
+
+        except Exception as e:
+            _on_create_error(e)
+            raise
+
+
+class _WeakEmbeddingsWrapper:
+    """Wrapper for sync embeddings.create with weak reference."""
+
+    __slots__ = ("_embeddings_ref", "_originals_dict")
+
+    def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary) -> None:
+        self._embeddings_ref = weakref.ref(embeddings)
+        self._originals_dict = originals_dict
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        embeddings = self._embeddings_ref()
+        if embeddings is None:
+            raise RuntimeError("Embeddings object was garbage collected")
+
+        original = self._originals_dict[embeddings]
+
+        try:
+            result = original(*args, **kwargs)
+            _after_embeddings_create(result, *args, **kwargs)
+            return result
+
+        except Exception as e:
+            _on_embeddings_error(e)
+            raise
+
+
+class _WeakAsyncEmbeddingsWrapper:
+    """Async wrapper for embeddings.create with weak reference."""
+
+    __slots__ = ("_embeddings_ref", "_originals_dict")
+
+    def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary) -> None:
+        self._embeddings_ref = weakref.ref(embeddings)
+        self._originals_dict = originals_dict
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        embeddings = self._embeddings_ref()
+        if embeddings is None:
+            raise RuntimeError("Embeddings object was garbage collected")
+
+        original = self._originals_dict[embeddings]
+
+        try:
+            result = await original(*args, **kwargs)
+            _after_embeddings_create(result, *args, **kwargs)
+            return result
+
+        except Exception as e:
+            _on_embeddings_error(e)
+            raise
 
 
 def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
@@ -576,8 +697,16 @@ def patch_openai_client(client: Any) -> bool:
                 create.__func__ if hasattr(create, "__func__") else create
             )
 
-            # Apply patch for chat completions
-            completions.create = _wrapped_create(create)
+            # Apply patch using weak reference wrapper to avoid GC cycles
+            import inspect
+            if inspect.iscoroutinefunction(create):
+                wrapper = _WeakAsyncChatWrapper(completions, _client_originals)
+            else:
+                wrapper = _WeakChatWrapper(completions, _client_originals)
+
+            wrapper.vetch_patched = True  # type: ignore[attr-defined]
+            wrapper._vetch_original = _client_originals[completions]  # type: ignore[attr-defined]
+            completions.create = wrapper
 
         # 3. Patch embeddings.create if available
         embeddings = getattr(client, "embeddings", None)
@@ -593,8 +722,17 @@ def patch_openai_client(client: Any) -> bool:
                             if hasattr(embeddings_create, "__func__")
                             else embeddings_create
                         )
-                        # Apply patch
-                        embeddings.create = _wrapped_embeddings_create(embeddings_create)
+
+                        # Apply patch using weak reference wrapper to avoid GC cycles
+                        import inspect
+                        if inspect.iscoroutinefunction(embeddings_create):
+                            emb_wrapper = _WeakAsyncEmbeddingsWrapper(embeddings, _client_originals)
+                        else:
+                            emb_wrapper = _WeakEmbeddingsWrapper(embeddings, _client_originals)
+
+                        emb_wrapper.vetch_patched = True  # type: ignore[attr-defined]
+                        emb_wrapper._vetch_original = _client_originals[embeddings]  # type: ignore[attr-defined]
+                        embeddings.create = emb_wrapper
                         logger.debug("OpenAI embeddings endpoint patched successfully")
 
         logger.debug("OpenAI client patched successfully")
