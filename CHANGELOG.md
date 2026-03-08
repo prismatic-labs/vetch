@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-03-08
+
+### Added
+- **VETCH_ENABLED Environment Variable**: Complement to VETCH_DISABLED for more intuitive control
+  - Set `VETCH_ENABLED=false` to disable tracking (equivalent to `VETCH_DISABLED=true`)
+  - Default: `true` (tracking enabled)
+  - Priority: `VETCH_DISABLED` takes precedence over `VETCH_ENABLED` for backward compatibility
+  - Example: `export VETCH_ENABLED=false && python app.py`
+
+- **Thread-Safe Instrumentation**: Added `threading.Lock` to `instrument()` function
+  - Prevents race conditions during concurrent initialization
+  - Safe for multi-threaded applications calling `instrument()` at startup
+  - No performance impact on single-threaded usage
+
+- **Examples Directory**: Added comprehensive auto-instrumentation examples
+  - `examples/auto_instrument_example.py`: Demonstrates one-line setup for all providers
+  - `examples/README.md`: Documentation for examples directory
+  - Shows Google GenAI, OpenAI, and Anthropic usage patterns
+
+### Changed
+- **Instrumentation Documentation**: Updated docstrings to clarify thread-safety and env var behavior
+- **Error Messages**: Improved kill switch message to show which env var disabled tracking
+
+### Fixed
+- **Version Consistency**: Synchronized `__init__.py` version with `pyproject.toml`
+
 ## [0.2.0] - 2026-03-08
 
 ### Added - Google GenAI Provider

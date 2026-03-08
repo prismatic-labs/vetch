@@ -26,20 +26,26 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from typing import TYPE_CHECKING
 
 # P0: Emergency kill switch - check immediately on import
-_DISABLED = os.environ.get("VETCH_DISABLED", "").lower() in ("true", "1", "yes")
+# Support both VETCH_DISABLED (legacy) and VETCH_ENABLED (new)
+# Priority: VETCH_DISABLED > VETCH_ENABLED > default (enabled)
+_disabled_env = os.environ.get("VETCH_DISABLED", "").lower() in ("true", "1", "yes")
+_enabled_env = os.environ.get("VETCH_ENABLED", "true").lower() not in ("false", "0", "no")
+_DISABLED = _disabled_env or not _enabled_env
 _default_region: str | None = None  # Default region set via instrument()
 if _DISABLED:
-    print("vetch: disabled via VETCH_DISABLED=true", file=sys.stderr)
+    reason = "VETCH_DISABLED=true" if _disabled_env else "VETCH_ENABLED=false"
+    print(f"vetch: disabled via {reason}", file=sys.stderr)
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager as AsyncContextManager
 
     from vetch.wrapper import VetchContext
 
-__version__ = "0.1.8"
+__version__ = "0.2.1"
 __all__ = [
     "wrap",
     "awrap",
@@ -73,6 +79,7 @@ __all__ = [
 
 # Track instrumented state
 _instrumented = False
+_instrument_lock = threading.Lock()
 
 
 def add_global_tags(tags: dict[str, str]) -> None:
@@ -199,94 +206,97 @@ def instrument(
         # Events emitted automatically!
 
     Note:
-        - Works with OpenAI, Anthropic, and Vertex AI SDKs
+        - Works with OpenAI, Anthropic, Vertex AI, and Google GenAI SDKs
         - Safe to call multiple times (idempotent)
-        - Set VETCH_DISABLED=true to disable all instrumentation
+        - Thread-safe for concurrent initialization
+        - Set VETCH_DISABLED=true or VETCH_ENABLED=false to disable
     """
     global _instrumented, _default_region
 
     if _DISABLED:
         return False
 
-    if _instrumented:
-        return True
+    # Thread-safe instrumentation
+    with _instrument_lock:
+        if _instrumented:
+            return True
 
-    # Store default config for auto-instrumentation in module state
-    # IMPORTANT: Do NOT mutate os.environ (affects child processes and other libraries)
-    if region:
-        _default_region = region
-    if tags:
-        add_global_tags(tags)
+        # Store default config for auto-instrumentation in module state
+        # IMPORTANT: Do NOT mutate os.environ (affects child processes and other libraries)
+        if region:
+            _default_region = region
+        if tags:
+            add_global_tags(tags)
 
-    instrumented_any = False
+        instrumented_any = False
 
-    # Try to instrument OpenAI
-    try:
-        from vetch.providers.openai import instrument_openai_module
+        # Try to instrument OpenAI
+        try:
+            from vetch.providers.openai import instrument_openai_module
 
-        if instrument_openai_module():
-            instrumented_any = True
-    except (ImportError, ModuleNotFoundError):
-        pass  # SDK not installed
-    except Exception as e:
-        import logging
+            if instrument_openai_module():
+                instrumented_any = True
+        except (ImportError, ModuleNotFoundError):
+            pass  # SDK not installed
+        except Exception as e:
+            import logging
 
-        logging.getLogger("vetch").debug(f"Failed to instrument OpenAI: {e}")
+            logging.getLogger("vetch").debug(f"Failed to instrument OpenAI: {e}")
 
-    # Try to instrument Anthropic
-    try:
-        from vetch.providers.anthropic import instrument_anthropic_module
+        # Try to instrument Anthropic
+        try:
+            from vetch.providers.anthropic import instrument_anthropic_module
 
-        if instrument_anthropic_module():
-            instrumented_any = True
-    except (ImportError, ModuleNotFoundError):
-        pass  # SDK not installed
-    except Exception as e:
-        import logging
+            if instrument_anthropic_module():
+                instrumented_any = True
+        except (ImportError, ModuleNotFoundError):
+            pass  # SDK not installed
+        except Exception as e:
+            import logging
 
-        logging.getLogger("vetch").debug(f"Failed to instrument Anthropic: {e}")
+            logging.getLogger("vetch").debug(f"Failed to instrument Anthropic: {e}")
 
-    # Try to instrument Azure OpenAI
-    try:
-        from vetch.providers.azure_openai import instrument_azure_openai_module
+        # Try to instrument Azure OpenAI
+        try:
+            from vetch.providers.azure_openai import instrument_azure_openai_module
 
-        if instrument_azure_openai_module():
-            instrumented_any = True
-    except (ImportError, ModuleNotFoundError):
-        pass  # SDK not installed
-    except Exception as e:
-        import logging
+            if instrument_azure_openai_module():
+                instrumented_any = True
+        except (ImportError, ModuleNotFoundError):
+            pass  # SDK not installed
+        except Exception as e:
+            import logging
 
-        logging.getLogger("vetch").debug(f"Failed to instrument Azure OpenAI: {e}")
+            logging.getLogger("vetch").debug(f"Failed to instrument Azure OpenAI: {e}")
 
-    # Try to instrument Vertex AI
-    try:
-        from vetch.providers.vertexai import instrument_vertexai_module
+        # Try to instrument Vertex AI
+        try:
+            from vetch.providers.vertexai import instrument_vertexai_module
 
-        if instrument_vertexai_module():
-            instrumented_any = True
-    except (ImportError, ModuleNotFoundError):
-        pass  # SDK not installed
-    except Exception as e:
-        import logging
+            if instrument_vertexai_module():
+                instrumented_any = True
+        except (ImportError, ModuleNotFoundError):
+            pass  # SDK not installed
+        except Exception as e:
+            import logging
 
-        logging.getLogger("vetch").debug(f"Failed to instrument Vertex AI: {e}")
+            logging.getLogger("vetch").debug(f"Failed to instrument Vertex AI: {e}")
 
-    # Try to instrument Google GenAI
-    try:
-        from vetch.providers.genai import instrument_genai_module
+        # Try to instrument Google GenAI
+        try:
+            from vetch.providers.genai import instrument_genai_module
 
-        if instrument_genai_module():
-            instrumented_any = True
-    except (ImportError, ModuleNotFoundError):
-        pass  # SDK not installed
-    except Exception as e:
-        import logging
+            if instrument_genai_module():
+                instrumented_any = True
+        except (ImportError, ModuleNotFoundError):
+            pass  # SDK not installed
+        except Exception as e:
+            import logging
 
-        logging.getLogger("vetch").debug(f"Failed to instrument Google GenAI: {e}")
+            logging.getLogger("vetch").debug(f"Failed to instrument Google GenAI: {e}")
 
-    _instrumented = instrumented_any
-    return instrumented_any
+        _instrumented = instrumented_any
+        return instrumented_any
 
 
 def uninstrument() -> bool:
