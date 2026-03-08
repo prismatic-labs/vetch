@@ -216,7 +216,7 @@ def create_health_endpoint() -> tuple[Callable[[], Any], Callable[[], Any]]:
     async def fastapi_handler() -> Any:
         """FastAPI health check endpoint handler."""
         try:
-            from fastapi.responses import (  # type: ignore[import-not-found, import-untyped]
+            from fastapi.responses import (
                 JSONResponse,
             )
         except ImportError:

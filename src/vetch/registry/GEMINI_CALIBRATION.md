@@ -28,12 +28,13 @@
 **Result for Gemini 2.0 Flash (input tokens):**
 | Scenario | Assumed Median | Energy (Wh/1k) | Use Case |
 |----------|----------------|----------------|----------|
+| Very Conservative | 40 tokens | 2.725 | Very short queries |
 | Conservative | 400 tokens | 0.273 | Short Q&A |
-| Moderate | 800 tokens | 0.136 | Typical usage |
-| **Optimistic** | **1,600 tokens** | **0.068** | **Long context (selected)** |
-| Maximum | 2,000 tokens | 0.055 | Power users |
+| **Moderate** | **800 tokens** | **0.136** | **Mixed usage (selected)** |
+| Optimistic | 1,600 tokens | 0.068 | Long context |
+| Maximum | 4,000 tokens | 0.027 | Very long context |
 
-**Selected for vetch registry:** 0.068 Wh/1k (optimistic scenario) - balances conservatism with plausibility.
+**Selected for vetch registry:** 0.136 Wh/1k (moderate scenario) - balances conservatism with plausibility. **Note:** Values span 100x range (0.027 - 2.725 Wh/1k) due to undefined median.
 
 ---
 

@@ -267,7 +267,7 @@ def check(args: argparse.Namespace) -> None:
     # 4. Observability
     print("Checking observability bridges...")
     try:
-        from opentelemetry import trace  # type: ignore[import-not-found, import-untyped]
+        from opentelemetry import trace
         span = trace.get_current_span()
         status = "Active" if span.is_recording() else "Installed, but no active span"
         print(f"  OpenTelemetry: {status}")

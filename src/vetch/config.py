@@ -13,11 +13,12 @@ import hmac
 import logging
 import os
 import secrets
-import socket
 from collections import OrderedDict, deque
 from collections.abc import Iterable
 from time import time
 from typing import TypedDict
+
+logger = logging.getLogger(__name__)
 
 
 class _TagCardinalityTracker(TypedDict):
@@ -499,10 +500,13 @@ def process_tags_single_pass(
 
         hmac_key = os.environ.get("VETCH_REDACTION_KEY", "").encode("utf-8")
         if not hmac_key:
-            try:
-                hmac_key = socket.gethostname().encode("utf-8")
-            except Exception:
-                hmac_key = b"vetch-default-redaction-key"
+            # Use cryptographically secure ephemeral key (not hostname, which is predictable)
+            hmac_key = secrets.token_bytes(32)
+            logger.warning(
+                "No VETCH_REDACTION_KEY set. Using ephemeral key for PII redaction. "
+                "Redacted values will differ across runs. "
+                "Set VETCH_REDACTION_KEY environment variable for consistent redaction."
+            )
 
     # Cardinality tracking state
     global _tag_cardinality_tracker, _tag_cardinality_limit
@@ -515,8 +519,6 @@ def process_tags_single_pass(
     for key, value in tags.items():
         # STEP 1: Redact sensitive values (if key is marked for redaction)
         if _redacted_tags and key in _redacted_tags and hmac_key:
-            import hashlib
-            import hmac
             h = hmac.new(hmac_key, value.encode("utf-8"), hashlib.sha256)
             hashed = h.hexdigest()[:32]  # 128 bits entropy (enterprise-safe)
             value = f"redacted-{hashed}"

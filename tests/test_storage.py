@@ -214,3 +214,40 @@ class TestQueryUsage:
             )
 
             assert summary.total_requests == 1
+
+    def test_query_filters_by_tags(self) -> None:
+        """Query can filter by tags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            configure_storage(enabled=True, path=db_path)
+
+            now = datetime.now(timezone.utc)
+
+            # Store events with different tags
+            store_event({
+                "event_id": "prod-1",
+                "timestamp": now.isoformat(),
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+                "estimated_cost_usd": 0.01,
+                "tags": {"environment": "production", "team": "api"},
+            })
+
+            store_event({
+                "event_id": "dev-1",
+                "timestamp": now.isoformat(),
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+                "estimated_cost_usd": 0.02,
+                "tags": {"environment": "development", "team": "api"},
+            })
+
+            # Filter by environment tag
+            summary = query_usage(
+                start=now - timedelta(hours=1),
+                end=now + timedelta(hours=1),
+                tags={"environment": "production"},
+            )
+
+            assert summary.total_requests == 1
+            assert summary.total_cost_usd == 0.01

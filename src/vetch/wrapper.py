@@ -848,6 +848,18 @@ class VetchContext:
         except Exception:
             pass
 
+        # Auto-export to OpenTelemetry if enabled
+        try:
+            from vetch.exporters.opentelemetry import (
+                export_event_as_span,
+                is_auto_export_enabled,
+            )
+
+            if is_auto_export_enabled():
+                export_event_as_span(self._event)
+        except Exception:
+            pass
+
         # Register with active session (if any)
         if active_session is not None:
             with contextlib.suppress(Exception):

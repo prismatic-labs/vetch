@@ -60,11 +60,13 @@ class Usage(TypedDict, total=False):
 
     The nested structure supports future extension without breaking schema.
     Schema v2 adds image and audio support.
+    Schema v2.1 adds reasoning (extended thinking) support.
     """
 
     text: Union[TextUsage, None]
     image: Union[ImageUsage, None]
     audio: Union[AudioUsage, None]
+    reasoning: Union[TextUsage, None]  # Extended thinking tokens (Gemini Flash Thinking, etc.)
 
 
 class InferenceEvent(TypedDict, total=False):

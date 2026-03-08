@@ -277,7 +277,10 @@ def get_carbon_intensity(
             return GridIntensity(
                 intensity_gco2e_kwh=value,
                 signal_quality=_get_signal_quality(age),
-                timestamp=time.time() - (age or 0),
+                # Use current time as approximate timestamp
+                # (memory cache uses monotonic time internally,
+                # so we can't reliably reconstruct the original wall-clock timestamp)
+                timestamp=time.time(),
             )
 
     # Tier 2: File cache
@@ -287,9 +290,13 @@ def get_carbon_intensity(
             # Promote to memory cache
             memory_cache.set(region, cached.intensity_gco2e_kwh)
 
+            # File cache uses wall-clock timestamps, so age calculation is
+            # vulnerable to NTP clock jumps.
+            # Bounds check: if negative (clock went backward), treat as fresh.
+            # If unreasonably large (>7 days), cap it to prevent overflow.
+            # Note: We use wall-clock time here (not monotonic) because
+            # file cache persists across restarts.
             age = time.time() - cached.timestamp
-            # Bounds check for clock jumps: if negative (clock went backward), treat as fresh
-            # if unreasonably large (>7 days), cap it to prevent overflow
             if age < 0:
                 age = 0
             elif age > 604800:  # 7 days in seconds

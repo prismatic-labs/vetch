@@ -80,7 +80,7 @@ def attach_to_otel_span(event: InferenceEvent) -> bool:
         return False
 
     try:
-        from opentelemetry import trace  # type: ignore[import-not-found, import-untyped]
+        from opentelemetry import trace
 
         span = trace.get_current_span()
         if not span.is_recording():
@@ -173,22 +173,22 @@ def configure_otlp_export(
         from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (  # type: ignore[import-not-found]
             OTLPMetricExporter,
         )
-        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-not-found, import-untyped]
+        from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-not-found]
             OTLPSpanExporter,
         )
-        from opentelemetry.sdk.metrics import (  # type: ignore[import-not-found, import-untyped]
+        from opentelemetry.sdk.metrics import (
             MeterProvider,
         )
-        from opentelemetry.sdk.metrics.export import (  # type: ignore[import-not-found, import-untyped]
+        from opentelemetry.sdk.metrics.export import (
             PeriodicExportingMetricReader,
         )
-        from opentelemetry.sdk.resources import (  # type: ignore[import-not-found, import-untyped]
+        from opentelemetry.sdk.resources import (
             Resource,
         )
-        from opentelemetry.sdk.trace import (  # type: ignore[import-not-found, import-untyped]
+        from opentelemetry.sdk.trace import (
             TracerProvider,
         )
-        from opentelemetry.sdk.trace.export import (  # type: ignore[import-not-found, import-untyped]
+        from opentelemetry.sdk.trace.export import (
             BatchSpanProcessor,
         )
 

@@ -255,36 +255,110 @@ def query_usage(
                 params.append(f"$.{key}")
                 params.append(value)
 
-        cursor.execute(query, params)
         summary = UsageSummary(start, end)
 
+        # Query 1: Compute totals using SQL aggregation (not Python loops)
+        totals_query = """
+            SELECT
+                COUNT(*) as total_requests,
+                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                COALESCE(SUM(energy_wh), 0.0) as total_energy_wh,
+                COALESCE(SUM(carbon_g), 0.0) as total_carbon_g,
+                COALESCE(SUM(cost_usd), 0.0) as total_cost_usd
+            FROM events
+            WHERE timestamp BETWEEN ? AND ?
+        """
+        totals_params = [start.isoformat(), end.isoformat()]
+
+        if model:
+            totals_query += " AND model = ?"
+            totals_params.append(model)
+
+        if tags:
+            for key, value in tags.items():
+                totals_query += " AND json_extract(tags_json, ?) = ?"
+                totals_params.append(f"$.{key}")
+                totals_params.append(value)
+
+        cursor.execute(totals_query, totals_params)
+        totals_row = cursor.fetchone()
+        if totals_row:
+            summary.total_requests = totals_row['total_requests']
+            summary.total_input_tokens = totals_row['total_input_tokens']
+            summary.total_output_tokens = totals_row['total_output_tokens']
+            summary.total_energy_wh = totals_row['total_energy_wh']
+            summary.total_carbon_g = totals_row['total_carbon_g']
+            summary.total_cost_usd = totals_row['total_cost_usd']
+
+        # Query 2: Group by model using SQL aggregation
+        by_model_query = """
+            SELECT
+                COALESCE(model, 'unknown') as model,
+                COUNT(*) as requests,
+                COALESCE(SUM(cost_usd), 0.0) as cost_usd,
+                COALESCE(SUM(energy_wh), 0.0) as energy_wh
+            FROM events
+            WHERE timestamp BETWEEN ? AND ?
+        """
+        by_model_params = [start.isoformat(), end.isoformat()]
+
+        if model:
+            by_model_query += " AND model = ?"
+            by_model_params.append(model)
+
+        if tags:
+            for key, value in tags.items():
+                by_model_query += " AND json_extract(tags_json, ?) = ?"
+                by_model_params.append(f"$.{key}")
+                by_model_params.append(value)
+
+        by_model_query += " GROUP BY model"
+
+        cursor.execute(by_model_query, by_model_params)
         for row in cursor:
+            summary.by_model[row['model']] = {
+                'requests': row['requests'],
+                'cost_usd': row['cost_usd'],
+                'energy_wh': row['energy_wh']
+            }
 
-            # Aggregate
-            summary.total_requests += 1
-            summary.total_input_tokens += (row['input_tokens'] or 0)
-            summary.total_output_tokens += (row['output_tokens'] or 0)
-            summary.total_energy_wh += (row['energy_wh'] or 0.0)
-            summary.total_carbon_g += (row['carbon_g'] or 0.0)
-            summary.total_cost_usd += (row['cost_usd'] or 0.0)
+        # Query 3: Group by tags (fetch tags_json + cost_usd and aggregate
+        # in Python for tag breakdown)
+        # Note: SQL can't efficiently GROUP BY arbitrary JSON keys,
+        # so we fetch tags and aggregate
+        tags_query = (
+            "SELECT tags_json, COALESCE(cost_usd, 0.0) as cost_usd "
+            "FROM events WHERE timestamp BETWEEN ? AND ?"
+        )
+        tags_params = [start.isoformat(), end.isoformat()]
 
-            # Group by Model
-            m = row['model'] or 'unknown'
-            if m not in summary.by_model:
-                summary.by_model[m] = {'requests': 0, 'cost_usd': 0.0, 'energy_wh': 0.0}
-            summary.by_model[m]['requests'] += 1
-            summary.by_model[m]['cost_usd'] += (row['cost_usd'] or 0.0)
-            summary.by_model[m]['energy_wh'] += (row['energy_wh'] or 0.0)
+        if model:
+            tags_query += " AND model = ?"
+            tags_params.append(model)
 
-            # Group by Tags (load JSON only for aggregation, not filtering)
+        if tags:
+            for key, value in tags.items():
+                tags_query += " AND json_extract(tags_json, ?) = ?"
+                tags_params.append(f"$.{key}")
+                tags_params.append(value)
+
+        cursor.execute(tags_query, tags_params)
+
+        # Build a map of tag combinations to count/cost for aggregation
+        tag_stats: dict[str, dict[str, dict[str, int | float]]] = {}
+        for row in cursor:
             row_tags = json.loads(row['tags_json'])
+            row_cost = row['cost_usd']
             for k, v in row_tags.items():
-                if k not in summary.by_tag:
-                    summary.by_tag[k] = {}
-                if v not in summary.by_tag[k]:
-                    summary.by_tag[k][v] = {'requests': 0, 'cost_usd': 0.0}
-                summary.by_tag[k][v]['requests'] += 1
-                summary.by_tag[k][v]['cost_usd'] += (row['cost_usd'] or 0.0)
+                if k not in tag_stats:
+                    tag_stats[k] = {}
+                if v not in tag_stats[k]:
+                    tag_stats[k][v] = {'requests': 0, 'cost_usd': 0.0}
+                tag_stats[k][v]['requests'] += 1
+                tag_stats[k][v]['cost_usd'] += row_cost
+
+        summary.by_tag = tag_stats
 
         return summary
 

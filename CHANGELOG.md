@@ -5,6 +5,101 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-08
+
+### Added - Google GenAI Provider
+- **Google GenAI SDK Support**: Native integration with `google-genai` Python SDK
+  - Automatic tracking for `client.models.generate_content()` (sync and async)
+  - Embedding support via `client.models.embed_content()`
+  - Streaming response tracking
+  - Model name normalization (strips "models/" prefix and version suffixes like "-001")
+  - Thread-safe per-client patching using WeakKeyDictionary
+  - Privacy guarantee: only reads usage metadata, not prompt/completion content
+  - Install with: `pip install vetch[genai]`
+  - Example:
+    ```python
+    import google.genai as genai
+    import vetch
+
+    vetch.instrument()  # Auto-instruments all GenAI clients
+    client = genai.Client(api_key="...")
+    response = client.models.generate_content(model="gemini-2.0-flash", contents="Hello!")
+    # Events automatically emitted with energy/carbon/cost
+    ```
+
+### Added - OpenTelemetry Semantic Conventions Exporter
+- **GenAI Semantic Conventions**: Export vetch events as OpenTelemetry spans
+  - Follows OpenTelemetry GenAI semantic conventions (v1.28+)
+  - Required attributes: `gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.*`
+  - Custom vetch attributes: `vetch.cost.*`, `vetch.energy.*`, `vetch.carbon.*`, `vetch.water.*`
+  - Auto-export mode: `vetch.configure_otel_export(enabled=True)` automatically exports on context exit
+  - Manual export: `vetch.export_event_as_span(event, tracer=tracer, parent_span=parent)`
+  - Graceful degradation if `opentelemetry-api` not installed
+  - Install with: `pip install vetch[opentelemetry]`
+  - Example:
+    ```python
+    import vetch
+    from opentelemetry import trace
+
+    vetch.configure_otel_export(enabled=True)  # Enable auto-export
+
+    with vetch.wrap() as ctx:
+        response = client.chat.completions.create(...)
+    # Span automatically created with GenAI semantic conventions + vetch attributes
+    ```
+
+### Added - Energy Calibration Tools
+- **Calibration Methodology Framework**: Reverse-engineer per-token energy from aggregate measurements
+  - `calibrate_from_measurement()`: Derive Wh/1k values from published datacenter measurements
+  - `validate_calibration()`: Verify calibrated values reproduce original measurements
+  - `explore_scenarios()`: Generate multiple calibration scenarios for uncertainty analysis
+  - `propagate_to_family()`: Apply efficiency ratios to related models
+  - `format_calibration_table()`: Generate markdown tables for documentation
+  - Comprehensive documentation with formula derivations, assumptions, and validation
+  - Example:
+    ```python
+    from vetch.tools.calibration import calibrate_from_measurement
+
+    result = calibrate_from_measurement(
+        measurement_wh=0.24,  # Google's published measurement
+        pue=1.10,             # Google's PUE
+        median_tokens=800,    # Estimated median prompt size
+    )
+    print(f"Input: {result.energy_per_1k_input:.3f} Wh/1k")
+    print(f"Output: {result.energy_per_1k_output:.3f} Wh/1k")
+    ```
+- **Gemini Calibration Document**: `GEMINI_CALIBRATION.md` with full methodology
+  - Anchored to Google's 0.24 Wh per median Gemini Apps prompt (August 2025)
+  - 5 scenarios: Very Conservative (40 tokens), Conservative (400), Moderate (800), Optimistic (1600), Maximum (4000)
+  - Transparent assumptions: PUE 1.10, output/input ratio 3:1, 50/50 input/output split
+  - Validation script reproduces Google's measurement with <1% error
+  - Critical assumption: Median prompt = 1,600 tokens (if actually 400 tokens, values would be 4x higher)
+
+### Added - Tiered Pricing
+- **Tiered Pricing Support**: Accurate cost calculation for long-context models
+  - Gemini Pro models charge 2x per token for >128k context window
+  - Schema: `tier_threshold` (128000) and `tier_multiplier` (2.0) in `pricing.json`
+  - Implementation uses multiplier approach (single source of truth, no duplicate values)
+  - Example: Gemini 2.5 Pro charges $1.25/M for ≤128k tokens, $2.50/M for >128k tokens
+  - Calculation:
+    ```python
+    # For 200k input tokens:
+    # First 128k: 128 × $1.25/M = $0.16
+    # Remaining 72k: 72 × $2.50/M = $0.18
+    # Total: $0.34
+    ```
+
+### Changed
+- **Test Coverage**: Maintained at 69%
+  - Added tests for calibration tool (19 tests)
+  - Added tests for tiered pricing (5 tests)
+  - Added tests for Google GenAI provider (9 tests)
+  - Added tests for OpenTelemetry exporter (5 tests)
+  - 764 tests passing total
+
+### Fixed
+- Google GenAI provider now correctly extracts model names with version suffixes (e.g., "models/gemini-1.5-pro-001" → "gemini-1.5-pro")
+
 ## [0.1.8] - 2026-03-03
 
 ### Added - Schema v2 & Multimodal Support

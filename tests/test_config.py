@@ -236,9 +236,12 @@ class TestCardinalityLimits:
 class TestSecurityFeatures:
     """Test security-critical tag processing features."""
 
-    def test_redaction_prevents_pii_leakage(self):
+    def test_redaction_prevents_pii_leakage(self, monkeypatch):
         """Redacted tags never expose plaintext PII in logs."""
         import vetch.config as config
+
+        # Set deterministic redaction key for testing
+        monkeypatch.setenv("VETCH_REDACTION_KEY", "test-key-for-deterministic-hashing")
 
         config.set_redacted_tags(["email", "ssn", "credit_card"])
 
@@ -271,6 +274,32 @@ class TestSecurityFeatures:
 
         # Non-sensitive tags should pass through unchanged
         assert processed["user_tier"] == "premium"
+
+        config._reset_config()
+
+    def test_redaction_without_key_uses_ephemeral_salt(self, monkeypatch, caplog):
+        """Test PII redaction without VETCH_REDACTION_KEY uses ephemeral salt."""
+        import logging
+
+        import vetch.config as config
+
+        # Clear the environment variable to trigger ephemeral key generation
+        monkeypatch.delenv("VETCH_REDACTION_KEY", raising=False)
+
+        config.set_redacted_tags(["email"])
+
+        with caplog.at_level(logging.WARNING):
+            processed, warnings, missing = config.process_tags_single_pass(
+                {"email": "test@example.com"}
+            )
+
+        # Should have logged a warning about ephemeral key
+        assert any("ephemeral key" in record.message.lower() for record in caplog.records)
+        assert any("VETCH_REDACTION_KEY" in record.message for record in caplog.records)
+
+        # Should still redact the email
+        assert processed["email"].startswith("redacted-")
+        assert "test@example.com" not in processed["email"]
 
         config._reset_config()
 

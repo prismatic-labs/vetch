@@ -66,6 +66,9 @@ __all__ = [
     "get_cleanest_region",
     # v0.1.5: Logging control
     "set_log_level",
+    # v0.2.0: OpenTelemetry exporter
+    "configure_otel_export",
+    "export_event_as_span",
 ]
 
 # Track instrumented state
@@ -269,6 +272,19 @@ def instrument(
 
         logging.getLogger("vetch").debug(f"Failed to instrument Vertex AI: {e}")
 
+    # Try to instrument Google GenAI
+    try:
+        from vetch.providers.genai import instrument_genai_module
+
+        if instrument_genai_module():
+            instrumented_any = True
+    except (ImportError, ModuleNotFoundError):
+        pass  # SDK not installed
+    except Exception as e:
+        import logging
+
+        logging.getLogger("vetch").debug(f"Failed to instrument Google GenAI: {e}")
+
     _instrumented = instrumented_any
     return instrumented_any
 
@@ -358,6 +374,20 @@ def uninstrument() -> bool:
         import logging
 
         logging.getLogger("vetch").debug(f"Failed to uninstrument Vertex AI: {e}")
+        uninstrumented_all = False
+
+    # Try to uninstrument Google GenAI
+    try:
+        from vetch.providers.genai import uninstrument_genai_module
+
+        if not uninstrument_genai_module():
+            uninstrumented_all = False
+    except (ImportError, ModuleNotFoundError):
+        pass  # SDK not installed
+    except Exception as e:
+        import logging
+
+        logging.getLogger("vetch").debug(f"Failed to uninstrument Google GenAI: {e}")
         uninstrumented_all = False
 
     _instrumented = False
@@ -528,4 +558,13 @@ def __getattr__(name: str) -> object:
         from vetch.sensing.grid import get_cleanest_region
 
         return get_cleanest_region
+    # v0.2.0: OpenTelemetry exporter
+    if name == "configure_otel_export":
+        from vetch.exporters.opentelemetry import configure_auto_export
+
+        return configure_auto_export
+    if name == "export_event_as_span":
+        from vetch.exporters.opentelemetry import export_event_as_span
+
+        return export_event_as_span
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

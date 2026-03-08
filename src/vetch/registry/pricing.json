@@ -42,8 +42,10 @@
     "cache_creation_premium": 1.25
   },
   "gemini-1.5-pro": {
-    "usd_per_1k_input": 0.007,
-    "usd_per_1k_output": 0.021
+    "usd_per_1k_input": 0.00125,
+    "usd_per_1k_output": 0.005,
+    "tier_threshold": 128000,
+    "tier_multiplier": 2.0
   },
   "gemini-1.5-flash": {
     "usd_per_1k_input": 0.00035,
@@ -52,6 +54,17 @@
   "gemini-2.0-flash": {
     "usd_per_1k_input": 0.0001,
     "usd_per_1k_output": 0.0004
+  },
+  "gemini-2.5-flash": {
+    "usd_per_1k_input": 0.0001,
+    "usd_per_1k_output": 0.0004
+  },
+  "gemini-2.5-pro": {
+    "usd_per_1k_input": 0.00125,
+    "usd_per_1k_output": 0.010,
+    "tier_threshold": 200000,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5
   },
   "llama-3-70b": {
     "usd_per_1k_input": 0.0,

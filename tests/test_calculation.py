@@ -329,3 +329,85 @@ class TestEmbodiedCarbonCalculation:
         total_gco2e = operational_gco2e + embodied_gco2e
         # Total should be dominated by operational (typically 80-95%)
         assert operational_gco2e > embodied_gco2e
+
+
+class TestTieredPricing:
+    """Test tiered pricing functionality."""
+
+    def test_calculate_tiered_cost_no_tiers(self) -> None:
+        """Test tiered cost calculation without tiers (standard pricing)."""
+        from vetch.calculation import _calculate_tiered_cost
+
+        # 100k tokens @ $1.25/M = $0.125
+        cost = _calculate_tiered_cost(
+            tokens=100000, base_rate_per_1k=0.00125, tier_threshold=None, tier_multiplier=None
+        )
+        assert abs(cost - 0.125) < 0.0001
+
+    def test_calculate_tiered_cost_under_threshold(self) -> None:
+        """Test tiered cost when under threshold (no tier applies)."""
+        from vetch.calculation import _calculate_tiered_cost
+
+        # 100k tokens @ $1.25/M, threshold 128k, multiplier 2x
+        # Should use base rate only
+        cost = _calculate_tiered_cost(
+            tokens=100000, base_rate_per_1k=0.00125, tier_threshold=128000, tier_multiplier=2.0
+        )
+        assert abs(cost - 0.125) < 0.0001
+
+    def test_calculate_tiered_cost_at_threshold(self) -> None:
+        """Test tiered cost exactly at threshold."""
+        from vetch.calculation import _calculate_tiered_cost
+
+        # 128k tokens @ $1.25/M = $0.16
+        cost = _calculate_tiered_cost(
+            tokens=128000, base_rate_per_1k=0.00125, tier_threshold=128000, tier_multiplier=2.0
+        )
+        assert abs(cost - 0.16) < 0.0001
+
+    def test_calculate_tiered_cost_over_threshold(self) -> None:
+        """Test tiered cost when over threshold (split calculation)."""
+        from vetch.calculation import _calculate_tiered_cost
+
+        # 200k tokens @ $1.25/M base, 2x over 128k
+        # Base tier: 128k @ $1.25/M = $0.16
+        # Over tier: 72k @ $2.50/M = $0.18
+        # Total: $0.34
+        cost = _calculate_tiered_cost(
+            tokens=200000, base_rate_per_1k=0.00125, tier_threshold=128000, tier_multiplier=2.0
+        )
+        assert abs(cost - 0.34) < 0.0001
+
+    def test_tiered_pricing_with_output_tokens(self) -> None:
+        """Test tiered pricing applies to both input and output tokens."""
+        from vetch.calculation import _calculate_tiered_cost
+
+        # Output tokens should also use tiered pricing
+        # 200k output @ $10/M base, 2x over 128k
+        # Base: 128k @ $10/M = $1.28
+        # Over: 72k @ $20/M = $1.44
+        # Total: $2.72
+        cost = _calculate_tiered_cost(
+            tokens=200000, base_rate_per_1k=0.010, tier_threshold=128000, tier_multiplier=2.0
+        )
+        assert abs(cost - 2.72) < 0.01
+
+    def test_calculate_tiered_cost_zero_tokens(self) -> None:
+        """Test tiered cost with zero tokens."""
+        from vetch.calculation import _calculate_tiered_cost
+
+        # Zero tokens should cost $0
+        cost = _calculate_tiered_cost(
+            tokens=0, base_rate_per_1k=0.00125, tier_threshold=128000, tier_multiplier=2.0
+        )
+        assert cost == 0.0
+
+    def test_calculate_tiered_cost_with_none_threshold_only(self) -> None:
+        """Test tiered cost when only threshold is None."""
+        from vetch.calculation import _calculate_tiered_cost
+
+        # None threshold but non-None multiplier should use flat rate
+        cost = _calculate_tiered_cost(
+            tokens=100000, base_rate_per_1k=0.00125, tier_threshold=None, tier_multiplier=2.0
+        )
+        assert abs(cost - 0.125) < 0.0001

@@ -797,6 +797,58 @@ def _estimate_embodied_factor_by_model_name(model: str) -> float:
     return 0.075
 
 
+def _calculate_tiered_cost(
+    tokens: int,
+    base_rate_per_1k: float,
+    tier_threshold: int | None,
+    tier_multiplier: float | None,
+) -> float:
+    """Calculate cost with optional tiered pricing.
+
+    Args:
+        tokens: Number of tokens
+        base_rate_per_1k: Base rate per 1000 tokens
+        tier_threshold: Token count where higher tier starts (None = no tiers)
+        tier_multiplier: Multiplier for tokens above threshold (None = no tiers)
+
+    Returns:
+        Total cost in USD
+
+    Example:
+        >>> # No tiering - standard calculation
+        >>> _calculate_tiered_cost(1000, 0.001, None, None)
+        0.001
+
+        >>> # With tiering: 100k tokens, $1.25/M base, 2x over 128k
+        >>> # Base tier: 100k @ $1.25/M = $0.125
+        >>> _calculate_tiered_cost(100000, 0.00125, 128000, 2.0)
+        0.125
+
+        >>> # Over threshold: 200k tokens, $1.25/M base, 2x over 128k
+        >>> # Base: 128k @ $1.25/M = $0.16
+        >>> # Over: 72k @ $2.50/M = $0.18
+        >>> # Total: $0.34
+        >>> _calculate_tiered_cost(200000, 0.00125, 128000, 2.0)
+        0.34
+    """
+    if tier_threshold is None or tier_multiplier is None:
+        # No tiering - standard calculation
+        return (tokens * base_rate_per_1k) / 1000
+
+    if tokens <= tier_threshold:
+        # Under threshold - standard calculation
+        return (tokens * base_rate_per_1k) / 1000
+
+    # Over threshold - split calculation
+    base_tier_tokens = tier_threshold
+    over_tier_tokens = tokens - tier_threshold
+
+    base_tier_cost = (base_tier_tokens * base_rate_per_1k) / 1000
+    over_tier_cost = (over_tier_tokens * base_rate_per_1k * tier_multiplier) / 1000
+
+    return base_tier_cost + over_tier_cost
+
+
 def calculate_cost(
     input_tokens: int,
     output_tokens: int,
@@ -809,6 +861,10 @@ def calculate_cost(
     Supports cache-aware pricing: cache_read tokens are discounted
     (typically 90% cheaper), cache_creation tokens may have extra cost.
 
+    Supports tiered pricing: models with tier_threshold and tier_multiplier
+    charge different rates for tokens above the threshold (e.g., Gemini Pro
+    models charge 2x for >128k tokens).
+
     Args:
         input_tokens: Number of input tokens.
         output_tokens: Number of output tokens.
@@ -820,6 +876,18 @@ def calculate_cost(
         Tuple of (total_cost, input_cost, output_cost, cache_write_cost, cache_read_cost,
         billing_tier). cache_write_cost: Cost to write tokens to cache (included in total)
         cache_read_cost: Cost for cached token reads (included in total, typically discounted)
+
+    Example:
+        >>> # Standard model (no tiers)
+        >>> calculate_cost(1000, 500, "gpt-4o")
+        (0.0125, 0.005, 0.0075, 0.0, 0.0, 'list')
+
+        >>> # Tiered model (Gemini 2.5 Pro): 200k input, 1k output
+        >>> # Input: 128k @ $1.25/M + 72k @ $2.50/M = $0.16 + $0.18 = $0.34
+        >>> # Output: 1k @ $10/M = $0.01
+        >>> # Total: $0.35
+        >>> calculate_cost(200000, 1000, "gemini-2.5-pro")
+        (0.35, 0.34, 0.01, 0.0, 0.0, 'list')
     """
     resolved_model, known = resolve_model(model)
     _load_registry()
@@ -829,6 +897,9 @@ def calculate_cost(
         entry = _PRICING[resolved_model]
         rate_in = entry["usd_per_1k_input"]
         rate_out = entry["usd_per_1k_output"]
+        tier_threshold_raw = entry.get("tier_threshold")
+        tier_threshold = int(tier_threshold_raw) if tier_threshold_raw is not None else None
+        tier_multiplier = entry.get("tier_multiplier")
     else:
         # No pricing for unknown models
         return 0.0, 0.0, 0.0, 0.0, 0.0, "none"
@@ -853,8 +924,16 @@ def calculate_cost(
         # Cache creation tokens cost extra on top of normal input cost
         cache_write_cost = (cache_creation_tokens * rate_in * cache_creation_premium) / 1000
 
-    cost_in = (effective_input * rate_in) / 1000 + cache_write_cost + cache_read_cost
-    cost_out = (output_tokens * rate_out) / 1000
+    # Calculate input cost with tiered pricing
+    cost_in = (
+        _calculate_tiered_cost(effective_input, rate_in, tier_threshold, tier_multiplier)
+        + cache_write_cost
+        + cache_read_cost
+    )
+
+    # Calculate output cost with tiered pricing
+    cost_out = _calculate_tiered_cost(output_tokens, rate_out, tier_threshold, tier_multiplier)
+
     total_cost = cost_in + cost_out
 
     return total_cost, cost_in, cost_out, cache_write_cost, cache_read_cost, "list"
