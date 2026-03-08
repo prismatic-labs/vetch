@@ -43,7 +43,7 @@ class _WeakMessagesWrapper:
 
     __slots__ = ("_messages_ref", "_originals_dict")
 
-    def __init__(self, messages: Any, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, messages: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._messages_ref = weakref.ref(messages)
         self._originals_dict = originals_dict
 
@@ -74,7 +74,7 @@ class _WeakAsyncMessagesWrapper:
 
     __slots__ = ("_messages_ref", "_originals_dict")
 
-    def __init__(self, messages: Any, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, messages: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._messages_ref = weakref.ref(messages)
         self._originals_dict = originals_dict
 
@@ -422,6 +422,7 @@ def patch_anthropic_client(client: Any) -> bool:
 
             # Apply patch using weak reference wrapper to avoid GC cycles
             import inspect
+            wrapper: Any
             if inspect.iscoroutinefunction(create):
                 wrapper = _WeakAsyncMessagesWrapper(messages, _client_originals)
             else:

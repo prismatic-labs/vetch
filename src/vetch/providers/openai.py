@@ -47,7 +47,7 @@ class _WeakChatWrapper:
 
     __slots__ = ("_completions_ref", "_originals_dict")
 
-    def __init__(self, completions: Any, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, completions: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._completions_ref = weakref.ref(completions)
         self._originals_dict = originals_dict
 
@@ -78,7 +78,7 @@ class _WeakAsyncChatWrapper:
 
     __slots__ = ("_completions_ref", "_originals_dict")
 
-    def __init__(self, completions: Any, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, completions: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._completions_ref = weakref.ref(completions)
         self._originals_dict = originals_dict
 
@@ -109,7 +109,7 @@ class _WeakEmbeddingsWrapper:
 
     __slots__ = ("_embeddings_ref", "_originals_dict")
 
-    def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._embeddings_ref = weakref.ref(embeddings)
         self._originals_dict = originals_dict
 
@@ -135,7 +135,7 @@ class _WeakAsyncEmbeddingsWrapper:
 
     __slots__ = ("_embeddings_ref", "_originals_dict")
 
-    def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._embeddings_ref = weakref.ref(embeddings)
         self._originals_dict = originals_dict
 
@@ -699,6 +699,7 @@ def patch_openai_client(client: Any) -> bool:
 
             # Apply patch using weak reference wrapper to avoid GC cycles
             import inspect
+            wrapper: Any
             if inspect.iscoroutinefunction(create):
                 wrapper = _WeakAsyncChatWrapper(completions, _client_originals)
             else:
@@ -725,6 +726,7 @@ def patch_openai_client(client: Any) -> bool:
 
                         # Apply patch using weak reference wrapper to avoid GC cycles
                         import inspect
+                        emb_wrapper: Any
                         if inspect.iscoroutinefunction(embeddings_create):
                             emb_wrapper = _WeakAsyncEmbeddingsWrapper(embeddings, _client_originals)
                         else:

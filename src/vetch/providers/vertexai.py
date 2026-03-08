@@ -54,7 +54,7 @@ class _WeakGenerateWrapper:
 
     __slots__ = ("_model_ref", "_originals_dict")
 
-    def __init__(self, model: Any, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, model: Any, originals_dict: WeakKeyDictionary[Any, _ModelOriginals]) -> None:
         self._model_ref = weakref.ref(model)
         self._originals_dict = originals_dict
 
@@ -87,7 +87,7 @@ class _WeakGenerateAsyncWrapper:
 
     __slots__ = ("_model_ref", "_originals_dict")
 
-    def __init__(self, model: Any, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, model: Any, originals_dict: WeakKeyDictionary[Any, _ModelOriginals]) -> None:
         self._model_ref = weakref.ref(model)
         self._originals_dict = originals_dict
 

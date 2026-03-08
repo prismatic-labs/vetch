@@ -21,7 +21,7 @@ import threading
 import types
 import weakref
 from collections.abc import AsyncGenerator, Generator
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
 
 from vetch.context import get_active_context
@@ -54,7 +54,7 @@ class _WeakMethodWrapper:
 
     __slots__ = ("_client_ref", "_method_name", "_originals_dict")
 
-    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._client_ref = weakref.ref(client)
         self._method_name = method_name
         self._originals_dict = originals_dict
@@ -98,7 +98,7 @@ class _WeakAsyncMethodWrapper:
 
     __slots__ = ("_client_ref", "_method_name", "_originals_dict")
 
-    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._client_ref = weakref.ref(client)
         self._method_name = method_name
         self._originals_dict = originals_dict
@@ -142,7 +142,7 @@ class _WeakEmbedWrapper:
 
     __slots__ = ("_client_ref", "_method_name", "_originals_dict")
 
-    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary) -> None:
+    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._client_ref = weakref.ref(client)
         self._method_name = method_name
         self._originals_dict = originals_dict

@@ -938,7 +938,9 @@ def calculate_cost(
     )
 
     # Calculate output cost with tiered pricing
-    cost_out = _calculate_tiered_cost(output_tokens, rate_out, tier_threshold, tier_multiplier_output)
+    cost_out = _calculate_tiered_cost(
+        output_tokens, rate_out, tier_threshold, tier_multiplier_output
+    )
 
     total_cost = cost_in + cost_out
 
