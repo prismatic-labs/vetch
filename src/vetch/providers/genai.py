@@ -19,8 +19,9 @@ import logging
 import re
 import threading
 import types
+import weakref
 from collections.abc import AsyncGenerator, Generator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 from weakref import WeakKeyDictionary
 
 from vetch.context import get_active_context
@@ -40,6 +41,156 @@ _client_lock = threading.Lock()
 
 # Module-level storage for original Client.__init__ (strong reference)
 _module_original_init: Any = None
+
+
+class _WeakMethodWrapper:
+    """Wrapper that holds weak reference to client to avoid GC cycles.
+
+    Problem: Closures that capture `client` create reference cycles:
+      client -> method -> closure -> client
+
+    Solution: Use weak reference to client in wrapper class.
+    """
+
+    __slots__ = ("_client_ref", "_method_name", "_originals_dict")
+
+    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary) -> None:
+        self._client_ref = weakref.ref(client)
+        self._method_name = method_name
+        self._originals_dict = originals_dict
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        client = self._client_ref()
+        if client is None:
+            raise RuntimeError("Client was garbage collected")
+
+        ctx = get_active_context()
+        original = self._originals_dict[client][self._method_name]
+
+        if isinstance(original, tuple):
+            orig_func, orig_self = original
+            if ctx is None:
+                return orig_func(orig_self, *args, **kwargs)
+            response = orig_func(orig_self, *args, **kwargs)
+        else:
+            if ctx is None:
+                return original(*args, **kwargs)
+            response = original(*args, **kwargs)
+
+        # Extract metadata
+        usage, cache_read, cache_create = extract_usage(response)
+        model = extract_model(response)
+
+        # Capture metadata
+        ctx.capture(
+            model=model,
+            provider="google_genai",
+            usage=usage,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_create,
+        )
+
+        return response
+
+
+class _WeakAsyncMethodWrapper:
+    """Async version of _WeakMethodWrapper."""
+
+    __slots__ = ("_client_ref", "_method_name", "_originals_dict")
+
+    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary) -> None:
+        self._client_ref = weakref.ref(client)
+        self._method_name = method_name
+        self._originals_dict = originals_dict
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        client = self._client_ref()
+        if client is None:
+            raise RuntimeError("Client was garbage collected")
+
+        ctx = get_active_context()
+        original = self._originals_dict[client][self._method_name]
+
+        if isinstance(original, tuple):
+            orig_func, orig_self = original
+            if ctx is None:
+                return await orig_func(orig_self, *args, **kwargs)
+            response = await orig_func(orig_self, *args, **kwargs)
+        else:
+            if ctx is None:
+                return await original(*args, **kwargs)
+            response = await original(*args, **kwargs)
+
+        # Extract metadata
+        usage, cache_read, cache_create = extract_usage(response)
+        model = extract_model(response)
+
+        # Capture metadata
+        ctx.capture(
+            model=model,
+            provider="google_genai",
+            usage=usage,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_create,
+        )
+
+        return response
+
+
+class _WeakEmbedWrapper:
+    """Wrapper for embed_content with weak reference."""
+
+    __slots__ = ("_client_ref", "_method_name", "_originals_dict")
+
+    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary) -> None:
+        self._client_ref = weakref.ref(client)
+        self._method_name = method_name
+        self._originals_dict = originals_dict
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        client = self._client_ref()
+        if client is None:
+            raise RuntimeError("Client was garbage collected")
+
+        ctx = get_active_context()
+        original = self._originals_dict[client][self._method_name]
+
+        if isinstance(original, tuple):
+            orig_func, orig_self = original
+            if ctx is None:
+                return orig_func(orig_self, *args, **kwargs)
+            response = orig_func(orig_self, *args, **kwargs)
+        else:
+            if ctx is None:
+                return original(*args, **kwargs)
+            response = original(*args, **kwargs)
+
+        # Extract metadata (embeddings use prompt_token_count)
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if usage_metadata:
+            input_tokens = getattr(usage_metadata, "prompt_token_count", 0)
+
+            # Get model from kwargs or args
+            model = kwargs.get("model", "text-embedding-004")
+            if isinstance(model, str):
+                model = _normalize_model_name(model)
+
+            usage: Usage = {
+                "text": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": 0,  # Embeddings don't generate tokens
+                    "total_tokens": input_tokens,
+                }
+            }
+
+            ctx.capture(
+                model=model,
+                provider="google_genai",
+                usage=usage,
+                is_embedding=True,
+            )
+
+        return response
 
 
 def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
@@ -159,36 +310,10 @@ def patch_client(client: Any) -> None:
                 # Mock object or already unbound - store directly
                 _client_originals[client]["generate_content"] = method
 
-            def wrapped_generate(*args: Any, **kwargs: Any) -> Any:
-                ctx = get_active_context()
-                # Handle both tuple format (unbound_func, self) and direct format (Mock)
-                original = _client_originals[client]["generate_content"]
-                if isinstance(original, tuple):
-                    orig_func, orig_self = original
-                    if ctx is None:
-                        return orig_func(orig_self, *args, **kwargs)
-                    response = orig_func(orig_self, *args, **kwargs)
-                else:
-                    if ctx is None:
-                        return original(*args, **kwargs)
-                    response = original(*args, **kwargs)
-
-                # Extract metadata
-                usage, cache_read, cache_create = extract_usage(response)
-                model = extract_model(response)
-
-                # Capture metadata
-                ctx.capture(
-                    model=model,
-                    provider="google_genai",
-                    usage=usage,
-                    cache_read_tokens=cache_read,
-                    cache_creation_tokens=cache_create,
-                )
-
-                return response
-
-            client.models.generate_content = wrapped_generate
+            # Use wrapper class with weak reference to avoid GC cycle
+            client.models.generate_content = _WeakMethodWrapper(
+                client, "generate_content", _client_originals
+            )
 
         # Patch aio.models.generate_content (async)
         if (
@@ -208,36 +333,10 @@ def patch_client(client: Any) -> None:
             else:
                 _client_originals[client]["aio_generate_content"] = method
 
-            async def wrapped_aio_generate(*args: Any, **kwargs: Any) -> Any:
-                ctx = get_active_context()
-                # Handle both tuple format (unbound_func, self) and direct format (Mock)
-                original = _client_originals[client]["aio_generate_content"]
-                if isinstance(original, tuple):
-                    orig_func, orig_self = original
-                    if ctx is None:
-                        return await orig_func(orig_self, *args, **kwargs)
-                    response = await orig_func(orig_self, *args, **kwargs)
-                else:
-                    if ctx is None:
-                        return await original(*args, **kwargs)
-                    response = await original(*args, **kwargs)
-
-                # Extract metadata
-                usage, cache_read, cache_create = extract_usage(response)
-                model = extract_model(response)
-
-                # Capture metadata
-                ctx.capture(
-                    model=model,
-                    provider="google_genai",
-                    usage=usage,
-                    cache_read_tokens=cache_read,
-                    cache_creation_tokens=cache_create,
-                )
-
-                return response
-
-            client.aio.models.generate_content = wrapped_aio_generate
+            # Use async wrapper class with weak reference
+            client.aio.models.generate_content = _WeakAsyncMethodWrapper(
+                client, "aio_generate_content", _client_originals
+            )
 
         # Patch models.embed_content (embeddings)
         if hasattr(client, "models") and hasattr(client.models, "embed_content"):
@@ -250,48 +349,10 @@ def patch_client(client: Any) -> None:
             else:
                 _client_originals[client]["embed_content"] = method
 
-            def wrapped_embed(*args: Any, **kwargs: Any) -> Any:
-                ctx = get_active_context()
-                # Handle both tuple format (unbound_func, self) and direct format (Mock)
-                original = _client_originals[client]["embed_content"]
-                if isinstance(original, tuple):
-                    orig_func, orig_self = original
-                    if ctx is None:
-                        return orig_func(orig_self, *args, **kwargs)
-                    response = orig_func(orig_self, *args, **kwargs)
-                else:
-                    if ctx is None:
-                        return original(*args, **kwargs)
-                    response = original(*args, **kwargs)
-
-                # Extract metadata (embeddings use prompt_token_count)
-                usage_metadata = getattr(response, "usage_metadata", None)
-                if usage_metadata:
-                    input_tokens = getattr(usage_metadata, "prompt_token_count", 0)
-
-                    # Get model from kwargs or args
-                    model = kwargs.get("model", "text-embedding-004")
-                    if isinstance(model, str):
-                        model = _normalize_model_name(model)
-
-                    usage: Usage = {
-                        "text": {
-                            "input_tokens": input_tokens,
-                            "output_tokens": 0,  # Embeddings don't generate tokens
-                            "total_tokens": input_tokens,
-                        }
-                    }
-
-                    ctx.capture(
-                        model=model,
-                        provider="google_genai",
-                        usage=usage,
-                        is_embedding=True,
-                    )
-
-                return response
-
-            client.models.embed_content = wrapped_embed
+            # Use embed wrapper class with weak reference
+            client.models.embed_content = _WeakEmbedWrapper(
+                client, "embed_content", _client_originals
+            )
 
         # Mark as patched (use vetch_patched not __vetch_patched__)
         client.vetch_patched = True

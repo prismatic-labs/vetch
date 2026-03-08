@@ -66,7 +66,14 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
             prompt_details, "cached_image_tokens", 0
         )
 
-    # Build usage dict with text and optional image
+    # Extract reasoning tokens if available (o1, o3, o1-mini models)
+    # OpenAI includes these in completion_tokens_details
+    reasoning_tokens = 0
+    completion_details = getattr(usage, "completion_tokens_details", None)
+    if completion_details:
+        reasoning_tokens = getattr(completion_details, "reasoning_tokens", 0) or 0
+
+    # Build usage dict with text and optional image/reasoning
     usage_dict: Usage = {
         "text": {
             "input_tokens": getattr(usage, "prompt_tokens", 0),
@@ -83,6 +90,14 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
             "total_tokens": image_input_tokens,
             "image_count": 0,  # Not provided by OpenAI API
             "total_pixels": 0,  # Not provided by OpenAI API
+        }
+
+    # Add reasoning usage if present (o1/o3 thinking models)
+    if isinstance(reasoning_tokens, int) and reasoning_tokens > 0:
+        usage_dict["reasoning"] = {
+            "input_tokens": reasoning_tokens,
+            "output_tokens": 0,  # Reasoning tokens are input-side (thinking)
+            "total_tokens": reasoning_tokens,
         }
 
     return usage_dict, cache_read_tokens, cache_creation_tokens
