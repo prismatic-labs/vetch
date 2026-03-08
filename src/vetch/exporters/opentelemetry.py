@@ -155,8 +155,8 @@ def export_event_as_span(
         logs a warning and returns gracefully.
     """
     try:
-        from opentelemetry import trace
-        from opentelemetry.trace import Status, StatusCode
+        from opentelemetry import trace  # type: ignore[import-not-found]
+        from opentelemetry.trace import Status, StatusCode  # type: ignore[import-not-found]
     except ImportError:
         logger.warning(
             "opentelemetry-api not installed. "

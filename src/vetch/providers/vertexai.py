@@ -475,7 +475,7 @@ def detect_vertexai_model() -> Any | None:
         return None
 
     try:
-        import google.generativeai  # type: ignore[import-untyped]  # noqa: F401
+        import google.generativeai  # type: ignore[import-not-found, import-untyped]  # noqa: F401
 
         return None  # SDK available but no default model
     except ImportError:

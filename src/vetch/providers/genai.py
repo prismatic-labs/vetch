@@ -430,7 +430,7 @@ def instrument_genai_module() -> bool:
         return True
 
     try:
-        import google.genai as genai  # type: ignore[import-untyped]
+        import google.genai as genai  # type: ignore[import-not-found, import-untyped]
     except ImportError:
         return False
 
