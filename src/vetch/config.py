@@ -52,6 +52,10 @@ _MAX_TAG_COMBINATIONS: int = 5000
 _tag_combination_limit_exceeded: bool = False
 _last_combination_warning: float = 0.0  # Rate limit warnings
 
+# Cached HMAC key for tag redaction (avoid os.environ.get in hot path)
+_cached_hmac_key: bytes | None = None
+_hmac_key_loaded: bool = False
+
 
 def add_global_tags(tags: dict[str, str]) -> None:
     """Set tags that will be automatically added to every inference event.
@@ -497,11 +501,18 @@ def process_tags_single_pass(
     # Prepare HMAC key for redaction (only if needed)
     hmac_key: bytes | None = None
     if _redacted_tags:
+        # Use cached HMAC key to avoid os.environ.get in hot path
+        global _cached_hmac_key, _hmac_key_loaded
+        if not _hmac_key_loaded:
+            env_key = os.environ.get("VETCH_REDACTION_KEY", "")
+            _cached_hmac_key = env_key.encode("utf-8") if env_key else None
+            _hmac_key_loaded = True
 
-        hmac_key = os.environ.get("VETCH_REDACTION_KEY", "").encode("utf-8")
+        hmac_key = _cached_hmac_key
         if not hmac_key:
             # Use cryptographically secure ephemeral key (not hostname, which is predictable)
             hmac_key = secrets.token_bytes(32)
+            _cached_hmac_key = hmac_key  # Cache the ephemeral key
             logger.warning(
                 "No VETCH_REDACTION_KEY set. Using ephemeral key for PII redaction. "
                 "Redacted values will differ across runs. "
@@ -602,6 +613,7 @@ def _reset_config() -> None:
     global _tag_cardinality_tracker, _tag_allowlist, _redacted_tags, _current_tracker_size
     global _tag_combinations_seen, _MAX_TAG_COMBINATIONS
     global _tag_combination_limit_exceeded, _last_combination_warning
+    global _cached_hmac_key, _hmac_key_loaded
     _required_tags = set()
     _global_tags = {}
     _tag_cardinality_limit = 1000
@@ -613,3 +625,5 @@ def _reset_config() -> None:
     _MAX_TAG_COMBINATIONS = 5000
     _tag_combination_limit_exceeded = False
     _last_combination_warning = 0.0
+    _cached_hmac_key = None
+    _hmac_key_loaded = False

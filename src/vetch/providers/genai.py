@@ -18,6 +18,7 @@ import contextlib
 import logging
 import re
 import threading
+import types
 from collections.abc import AsyncGenerator, Generator
 from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
@@ -318,7 +319,6 @@ def unpatch_client(client: Any) -> None:
             original = originals["generate_content"]
             if isinstance(original, tuple):
                 func, self_obj = original
-                import types
                 client.models.generate_content = types.MethodType(func, self_obj)
             else:
                 client.models.generate_content = original
@@ -327,7 +327,6 @@ def unpatch_client(client: Any) -> None:
             original = originals["aio_generate_content"]
             if isinstance(original, tuple):
                 func, self_obj = original
-                import types
                 client.aio.models.generate_content = types.MethodType(func, self_obj)
             else:
                 client.aio.models.generate_content = original
@@ -336,7 +335,6 @@ def unpatch_client(client: Any) -> None:
             original = originals["embed_content"]
             if isinstance(original, tuple):
                 func, self_obj = original
-                import types
                 client.models.embed_content = types.MethodType(func, self_obj)
             else:
                 client.models.embed_content = original

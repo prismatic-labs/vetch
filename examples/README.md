@@ -4,9 +4,15 @@ This directory contains examples demonstrating vetch usage patterns.
 
 ## Auto-Instrumentation Example
 
-**File**: `auto_instrument_example.py`
+**File**: [`auto_instrument_example.py`](auto_instrument_example.py)
 
 Demonstrates the simplest way to use vetch: call `vetch.instrument()` once at startup and all LLM calls are automatically tracked.
+
+## OpenTelemetry Integration Example
+
+**File**: [`opentelemetry_example.py`](opentelemetry_example.py)
+
+Demonstrates how to export vetch inference events to OpenTelemetry for integration with observability platforms like Datadog, Jaeger, and New Relic.
 
 **Supported SDKs**:
 - Google GenAI (`google-genai`)
