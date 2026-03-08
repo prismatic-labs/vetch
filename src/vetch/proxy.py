@@ -118,7 +118,7 @@ def create_wrapper(
                     logger.warning(f"Vetch after_call failed: {e}")
 
             return result
-        except BaseException as e:
+        except Exception as e:
             # Call error hook
             if on_error is not None:
                 try:
@@ -206,7 +206,7 @@ def create_stream_wrapper(
                 except Exception as e:
                     logger.warning(f"Vetch on_complete failed: {e}")
 
-        except BaseException as e:
+        except Exception as e:
             if on_error is not None:
                 try:
                     on_error(e)

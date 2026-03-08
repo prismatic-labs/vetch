@@ -192,7 +192,7 @@ class StreamWrapper:
             self._capture_to_context()
             raise
 
-        except BaseException as e:
+        except Exception as e:
             self._error = True
             self._error_type = type(e).__name__
             self._capture_to_context()
@@ -268,7 +268,7 @@ class AsyncStreamWrapper(StreamWrapper):
             self._complete = True
             self._capture_to_context()
             raise
-        except BaseException as e:
+        except Exception as e:
             self._error = True
             self._error_type = type(e).__name__
             self._capture_to_context()
@@ -301,7 +301,7 @@ def _wrapped_generate(original: Any, model_obj: Any) -> Any:
             _after_generate(result, model_obj, *args, **kwargs)
             return result
 
-        except BaseException as e:
+        except Exception as e:
             _on_generate_error(e)
             raise
 
@@ -337,7 +337,7 @@ def _wrapped_generate_async(original: Any, model_obj: Any) -> Any:
             _after_generate(result, model_obj, *args, **kwargs)
             return result
 
-        except BaseException as e:
+        except Exception as e:
             _on_generate_error(e)
             raise
 
