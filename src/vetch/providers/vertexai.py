@@ -380,10 +380,25 @@ def patch_vertexai_model(model: Any) -> bool:
             if generate and is_vetch_patched(generate):
                 return True  # Already patched
 
-            # Store originals for this model
+            # Store unbound functions to avoid circular reference
+            # Bound methods hold a reference to the object, preventing garbage collection
+            generate_unbound = None
+            if generate:
+                generate_unbound = (
+                    generate.__func__ if hasattr(generate, "__func__") else generate
+                )
+
+            generate_async_unbound = None
+            if generate_async:
+                generate_async_unbound = (
+                    generate_async.__func__
+                    if hasattr(generate_async, "__func__")
+                    else generate_async
+                )
+
             _model_originals[model] = _ModelOriginals(
-                generate=generate,
-                generate_async=generate_async,
+                generate=generate_unbound,
+                generate_async=generate_async_unbound,
             )
 
             # Patch sync method
@@ -419,11 +434,22 @@ def unpatch_vertexai_model(model: Any) -> bool:
             if originals is None:
                 return True  # Not patched by us
 
+            # Restore originals (may be unbound functions or direct methods)
             if originals.generate:
-                model.generate_content = originals.generate
+                if hasattr(originals.generate, "__get__"):
+                    # Unbound function - bind it back to the model
+                    model.generate_content = originals.generate.__get__(model, type(model))
+                else:
+                    model.generate_content = originals.generate
 
             if originals.generate_async:
-                model.generate_content_async = originals.generate_async
+                if hasattr(originals.generate_async, "__get__"):
+                    # Unbound function - bind it back to the model
+                    model.generate_content_async = originals.generate_async.__get__(
+                        model, type(model)
+                    )
+                else:
+                    model.generate_content_async = originals.generate_async
 
         logger.debug("Vertex AI model unpatched successfully")
         return True

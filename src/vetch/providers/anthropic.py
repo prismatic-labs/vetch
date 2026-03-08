@@ -345,7 +345,11 @@ def patch_anthropic_client(client: Any) -> bool:
             if is_vetch_patched(getattr(messages, "create", None)):
                 return True
 
-            _client_originals[messages] = create
+            # Store unbound function to avoid circular reference
+            # Bound methods hold a reference to the object, preventing garbage collection
+            _client_originals[messages] = (
+                create.__func__ if hasattr(create, "__func__") else create
+            )
             messages.create = _wrapped_create(create)
 
         logger.debug("Anthropic client patched successfully")
@@ -377,7 +381,12 @@ def unpatch_anthropic_client(client: Any) -> bool:
             if original is None:
                 return True
 
-            messages.create = original
+            # Restore original (may be unbound function or direct method)
+            if hasattr(original, "__get__"):
+                # Unbound function - bind it back to the object
+                messages.create = original.__get__(messages, type(messages))
+            else:
+                messages.create = original
 
         logger.debug("Anthropic client unpatched successfully")
         return True
