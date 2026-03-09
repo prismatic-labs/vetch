@@ -54,7 +54,9 @@ class _WeakMethodWrapper:
 
     __slots__ = ("_client_ref", "_method_name", "_originals_dict")
 
-    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
+    def __init__(
+        self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]
+    ) -> None:
         self._client_ref = weakref.ref(client)
         self._method_name = method_name
         self._originals_dict = originals_dict
@@ -98,7 +100,9 @@ class _WeakAsyncMethodWrapper:
 
     __slots__ = ("_client_ref", "_method_name", "_originals_dict")
 
-    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
+    def __init__(
+        self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]
+    ) -> None:
         self._client_ref = weakref.ref(client)
         self._method_name = method_name
         self._originals_dict = originals_dict
@@ -142,7 +146,9 @@ class _WeakEmbedWrapper:
 
     __slots__ = ("_client_ref", "_method_name", "_originals_dict")
 
-    def __init__(self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
+    def __init__(
+        self, client: Any, method_name: str, originals_dict: WeakKeyDictionary[Any, Any]
+    ) -> None:
         self._client_ref = weakref.ref(client)
         self._method_name = method_name
         self._originals_dict = originals_dict

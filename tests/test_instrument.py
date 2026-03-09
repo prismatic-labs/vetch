@@ -140,6 +140,58 @@ class TestInstrument:
         assert isinstance(result, bool)
         vetch._instrumented = False
 
+    def test_instrument_handles_azure_openai_error(self) -> None:
+        """instrument() handles errors from Azure OpenAI instrumentation."""
+        import vetch
+
+        vetch._instrumented = False
+
+        with patch(
+            "vetch.providers.azure_openai.instrument_azure_openai_module",
+            side_effect=RuntimeError("Azure OpenAI error"),
+        ):
+            result = vetch.instrument()
+
+        assert isinstance(result, bool)
+        vetch._instrumented = False
+
+    def test_instrument_handles_genai_error(self) -> None:
+        """instrument() handles errors from Google GenAI instrumentation."""
+        import vetch
+
+        vetch._instrumented = False
+
+        with patch(
+            "vetch.providers.genai.instrument_genai_module",
+            side_effect=RuntimeError("GenAI error"),
+        ):
+            result = vetch.instrument()
+
+        assert isinstance(result, bool)
+        vetch._instrumented = False
+
+    def test_instrument_logs_exceptions(self, caplog: pytest.LogCaptureFixture) -> None:
+        """instrument() logs debug messages when provider instrumentation raises exceptions."""
+        import vetch
+
+        vetch._instrumented = False
+
+        with caplog.at_level(logging.DEBUG, logger="vetch"):
+            with patch(
+                "vetch.providers.openai.instrument_openai_module",
+                side_effect=ValueError("Test OpenAI error"),
+            ):
+                with patch(
+                    "vetch.providers.anthropic.instrument_anthropic_module",
+                    side_effect=TypeError("Test Anthropic error"),
+                ):
+                    vetch.instrument()
+
+        # Verify debug messages were logged
+        assert "Failed to instrument OpenAI" in caplog.text
+        assert "Failed to instrument Anthropic" in caplog.text
+        vetch._instrumented = False
+
 
 class TestInstrumentOpenAIModule:
     """Tests for instrument_openai_module()."""
@@ -243,6 +295,120 @@ class TestInstrumentVertexAIModule:
             vertexai_provider._module_instrumented = False
 
 
+class TestWrapDisabled:
+    """Tests for wrap() when vetch is disabled."""
+
+    def test_wrap_returns_noop_context_when_disabled(self) -> None:
+        """wrap() returns no-op context when VETCH_DISABLED=true."""
+        import vetch
+
+        original = vetch._DISABLED
+        try:
+            vetch._DISABLED = True
+            ctx = vetch.wrap(region="us-east-1", tags={"test": "value"})
+            # Context should be created even when disabled (no-op mode)
+            assert ctx is not None
+        finally:
+            vetch._DISABLED = original
+
+
+class TestLazyImports:
+    """Tests for lazy import __getattr__ paths."""
+
+    def test_session_lazy_import(self) -> None:
+        """Session class can be imported via __getattr__."""
+        import vetch
+
+        # Access Session via lazy import
+        session_class = vetch.Session
+        assert session_class is not None
+        assert session_class.__name__ == "Session"
+
+    def test_get_session_stats_lazy_import(self) -> None:
+        """get_session_stats can be imported via __getattr__."""
+        import vetch
+
+        func = vetch.get_session_stats
+        assert func is not None
+        assert callable(func)
+
+    def test_generate_advisories_lazy_import(self) -> None:
+        """generate_advisories can be imported via __getattr__."""
+        import vetch
+
+        func = vetch.generate_advisories
+        assert func is not None
+        assert callable(func)
+
+
+class TestConfigFunctions:
+    """Tests for configuration functions."""
+
+    def test_set_tag_cardinality_limit(self) -> None:
+        """set_tag_cardinality_limit sets the cardinality limit."""
+        import vetch
+
+        # Should not raise
+        vetch.set_tag_cardinality_limit(500)
+        vetch.set_tag_cardinality_limit(1000)
+
+    def test_set_tag_allowlist(self) -> None:
+        """set_tag_allowlist sets allowed tag keys."""
+        import vetch
+
+        # Should not raise
+        vetch.set_tag_allowlist(["team", "env", "service"])
+        vetch.set_tag_allowlist([])
+
+    def test_set_redacted_tags(self) -> None:
+        """set_redacted_tags sets tags to be hashed."""
+        import vetch
+
+        # Should not raise
+        vetch.set_redacted_tags(["user_email", "customer_id"])
+        vetch.set_redacted_tags([])
+
+    def test_get_default_region_from_env(self) -> None:
+        """get_default_region falls back to VETCH_REGION env var."""
+        import os
+
+        import vetch
+
+        # Reset module state
+        vetch._default_region = None
+
+        original = os.environ.get("VETCH_REGION")
+        try:
+            os.environ["VETCH_REGION"] = "test-region-123"
+            result = vetch.get_default_region()
+            assert result == "test-region-123"
+        finally:
+            vetch._default_region = None
+            if original:
+                os.environ["VETCH_REGION"] = original
+            else:
+                os.environ.pop("VETCH_REGION", None)
+
+    def test_get_default_region_module_takes_precedence(self) -> None:
+        """get_default_region returns module-level region over env var."""
+        import os
+
+        import vetch
+
+        original = os.environ.get("VETCH_REGION")
+        try:
+            os.environ["VETCH_REGION"] = "env-region"
+            vetch._default_region = "module-region"
+            result = vetch.get_default_region()
+            assert result == "module-region"
+        finally:
+            vetch._default_region = None
+            if original:
+                os.environ["VETCH_REGION"] = original
+            else:
+                os.environ.pop("VETCH_REGION", None)
+
+
 class TestSetLogLevel:
     """Tests for set_log_level() function."""
 
@@ -302,7 +468,7 @@ class TestSetLogLevel:
         assert "set_log_level" in vetch.__all__
 
 
-class TestLazyImports:
+class TestLazyImportsAdvanced:
     """Tests for lazy __getattr__ imports in vetch.__init__."""
 
     def test_vetch_context_lazy_import(self) -> None:
@@ -378,7 +544,7 @@ class TestLazyImports:
             _ = vetch.nonexistent_attribute
 
 
-class TestWrapDisabled:
+class TestWrapDisabledAdvanced:
     """Tests for wrap() when VETCH_DISABLED is True."""
 
     def test_wrap_returns_disabled_context_when_disabled(self) -> None:
@@ -470,6 +636,53 @@ class TestUninstrument:
 
         vetch._instrumented = True
         vetch.uninstrument()
+        assert vetch._instrumented is False
+
+    def test_uninstrument_handles_openai_error(self) -> None:
+        """uninstrument() handles errors from OpenAI uninstrumentation."""
+        import vetch
+
+        vetch._instrumented = True
+
+        with patch(
+            "vetch.providers.openai.uninstrument_openai_module",
+            side_effect=RuntimeError("OpenAI uninstrument error"),
+        ):
+            # Should not raise and should continue uninstrumenting other providers
+            result = vetch.uninstrument()
+
+        # Returns False because one provider failed, but doesn't crash
+        assert vetch._instrumented is False
+
+    def test_uninstrument_handles_anthropic_error(self) -> None:
+        """uninstrument() handles errors from Anthropic uninstrumentation."""
+        import vetch
+
+        vetch._instrumented = True
+
+        with patch(
+            "vetch.providers.anthropic.uninstrument_anthropic_module",
+            side_effect=RuntimeError("Anthropic uninstrument error"),
+        ):
+            result = vetch.uninstrument()
+
+        assert vetch._instrumented is False
+
+    def test_uninstrument_logs_exceptions(self, caplog: pytest.LogCaptureFixture) -> None:
+        """uninstrument() logs debug messages when provider uninstrumentation raises exceptions."""
+        import vetch
+
+        vetch._instrumented = True
+
+        with caplog.at_level(logging.DEBUG, logger="vetch"):
+            with patch(
+                "vetch.providers.openai.uninstrument_openai_module",
+                side_effect=ValueError("Test OpenAI uninstrument error"),
+            ):
+                vetch.uninstrument()
+
+        # Verify debug message was logged
+        assert "Failed to uninstrument OpenAI" in caplog.text
         assert vetch._instrumented is False
 
 
