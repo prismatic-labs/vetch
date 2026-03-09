@@ -52,7 +52,7 @@ class _WeakGenerateWrapper:
     Solution: Use weak reference to model object and retrieve original from dict.
     """
 
-    __slots__ = ("_model_ref", "_originals_dict")
+    __slots__ = ("_model_ref", "_originals_dict", "vetch_patched", "_vetch_original")
 
     def __init__(self, model: Any, originals_dict: WeakKeyDictionary[Any, _ModelOriginals]) -> None:
         self._model_ref = weakref.ref(model)
@@ -85,7 +85,7 @@ class _WeakGenerateWrapper:
 class _WeakGenerateAsyncWrapper:
     """Async wrapper for generate_content_async with weak reference."""
 
-    __slots__ = ("_model_ref", "_originals_dict")
+    __slots__ = ("_model_ref", "_originals_dict", "vetch_patched", "_vetch_original")
 
     def __init__(self, model: Any, originals_dict: WeakKeyDictionary[Any, _ModelOriginals]) -> None:
         self._model_ref = weakref.ref(model)

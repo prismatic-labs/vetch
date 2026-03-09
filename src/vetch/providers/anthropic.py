@@ -41,7 +41,7 @@ class _WeakMessagesWrapper:
     Solution: Use weak reference to messages object and retrieve original from dict.
     """
 
-    __slots__ = ("_messages_ref", "_originals_dict")
+    __slots__ = ("_messages_ref", "_originals_dict", "vetch_patched", "_vetch_original")
 
     def __init__(self, messages: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._messages_ref = weakref.ref(messages)
@@ -72,7 +72,7 @@ class _WeakMessagesWrapper:
 class _WeakAsyncMessagesWrapper:
     """Async wrapper for messages.create with weak reference."""
 
-    __slots__ = ("_messages_ref", "_originals_dict")
+    __slots__ = ("_messages_ref", "_originals_dict", "vetch_patched", "_vetch_original")
 
     def __init__(self, messages: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._messages_ref = weakref.ref(messages)

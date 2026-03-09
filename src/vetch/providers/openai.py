@@ -45,7 +45,7 @@ class _WeakChatWrapper:
     Solution: Use weak reference to completions object and retrieve original from dict.
     """
 
-    __slots__ = ("_completions_ref", "_originals_dict")
+    __slots__ = ("_completions_ref", "_originals_dict", "vetch_patched", "_vetch_original")
 
     def __init__(self, completions: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._completions_ref = weakref.ref(completions)
@@ -76,7 +76,7 @@ class _WeakChatWrapper:
 class _WeakAsyncChatWrapper:
     """Async wrapper for chat.completions.create with weak reference."""
 
-    __slots__ = ("_completions_ref", "_originals_dict")
+    __slots__ = ("_completions_ref", "_originals_dict", "vetch_patched", "_vetch_original")
 
     def __init__(self, completions: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._completions_ref = weakref.ref(completions)
@@ -107,7 +107,7 @@ class _WeakAsyncChatWrapper:
 class _WeakEmbeddingsWrapper:
     """Wrapper for sync embeddings.create with weak reference."""
 
-    __slots__ = ("_embeddings_ref", "_originals_dict")
+    __slots__ = ("_embeddings_ref", "_originals_dict", "vetch_patched", "_vetch_original")
 
     def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._embeddings_ref = weakref.ref(embeddings)
@@ -133,7 +133,7 @@ class _WeakEmbeddingsWrapper:
 class _WeakAsyncEmbeddingsWrapper:
     """Async wrapper for embeddings.create with weak reference."""
 
-    __slots__ = ("_embeddings_ref", "_originals_dict")
+    __slots__ = ("_embeddings_ref", "_originals_dict", "vetch_patched", "_vetch_original")
 
     def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
         self._embeddings_ref = weakref.ref(embeddings)

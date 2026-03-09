@@ -36,7 +36,8 @@ _disabled_env = os.environ.get("VETCH_DISABLED", "").lower() in ("true", "1", "y
 _enabled_env = os.environ.get("VETCH_ENABLED", "true").lower() not in ("false", "0", "no")
 _DISABLED = _disabled_env or not _enabled_env
 _default_region: str | None = None  # Default region set via instrument()
-if _DISABLED:
+# Only print kill-switch message if VETCH_VERBOSE=true (opt-in for debugging)
+if _DISABLED and os.environ.get("VETCH_VERBOSE", "").lower() in ("true", "1", "yes"):
     reason = "VETCH_DISABLED=true" if _disabled_env else "VETCH_ENABLED=false"
     print(f"vetch: disabled via {reason}", file=sys.stderr)
 
