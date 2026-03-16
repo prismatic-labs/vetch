@@ -62,37 +62,37 @@ class _WeakMethodWrapper:
         self._originals_dict = originals_dict
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        from vetch.wrapper import auto_context_for_instrumented_call
+
         client = self._client_ref()
         if client is None:
             raise RuntimeError("Client was garbage collected")
 
-        ctx = get_active_context()
         original = self._originals_dict[client][self._method_name]
 
-        if isinstance(original, tuple):
-            orig_func, orig_self = original
-            if ctx is None:
-                return orig_func(orig_self, *args, **kwargs)
-            response = orig_func(orig_self, *args, **kwargs)
-        else:
-            if ctx is None:
-                return original(*args, **kwargs)
-            response = original(*args, **kwargs)
+        # Auto-create context if needed, or use existing manual wrap() context
+        with auto_context_for_instrumented_call("google_genai"):
+            if isinstance(original, tuple):
+                orig_func, orig_self = original
+                response = orig_func(orig_self, *args, **kwargs)
+            else:
+                response = original(*args, **kwargs)
 
-        # Extract metadata
-        usage, cache_read, cache_create = extract_usage(response)
-        model = extract_model(response)
+            # Extract and capture metadata
+            usage, cache_read, cache_create = extract_usage(response)
+            model = extract_model(response)
 
-        # Capture metadata
-        ctx.capture(
-            model=model,
-            provider="google_genai",
-            usage=usage,
-            cache_read_tokens=cache_read,
-            cache_creation_tokens=cache_create,
-        )
+            ctx = get_active_context()
+            if ctx is not None:
+                ctx.capture(
+                    model=model,
+                    provider="google_genai",
+                    usage=usage,
+                    cache_read_tokens=cache_read,
+                    cache_creation_tokens=cache_create,
+                )
 
-        return response
+            return response
 
 
 class _WeakAsyncMethodWrapper:
@@ -108,37 +108,37 @@ class _WeakAsyncMethodWrapper:
         self._originals_dict = originals_dict
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        from vetch.wrapper import async_auto_context_for_instrumented_call
+
         client = self._client_ref()
         if client is None:
             raise RuntimeError("Client was garbage collected")
 
-        ctx = get_active_context()
         original = self._originals_dict[client][self._method_name]
 
-        if isinstance(original, tuple):
-            orig_func, orig_self = original
-            if ctx is None:
-                return await orig_func(orig_self, *args, **kwargs)
-            response = await orig_func(orig_self, *args, **kwargs)
-        else:
-            if ctx is None:
-                return await original(*args, **kwargs)
-            response = await original(*args, **kwargs)
+        # Auto-create context if needed, or use existing manual wrap() context
+        async with async_auto_context_for_instrumented_call("google_genai"):
+            if isinstance(original, tuple):
+                orig_func, orig_self = original
+                response = await orig_func(orig_self, *args, **kwargs)
+            else:
+                response = await original(*args, **kwargs)
 
-        # Extract metadata
-        usage, cache_read, cache_create = extract_usage(response)
-        model = extract_model(response)
+            # Extract and capture metadata
+            usage, cache_read, cache_create = extract_usage(response)
+            model = extract_model(response)
 
-        # Capture metadata
-        ctx.capture(
-            model=model,
-            provider="google_genai",
-            usage=usage,
-            cache_read_tokens=cache_read,
-            cache_creation_tokens=cache_create,
-        )
+            ctx = get_active_context()
+            if ctx is not None:
+                ctx.capture(
+                    model=model,
+                    provider="google_genai",
+                    usage=usage,
+                    cache_read_tokens=cache_read,
+                    cache_creation_tokens=cache_create,
+                )
 
-        return response
+            return response
 
 
 class _WeakEmbedWrapper:
@@ -154,49 +154,50 @@ class _WeakEmbedWrapper:
         self._originals_dict = originals_dict
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        from vetch.wrapper import auto_context_for_instrumented_call
+
         client = self._client_ref()
         if client is None:
             raise RuntimeError("Client was garbage collected")
 
-        ctx = get_active_context()
         original = self._originals_dict[client][self._method_name]
 
-        if isinstance(original, tuple):
-            orig_func, orig_self = original
-            if ctx is None:
-                return orig_func(orig_self, *args, **kwargs)
-            response = orig_func(orig_self, *args, **kwargs)
-        else:
-            if ctx is None:
-                return original(*args, **kwargs)
-            response = original(*args, **kwargs)
+        # Auto-create context if needed, or use existing manual wrap() context
+        with auto_context_for_instrumented_call("google_genai"):
+            if isinstance(original, tuple):
+                orig_func, orig_self = original
+                response = orig_func(orig_self, *args, **kwargs)
+            else:
+                response = original(*args, **kwargs)
 
-        # Extract metadata (embeddings use prompt_token_count)
-        usage_metadata = getattr(response, "usage_metadata", None)
-        if usage_metadata:
-            input_tokens = getattr(usage_metadata, "prompt_token_count", 0)
+            # Extract metadata (embeddings use prompt_token_count)
+            usage_metadata = getattr(response, "usage_metadata", None)
+            if usage_metadata:
+                input_tokens = getattr(usage_metadata, "prompt_token_count", 0)
 
-            # Get model from kwargs or args
-            model = kwargs.get("model", "text-embedding-004")
-            if isinstance(model, str):
-                model = _normalize_model_name(model)
+                # Get model from kwargs or args
+                model = kwargs.get("model", "text-embedding-004")
+                if isinstance(model, str):
+                    model = _normalize_model_name(model)
 
-            usage: Usage = {
-                "text": {
-                    "input_tokens": input_tokens,
-                    "output_tokens": 0,  # Embeddings don't generate tokens
-                    "total_tokens": input_tokens,
+                usage: Usage = {
+                    "text": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": 0,  # Embeddings don't generate tokens
+                        "total_tokens": input_tokens,
+                    }
                 }
-            }
 
-            ctx.capture(
-                model=model,
-                provider="google_genai",
-                usage=usage,
-                is_embedding=True,
-            )
+                ctx = get_active_context()
+                if ctx is not None:
+                    ctx.capture(
+                        model=model,
+                        provider="google_genai",
+                        usage=usage,
+                        is_embedding=True,
+                    )
 
-        return response
+            return response
 
 
 def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:

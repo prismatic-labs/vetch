@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from vetch import __version__
-from vetch.context import TrackingContext
+from vetch.context import TrackingContext, get_active_context
 from vetch.emitter import emit_event
 from vetch.schema import SCHEMA_VERSION, InferenceEvent, validate_energy_override
 
@@ -105,6 +105,104 @@ def _infer_region() -> tuple[str | None, str | None]:
         pass
 
     return None, None
+
+
+@contextmanager
+def auto_context_for_instrumented_call(
+    provider: str,
+    model: str = "unknown",
+) -> Generator[VetchContext | None, None, None]:
+    """Create an automatic context for instrumented calls without explicit wrap().
+
+    This helper eliminates code duplication across provider hooks and ensures
+    proper lifecycle management using context managers.
+
+    Args:
+        provider: The provider name (e.g., "openai", "anthropic", "vertexai").
+        model: The model name (default: "unknown").
+
+    Yields:
+        VetchContext if created, None if manual wrap() context is active.
+
+    Usage:
+        with auto_context_for_instrumented_call("openai", model="gpt-4"):
+            # Call provider API
+            response = original_method(...)
+            # Capture metadata
+            active_ctx = get_active_context()
+            if active_ctx:
+                active_ctx.capture(...)
+    """
+    # Import here to avoid circular dependency (vetch/__init__.py imports from this module)
+    # These imports are cached by Python so the overhead is minimal
+    from vetch import get_default_region, get_default_tags
+
+    # Check if manual wrap() context is already active
+    ctx = get_active_context()
+    if ctx is not None:
+        # Manual wrap() context exists - yield None to signal "use existing context"
+        yield None
+        return
+
+    # No context exists - create automatic context using defaults from instrument()
+    auto_ctx = VetchContext(
+        region=get_default_region(),
+        tags=get_default_tags(),
+        emit=True,
+    )
+
+    # Use proper with statement for lifecycle management
+    with auto_ctx:
+        yield auto_ctx
+
+
+@asynccontextmanager
+async def async_auto_context_for_instrumented_call(
+    provider: str,
+    model: str = "unknown",
+) -> AsyncGenerator[VetchContext | None, None]:
+    """Async version of auto_context_for_instrumented_call.
+
+    This helper eliminates code duplication across async provider hooks and ensures
+    proper lifecycle management using async context managers.
+
+    Args:
+        provider: The provider name (e.g., "openai", "anthropic", "vertexai").
+        model: The model name (default: "unknown").
+
+    Yields:
+        VetchContext if created, None if manual wrap() context is active.
+
+    Usage:
+        async with async_auto_context_for_instrumented_call("openai", model="gpt-4"):
+            # Call provider API
+            response = await original_method(...)
+            # Capture metadata
+            active_ctx = get_active_context()
+            if active_ctx:
+                active_ctx.capture(...)
+    """
+    # Import here to avoid circular dependency (vetch/__init__.py imports from this module)
+    # These imports are cached by Python so the overhead is minimal
+    from vetch import get_default_region, get_default_tags
+
+    # Check if manual wrap() context is already active
+    ctx = get_active_context()
+    if ctx is not None:
+        # Manual wrap() context exists - yield None to signal "use existing context"
+        yield None
+        return
+
+    # No context exists - create automatic context using defaults from instrument()
+    auto_ctx = VetchContext(
+        region=get_default_region(),
+        tags=get_default_tags(),
+        emit=True,
+    )
+
+    # Use proper async with statement for lifecycle management
+    async with auto_ctx:
+        yield auto_ctx
 
 
 class VetchContext:

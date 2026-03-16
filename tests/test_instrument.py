@@ -738,11 +738,40 @@ class TestUninstrumentVertexAIModule:
         assert result is True
 
 
+class TestAutomaticContextCreation:
+    """Tests for automatic context creation when using instrument()."""
+
+    def test_instrument_stores_default_tags(self) -> None:
+        """instrument() stores default tags for auto-context creation."""
+        import vetch
+
+        vetch._instrumented = False
+        vetch._default_tags = None
+
+        try:
+            with patch.object(vetch, "add_global_tags"):
+                vetch.instrument(tags={"service": "test", "env": "dev"})
+
+            assert vetch._default_tags == {"service": "test", "env": "dev"}
+            assert vetch.get_default_tags() == {"service": "test", "env": "dev"}
+        finally:
+            vetch._instrumented = False
+            vetch._default_tags = None
+
+    def test_get_default_tags_returns_none_when_not_set(self) -> None:
+        """get_default_tags() returns None when no tags were set."""
+        import vetch
+
+        vetch._default_tags = None
+        result = vetch.get_default_tags()
+        assert result is None
+
+
 class TestAwrap:
     """Tests for awrap() async context manager."""
 
     def test_awrap_exported(self) -> None:
-        """awrap is in __all__ exports."""
+        """awrap is in __all() exports."""
         import vetch
 
         assert "awrap" in vetch.__all__

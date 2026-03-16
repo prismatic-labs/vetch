@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-03-16
+
+### Fixed
+- **[CRITICAL] instrument() Not Tracking Calls Without wrap()** (Auto-Context Creation Bug)
+  - Problem: `instrument()` patched LLM SDK clients but didn't automatically track calls. Users still needed explicit `wrap()` context managers, contradicting the docstring promise of "All calls are now automatically tracked!"
+  - Root Cause: All provider wrappers checked `if ctx is None: return` and skipped tracking when no context was active. Since `instrument()` didn't create automatic contexts, tracking never happened.
+  - Solution: Implemented automatic context creation in all provider wrappers. When no active context exists, wrappers now auto-create an implicit `VetchContext` using defaults from `instrument(region=..., tags=...)`
+  - Changes:
+    - Added `_default_tags` storage in `vetch/__init__.py` to store tags from `instrument()`
+    - Added `get_default_tags()` function to retrieve stored default tags
+    - Updated all provider wrappers to auto-create contexts when `ctx is None`:
+      - Google GenAI: `_WeakMethodWrapper`, `_WeakAsyncMethodWrapper`, `_WeakEmbedWrapper`
+      - OpenAI: `_after_create()`, `_on_create_error()`, `_after_embeddings_create()`, `_on_embeddings_error()`
+      - Anthropic: `_after_create()`, `_on_create_error()`
+      - Vertex AI: `_after_generate()`, `_on_generate_error()`
+      - Azure OpenAI: Automatically covered (uses OpenAI's patching logic)
+  - Impact: `instrument()` now works as documented - truly automatic tracking without needing `wrap()`
+  - Backward Compatible: Manual `wrap()` usage continues to work perfectly, with tags merging correctly
+  - Test Coverage: Added comprehensive integration tests in `tests/test_auto_context.py`
+
 ## [0.2.1] - 2026-03-09
 
 ### Added

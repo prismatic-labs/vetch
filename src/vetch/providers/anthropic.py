@@ -151,44 +151,50 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
 
     Captures metadata from the response into the active context.
     """
-    ctx = get_active_context()
-    if ctx is None:
-        return
+    from vetch.wrapper import auto_context_for_instrumented_call
 
     # Check if this is a streaming response
     is_stream = kwargs.get("stream", False)
 
     if is_stream:
+        # For streams, we can't auto-wrap here
+        # Stream wrapper handles context creation
         return
 
-    # Non-streaming: capture immediately
-    usage, cache_read, cache_create = extract_usage(result)
-    model = extract_model(result)
+    # Auto-create context if needed, or use existing manual wrap() context
+    with auto_context_for_instrumented_call("anthropic"):
+        # Non-streaming: capture immediately
+        usage, cache_read, cache_create = extract_usage(result)
+        model = extract_model(result)
 
-    ctx.capture(
-        model=model,
-        provider="anthropic",
-        usage=usage,
-        is_stream=False,
-        complete=True,
-        cache_read_tokens=cache_read,
-        cache_creation_tokens=cache_create,
-    )
+        ctx = get_active_context()
+        if ctx is not None:
+            ctx.capture(
+                model=model,
+                provider="anthropic",
+                usage=usage,
+                is_stream=False,
+                complete=True,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_create,
+            )
 
 
 def _on_create_error(error: BaseException) -> None:
     """Hook called when messages.create fails."""
-    ctx = get_active_context()
-    if ctx is None:
-        return
+    from vetch.wrapper import auto_context_for_instrumented_call
 
-    ctx.capture(
-        model="unknown",
-        provider="anthropic",
-        error=True,
-        error_type=type(error).__name__,
-        complete=False,
-    )
+    # Auto-create context if needed, or use existing manual wrap() context
+    with auto_context_for_instrumented_call("anthropic"):
+        ctx = get_active_context()
+        if ctx is not None:
+            ctx.capture(
+                model="unknown",
+                provider="anthropic",
+                error=True,
+                error_type=type(error).__name__,
+                complete=False,
+            )
 
 
 class StreamWrapper:

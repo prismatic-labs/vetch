@@ -290,49 +290,51 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
 
     Captures metadata from the response into the active context.
     """
-    ctx = get_active_context()
-    if ctx is None:
-        return
+    from vetch.wrapper import auto_context_for_instrumented_call
 
     # Check if this is a streaming response
     is_stream = kwargs.get("stream", False)
 
     if is_stream:
-        # For streams, we can't capture here - need stream wrapper
-        # Just mark that it's a stream, actual capture happens in stream iteration
+        # For streams, we can't auto-wrap here
+        # Stream wrapper handles context creation
         return
 
-    # Non-streaming: capture immediately
-    usage, cache_read, cache_create = extract_usage(result)
-    model = extract_model(result)
+    # Auto-create context if needed, or use existing manual wrap() context
+    with auto_context_for_instrumented_call("openai"):
+        # Non-streaming: capture immediately
+        usage, cache_read, cache_create = extract_usage(result)
+        model = extract_model(result)
 
-    # P1: Removed user_id hashing - compliance risk (GDPR/CCPA)
-    # Users should handle attribution via explicit tags instead
-
-    ctx.capture(
-        model=model,
-        provider="openai",
-        usage=usage,
-        is_stream=False,
-        complete=True,
-        cache_read_tokens=cache_read,
-        cache_creation_tokens=cache_create,
-    )
+        # Get active context (either auto-created or manual wrap())
+        ctx = get_active_context()
+        if ctx is not None:
+            ctx.capture(
+                model=model,
+                provider="openai",
+                usage=usage,
+                is_stream=False,
+                complete=True,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_create,
+            )
 
 
 def _on_create_error(error: BaseException) -> None:
     """Hook called when chat.completions.create fails."""
-    ctx = get_active_context()
-    if ctx is None:
-        return
+    from vetch.wrapper import auto_context_for_instrumented_call
 
-    ctx.capture(
-        model="unknown",
-        provider="openai",
-        error=True,
-        error_type=type(error).__name__,
-        complete=False,
-    )
+    # Auto-create context if needed, or use existing manual wrap() context
+    with auto_context_for_instrumented_call("openai"):
+        ctx = get_active_context()
+        if ctx is not None:
+            ctx.capture(
+                model="unknown",
+                provider="openai",
+                error=True,
+                error_type=type(error).__name__,
+                complete=False,
+            )
 
 
 def _after_embeddings_create(result: Any, *args: Any, **kwargs: Any) -> None:
@@ -340,37 +342,41 @@ def _after_embeddings_create(result: Any, *args: Any, **kwargs: Any) -> None:
 
     Captures metadata from the embeddings response into the active context.
     """
-    ctx = get_active_context()
-    if ctx is None:
-        return
+    from vetch.wrapper import auto_context_for_instrumented_call
 
-    usage = extract_embeddings_usage(result)
-    model = extract_model(result)
+    # Auto-create context if needed, or use existing manual wrap() context
+    with auto_context_for_instrumented_call("openai"):
+        usage = extract_embeddings_usage(result)
+        model = extract_model(result)
 
-    ctx.capture(
-        model=model,
-        provider="openai",
-        usage=usage,
-        is_stream=False,
-        is_embedding=True,  # Mark as embedding request
-        complete=True,
-    )
+        ctx = get_active_context()
+        if ctx is not None:
+            ctx.capture(
+                model=model,
+                provider="openai",
+                usage=usage,
+                is_stream=False,
+                is_embedding=True,  # Mark as embedding request
+                complete=True,
+            )
 
 
 def _on_embeddings_error(error: BaseException) -> None:
     """Hook called when embeddings.create fails."""
-    ctx = get_active_context()
-    if ctx is None:
-        return
+    from vetch.wrapper import auto_context_for_instrumented_call
 
-    ctx.capture(
-        model="unknown",
-        provider="openai",
-        error=True,
-        error_type=type(error).__name__,
-        is_embedding=True,
-        complete=False,
-    )
+    # Auto-create context if needed, or use existing manual wrap() context
+    with auto_context_for_instrumented_call("openai"):
+        ctx = get_active_context()
+        if ctx is not None:
+            ctx.capture(
+                model="unknown",
+                provider="openai",
+                error=True,
+                error_type=type(error).__name__,
+                is_embedding=True,
+                complete=False,
+            )
 
 
 class StreamWrapper:
