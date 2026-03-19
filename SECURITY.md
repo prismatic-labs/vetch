@@ -4,7 +4,8 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.1.x   | :white_check_mark: |
+| 0.2.x   | :white_check_mark: |
+| 0.1.x   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -38,7 +39,7 @@ Please include the following information:
 ### Data Storage
 - Local SQLite database stored in `~/.vetch/` (user's home directory)
 - No data is transmitted externally unless explicitly configured
-- HTTP emission requires explicit opt-in: `VETCH_ENABLE_REMOTE=true`
+- HTTP emission requires configuring `VETCH_ENDPOINT` (env var) or calling `vetch.configure_http_endpoint(url, api_key)`
 
 ### Dependencies
 - Zero runtime dependencies (stdlib only)
@@ -47,7 +48,7 @@ Please include the following information:
 ## Known Limitations (Alpha)
 
 1. **Energy estimates are uncertain**: Tier 3 estimates have order of magnitude uncertainty
-2. **Region inference**: Timezone-based inference is ~30% accurate
+2. **Region inference**: Timezone-based inference causes significant carbon calculation errors; always set `VETCH_REGION` explicitly for reliable results
 3. **No encryption**: Local SQLite database is not encrypted at rest
 
 ## Security Checklist for Contributors
