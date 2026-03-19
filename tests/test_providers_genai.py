@@ -235,13 +235,25 @@ class TestModuleInstrumentation:
 
     def test_instrument_genai_module_returns_false_when_not_installed(self):
         """Test that instrument_genai_module returns False when module not available."""
+        import sys
+        from unittest.mock import patch
+
+        import vetch.providers.genai as genai_provider
         from vetch.providers.genai import instrument_genai_module
 
-        # genai module is not installed in test environment
-        result = instrument_genai_module()
+        # Reset module-level instrumentation state so the import check is reached
+        original_instrumented = genai_provider._module_instrumented
+        genai_provider._module_instrumented = False
 
-        # Should return False since google.genai is not installed
-        assert result is False
+        try:
+            # Simulate google.genai not being installed
+            with patch.dict(sys.modules, {"google.genai": None}):
+                result = instrument_genai_module()
+
+            assert result is False
+        finally:
+            # Restore original state
+            genai_provider._module_instrumented = original_instrumented
 
     def test_uninstrument_genai_module_when_not_instrumented(self):
         """Test that uninstrument_genai_module succeeds when not instrumented."""

@@ -12,7 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 logger = logging.getLogger(__name__)
 
@@ -945,3 +945,246 @@ def calculate_cost(
     total_cost = cost_in + cost_out
 
     return total_cost, cost_in, cost_out, cache_write_cost, cache_read_cost, "list"
+
+
+# ---------------------------------------------------------------------------
+# Metrics preparation — extracted from VetchContext._emit_event
+# ---------------------------------------------------------------------------
+
+
+class InferenceMetrics:
+    """All computed metrics for a single inference event.
+
+    Returned by :func:`prepare_inference_metrics` and consumed by
+    ``VetchContext._emit_event`` to build the final ``InferenceEvent``.
+    """
+
+    __slots__ = (
+        "energy_wh",
+        "energy_tier",
+        "energy_uncertainty_pct",
+        "energy_source",
+        "energy_basis",
+        "model_known",
+        "carbon_g",
+        "pue",
+        "pue_tier",
+        "pue_source",
+        "water_l",
+        "embodied_carbon_g",
+        "cost_usd",
+        "cost_in_usd",
+        "cost_out_usd",
+        "cost_cache_write_usd",
+        "cost_cache_read_usd",
+        "billing_tier",
+        "signal_quality",
+        "grid_val",
+        "grid_ts",
+        "usage",
+        "usage_estimated",
+        "usage_estimation_method",
+        "tracking_degraded",
+        "request_fingerprint",
+        "warnings",
+    )
+
+    def __init__(self) -> None:
+        self.energy_wh: float | None = None
+        self.energy_tier: int = 3
+        self.energy_uncertainty_pct: int | None = 1000
+        self.energy_source: str = "registry"
+        self.energy_basis: str | None = None
+        self.model_known: bool = False
+        self.carbon_g: float | None = None
+        self.pue: float | None = None
+        self.pue_tier: int = 3
+        self.pue_source: str = "unknown"
+        self.water_l: float | None = None
+        self.embodied_carbon_g: float | None = None
+        self.cost_usd: float | None = None
+        self.cost_in_usd: float | None = None
+        self.cost_out_usd: float | None = None
+        self.cost_cache_write_usd: float = 0.0
+        self.cost_cache_read_usd: float = 0.0
+        self.billing_tier: str = "list"
+        self.signal_quality: Literal["live", "delayed", "blind", "unknown"] = "unknown"
+        self.grid_val: float = 0.0
+        self.grid_ts: str | None = None
+        self.usage: Any = None
+        self.usage_estimated: bool = False
+        self.usage_estimation_method: str | None = None
+        self.tracking_degraded: bool = False
+        self.request_fingerprint: str | None = None
+        self.warnings: list[str] = []
+
+
+def prepare_inference_metrics(
+    model: str,
+    provider: str,
+    usage: Any,
+    accumulated_chars: int,
+    region: str | None,
+    price_multiplier: float,
+    energy_override: dict[str, Any] | None,
+    cache_read_tokens: int | None,
+    cache_creation_tokens: int | None,
+    existing_warnings: list[str],
+) -> InferenceMetrics:
+    """Compute all energy/carbon/cost metrics for a single inference call.
+
+    Extracted from ``VetchContext._emit_event`` to keep orchestration logic in
+    ``wrapper.py`` thin and all calculation logic here in ``calculation.py``.
+
+    Args:
+        model: Resolved model name (e.g. "gpt-4o").
+        provider: Provider string (e.g. "openai").
+        usage: Nested usage dict from the provider response.
+        accumulated_chars: Character count for streams without usage data.
+        region: Electricity Maps zone ID for grid lookup.
+        price_multiplier: Multiplier applied to list cost (e.g. 0.8 for discount).
+        energy_override: Optional user-supplied energy values.
+        cache_read_tokens: Cache-read token count for cost discount.
+        cache_creation_tokens: Cache-creation token count for cost premium.
+        existing_warnings: Warnings accumulated earlier in the context lifecycle.
+
+    Returns:
+        :class:`InferenceMetrics` with all computed values populated.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    from vetch.sensing.grid import get_carbon_intensity
+
+    metrics = InferenceMetrics()
+    metrics.warnings = list(existing_warnings)
+
+    # 1. Grid intensity
+    grid_intensity = get_carbon_intensity(region)
+    metrics.signal_quality = grid_intensity.signal_quality
+    metrics.grid_val = grid_intensity.intensity_gco2e_kwh
+    if grid_intensity.timestamp:
+        ts = datetime.fromtimestamp(grid_intensity.timestamp, tz=timezone.utc)
+        metrics.grid_ts = ts.isoformat().replace("+00:00", "Z")
+
+    # 2. Token estimation fallback for streams without usage data
+    if (not usage or not usage.get("text")) and accumulated_chars > 0:
+        estimated_output_tokens = max(1, accumulated_chars // 4)
+        estimated_input_tokens = estimated_output_tokens * 2
+        usage = {
+            "text": {
+                "input_tokens": estimated_input_tokens,
+                "output_tokens": estimated_output_tokens,
+                "total_tokens": estimated_input_tokens + estimated_output_tokens,
+            }
+        }
+        metrics.usage_estimated = True
+        metrics.usage_estimation_method = "char_ratio"
+        metrics.warnings.append(
+            f"Token usage estimated from {accumulated_chars} chars "
+            f"(~4 chars/token). Actual usage may differ by ±50%."
+        )
+
+    metrics.usage = usage
+
+    # 3. Energy / carbon / cost calculations
+    if usage and usage.get("text"):
+        text = usage["text"]
+        if text:
+            in_tokens = text.get("input_tokens", 0)
+            out_tokens = text.get("output_tokens", 0)
+
+            # Include reasoning tokens (o1/o3 thinking models) in energy calc
+            if usage.get("reasoning"):
+                reasoning = usage["reasoning"]
+                if reasoning:
+                    in_tokens += reasoning.get("input_tokens", 0)
+
+            (
+                metrics.energy_wh,
+                metrics.energy_tier,
+                metrics.energy_uncertainty_pct,
+                metrics.energy_source,
+                metrics.energy_basis,
+                metrics.model_known,
+            ) = calculate_energy(
+                in_tokens,
+                out_tokens,
+                model,
+                cast("dict[str, Any]", energy_override),
+            )
+
+            if not metrics.model_known and model != "unknown":
+                metrics.warnings.append(
+                    f"Model '{model}' not in registry, using conservative fallback estimates. "
+                    f"Energy/cost estimates may be inaccurate (±100% uncertainty)"
+                )
+
+            if metrics.energy_wh is not None:
+                metrics.carbon_g, metrics.pue, metrics.pue_tier, metrics.pue_source = (
+                    calculate_carbon(
+                        metrics.energy_wh,
+                        metrics.grid_val,
+                        model=model,
+                        provider_hint=provider,
+                    )
+                )
+                metrics.water_l = calculate_water(
+                    metrics.energy_wh,
+                    model=model,
+                    provider_hint=provider,
+                    region=region,
+                )
+                metrics.embodied_carbon_g = calculate_embodied_carbon(
+                    in_tokens, out_tokens, model
+                )
+
+            (
+                metrics.cost_usd,
+                metrics.cost_in_usd,
+                metrics.cost_out_usd,
+                metrics.cost_cache_write_usd,
+                metrics.cost_cache_read_usd,
+                metrics.billing_tier,
+            ) = calculate_cost(
+                in_tokens,
+                out_tokens,
+                model,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+            )
+
+            # Apply price multiplier
+            if price_multiplier != 1.0 and metrics.cost_usd is not None:
+                metrics.cost_usd *= price_multiplier
+                if metrics.cost_in_usd is not None:
+                    metrics.cost_in_usd *= price_multiplier
+                if metrics.cost_out_usd is not None:
+                    metrics.cost_out_usd *= price_multiplier
+                metrics.cost_cache_write_usd *= price_multiplier
+                metrics.cost_cache_read_usd *= price_multiplier
+                metrics.billing_tier = f"list×{price_multiplier}"
+
+    # 4. Tracking degradation score
+    grid_quality_score = {"live": 0.0, "delayed": 1.0, "blind": 2.0, "unknown": 3.0}
+    score = (
+        (0.0 if metrics.model_known else 0.6)
+        + (metrics.energy_tier / 3.0) * 0.6
+        + (metrics.pue_tier / 3.0) * 0.2
+        + (grid_quality_score.get(metrics.signal_quality, 3.0) / 3.0) * 0.2
+        + (0.4 if metrics.usage_estimated else 0.0)
+    )
+    metrics.tracking_degraded = score > 2.5
+
+    # 5. Request fingerprint for deduplication
+    if usage and usage.get("text"):
+        text = usage["text"]
+        if text:
+            ts_minute = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+            fp_input = (
+                f"{model}:{text.get('input_tokens', 0)}"
+                f":{text.get('output_tokens', 0)}:{ts_minute.isoformat()}"
+            )
+            metrics.request_fingerprint = hashlib.sha256(fp_input.encode()).hexdigest()[:16]
+
+    return metrics

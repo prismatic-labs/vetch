@@ -362,13 +362,27 @@ def get_cleanest_region(
     if not candidates:
         raise ValueError("candidates list cannot be empty")
 
-    best_region = candidates[0]
-    best_intensity = float("inf")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    for region in candidates:
+    def _fetch(region: str) -> tuple[str, float]:
         result = get_carbon_intensity(region, api_key=api_key)
-        if result.intensity_gco2e_kwh < best_intensity:
-            best_intensity = result.intensity_gco2e_kwh
-            best_region = region
+        return region, result.intensity_gco2e_kwh
 
-    return best_region, best_intensity
+    # Fetch all regions concurrently (I/O-bound: network + file cache)
+    with ThreadPoolExecutor(max_workers=min(len(candidates), 8)) as pool:
+        futures = {pool.submit(_fetch, r): r for r in candidates}
+        results: list[tuple[str, float]] = []
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception:
+                pass  # Fail-open: skip regions that error
+
+    if not results:
+        # All fetches failed — fall back to first candidate with unknown intensity
+        return candidates[0], float("inf")
+
+    # Return the region with lowest intensity; preserve input order on ties
+    order = {r: i for i, r in enumerate(candidates)}
+    best = min(results, key=lambda x: (x[1], order.get(x[0], len(candidates))))
+    return best[0], best[1]

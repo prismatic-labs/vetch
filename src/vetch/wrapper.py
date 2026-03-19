@@ -552,12 +552,7 @@ class VetchContext:
             error_type: Exception class name if error.
             latency_ms: Request latency in milliseconds.
         """
-        from vetch.calculation import (
-            calculate_carbon,
-            calculate_cost,
-            calculate_energy,
-        )
-        from vetch.sensing.grid import get_carbon_intensity
+        from vetch.calculation import InferenceMetrics, prepare_inference_metrics
 
         # Look up active session once (avoids redundant ContextVar lookups)
         active_session = None
@@ -579,7 +574,6 @@ class VetchContext:
         usage = None
         is_stream = False
         accumulated_chars = 0
-        model_known = False
 
         # Cache tokens
         cache_read_tokens: int | None = None
@@ -602,139 +596,56 @@ class VetchContext:
                 error = True
                 error_type = captured.error_type
 
-        # 1. Get grid intensity
-        grid_intensity = get_carbon_intensity(self.region)
-        signal_quality = grid_intensity.signal_quality
-        grid_val = grid_intensity.intensity_gco2e_kwh
-        grid_ts = None
-        if grid_intensity.timestamp:
-            ts = datetime.fromtimestamp(grid_intensity.timestamp, tz=timezone.utc)
-            grid_ts = ts.isoformat().replace("+00:00", "Z")
+        # Delegate all energy/carbon/cost calculations to calculation.py
+        metrics: InferenceMetrics = prepare_inference_metrics(
+            model=model,
+            provider=provider,
+            usage=usage,
+            accumulated_chars=accumulated_chars,
+            region=self.region,
+            price_multiplier=self.price_multiplier,
+            energy_override=cast("dict[str, Any]", self._energy_override),
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            existing_warnings=self._warnings,
+        )
 
-        # 2. Perform calculations
-        energy_wh = None
-        energy_tier = 3
-        energy_uncertainty_pct: int | None = 1000  # Tier 3 default
-        energy_source = "registry"
-        energy_basis = None
-        carbon_g = None
-        pue = None
-        pue_tier = 3
-        pue_source = "unknown"
-        water_l = None
-        embodied_carbon_g = None
-        cost_usd = None
-        cost_in_usd = None
-        cost_out_usd = None
-        billing_tier = "list"
-        usage_estimated = False
-        usage_estimation_method: str | None = None
-        cost_cache_write_usd = 0.0
-        cost_cache_read_usd = 0.0
-
-        # Token estimation fallback for streaming without usage data
-        if (not usage or not usage.get("text")) and accumulated_chars > 0:
-            # Heuristic: ~4 chars per token (common for English text)
-            # This is a rough estimate - mark it clearly
-            estimated_output_tokens = max(1, accumulated_chars // 4)
-            # We don't know input tokens without the prompt, use a conservative estimate
-            # based on typical chat patterns (input often ~2x output)
-            estimated_input_tokens = estimated_output_tokens * 2
-
-            usage = {
-                "text": {
-                    "input_tokens": estimated_input_tokens,
-                    "output_tokens": estimated_output_tokens,
-                    "total_tokens": estimated_input_tokens + estimated_output_tokens,
-                }
-            }
-            usage_estimated = True
-            usage_estimation_method = "char_ratio"
+        # Propagate usage_estimated counter for monitoring dashboards
+        if metrics.usage_estimated:
             _tracking_errors["usage_estimated"] += 1
-            self._warnings.append(
-                f"Token usage estimated from {accumulated_chars} chars "
-                f"(~4 chars/token). Actual usage may differ by ±50%."
-            )
+        if not metrics.model_known and model != "unknown":
+            _tracking_errors["model_unknown"] += 1
 
-        if usage and usage.get("text"):
-            text = usage["text"]
-            if text:  # Type guard for mypy
-                in_tokens = text.get("input_tokens", 0)
-                out_tokens = text.get("output_tokens", 0)
+        # Unpack metrics for event construction
+        energy_wh = metrics.energy_wh
+        energy_tier = metrics.energy_tier
+        energy_uncertainty_pct: int | None = metrics.energy_uncertainty_pct
+        energy_source = metrics.energy_source
+        energy_basis = metrics.energy_basis
+        model_known = metrics.model_known
+        carbon_g = metrics.carbon_g
+        pue = metrics.pue
+        pue_tier = metrics.pue_tier
+        pue_source = metrics.pue_source
+        water_l = metrics.water_l
+        embodied_carbon_g = metrics.embodied_carbon_g
+        cost_usd = metrics.cost_usd
+        cost_in_usd = metrics.cost_in_usd
+        cost_out_usd = metrics.cost_out_usd
+        cost_cache_write_usd = metrics.cost_cache_write_usd
+        cost_cache_read_usd = metrics.cost_cache_read_usd
+        billing_tier = metrics.billing_tier
+        signal_quality = metrics.signal_quality
+        grid_val = metrics.grid_val
+        grid_ts = metrics.grid_ts
+        usage = metrics.usage
+        usage_estimated = metrics.usage_estimated
+        usage_estimation_method = metrics.usage_estimation_method
+        tracking_degraded = metrics.tracking_degraded
+        request_fingerprint = metrics.request_fingerprint
 
-                # Add reasoning tokens to input (o1/o3 thinking models)
-                # Reasoning tokens are "hidden" tokens used for internal CoT
-                # They consume energy like input tokens but aren't visible in the response
-                if usage.get("reasoning"):
-                    reasoning = usage["reasoning"]
-                    if reasoning:  # Type guard
-                        reasoning_tokens = reasoning.get("input_tokens", 0)
-                        in_tokens += reasoning_tokens  # Add to input for energy calc
-
-                # Energy (including reasoning tokens in input)
-                (
-                    energy_wh,
-                    energy_tier,
-                    energy_uncertainty_pct,
-                    energy_source,
-                    energy_basis,
-                    model_known,
-                ) = calculate_energy(
-                    in_tokens,
-                    out_tokens,
-                    model,
-                    cast("dict[str, Any]", self._energy_override),
-                )
-
-                # Add warning if model not in registry (structured logging)
-                if not model_known and model != "unknown":
-                    _tracking_errors["model_unknown"] += 1
-                    self._warnings.append(
-                        f"Model '{model}' not in registry, using conservative fallback estimates. "
-                        f"Energy/cost estimates may be inaccurate (±100% uncertainty)"
-                    )
-
-                # Carbon with provider-specific PUE
-                if energy_wh is not None:
-                    carbon_g, pue, pue_tier, pue_source = calculate_carbon(
-                        energy_wh, grid_val, model=model, provider_hint=provider
-                    )
-                    # Water usage for datacenter cooling
-                    from vetch.calculation import calculate_embodied_carbon, calculate_water
-
-                    water_l = calculate_water(
-                        energy_wh, model=model, provider_hint=provider, region=self.region
-                    )
-
-                    # Embodied carbon from hardware manufacturing
-                    embodied_carbon_g = calculate_embodied_carbon(in_tokens, out_tokens, model)
-
-                # Cost (pass cache tokens for cache-aware pricing)
-                (
-                    cost_usd,
-                    cost_in_usd,
-                    cost_out_usd,
-                    cost_cache_write_usd,
-                    cost_cache_read_usd,
-                    billing_tier,
-                ) = calculate_cost(
-                    in_tokens,
-                    out_tokens,
-                    model,
-                    cache_read_tokens=cache_read_tokens,
-                    cache_creation_tokens=cache_creation_tokens,
-                )
-
-                # Apply price multiplier (e.g., enterprise discount)
-                if self.price_multiplier != 1.0:
-                    cost_usd *= self.price_multiplier
-                    cost_in_usd *= self.price_multiplier
-                    cost_out_usd *= self.price_multiplier
-                    cost_cache_write_usd *= self.price_multiplier
-                    cost_cache_read_usd *= self.price_multiplier
-                    billing_tier = f"list×{self.price_multiplier}"
-        # Combine all warnings (from context and captured call)
-        all_warnings = list(self._warnings)
+        # Combine all warnings (from prepare_inference_metrics and captured call)
+        all_warnings = list(metrics.warnings)
         if captured and captured.warnings:
             all_warnings.extend(captured.warnings)
 
@@ -744,22 +655,13 @@ class VetchContext:
             multimodal = bool(usage.get("image") or usage.get("audio"))
 
         # Detect batch API usage (OpenAI Batch API gets 50% cost discount)
-        # Basic detection: check model name and provider patterns
-        # More sophisticated detection would require provider-specific response parsing
         is_batch = False
         if model and provider:
             model_lower = model.lower()
-            # OpenAI Batch API uses same models but async processing
-            # Detection heuristics:
-            # 1. Model name contains "batch"
-            # 2. Provider is OpenAI and billing_tier indicates batch
-            # 3. Future: Check response metadata for batch_id
             if "batch" in model_lower or (
                 provider == "openai" and billing_tier and "batch" in billing_tier.lower()
             ):
                 is_batch = True
-            # TODO: Add provider-specific batch detection in providers/openai.py
-            # by checking response.batch_id or request metadata
 
         # Apply batch API discount (OpenAI Batch API is 50% off list price)
         if is_batch and cost_usd is not None:
@@ -768,55 +670,6 @@ class VetchContext:
             cost_out_usd = cost_out_usd * 0.5 if cost_out_usd is not None else None
             if billing_tier and "batch" not in billing_tier.lower():
                 billing_tier = f"{billing_tier} (batch 50% discount)"
-
-        # Calculate degraded tracking score (weighted)
-        # Score ranges from 0.0 (perfect) to 3.0+ (fully degraded)
-        # Threshold: > 2.5 = degraded
-        degraded_score = 0.0
-
-        # Model knowledge: 60% weight (most important)
-        if not model_known:
-            degraded_score += 1.0 * 0.6
-
-        # Energy tier: 60% weight (0=measured, 1=vendor, 2=validated, 3=estimated)
-        degraded_score += (energy_tier / 3.0) * 0.6
-
-        # PUE tier: 20% weight (1=known, 3=default)
-        degraded_score += (pue_tier / 3.0) * 0.2
-
-        # Grid quality: 20% weight (live=0, delayed=1, blind=2, unknown=3)
-        grid_quality_score = {
-            "live": 0.0,
-            "delayed": 1.0,
-            "blind": 2.0,
-            "unknown": 3.0,
-        }
-        degraded_score += (grid_quality_score.get(signal_quality, 3.0) / 3.0) * 0.2
-
-        # Token estimation: 40% weight (usage_estimated flag)
-        if usage_estimated:
-            degraded_score += 1.0 * 0.4
-
-        # Binary degraded flag: score > 2.5 = degraded
-        # This means: Tier 1+1+1 with live grid + no estimation = ~0.87 (not degraded ✓)
-        #             Tier 3+3+3 with unknown grid + estimation = 3.4 (degraded ✓)
-        tracking_degraded = degraded_score > 2.5
-
-        # Calculate request fingerprint for deduplication (16-char SHA256)
-        # Based on: model + input_tokens + output_tokens + timestamp_minute
-        # Allows identifying duplicate/retry requests within a 1-minute window
-        request_fingerprint: str | None = None
-        if usage and usage.get("text"):
-            import hashlib
-            text = usage["text"]
-            if text:
-                in_tok = text.get("input_tokens", 0)
-                out_tok = text.get("output_tokens", 0)
-                # Round timestamp to minute for grouping
-                ts_minute = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-                timestamp_minute = ts_minute.isoformat()
-                fingerprint_input = f"{model}:{in_tok}:{out_tok}:{timestamp_minute}"
-                request_fingerprint = hashlib.sha256(fingerprint_input.encode()).hexdigest()[:16]
 
         # Build event
         self._event = InferenceEvent(

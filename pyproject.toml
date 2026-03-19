@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.2.2"
+version = "0.2.3"
 description = "Planet-aware observability for LLM inference"
 readme = "README.md"
 license = "Apache-2.0"
@@ -105,6 +105,21 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 warn_unused_ignores = false  # Allow ignores for optional dependencies (CI vs local)
+
+[[tool.mypy.overrides]]
+module = [
+    "google.cloud",
+    "google.cloud.*",
+    "google.generativeai",
+    "google.generativeai.*",
+    "google.genai",
+    "google.genai.*",
+    "opentelemetry.sdk.*",
+    "opentelemetry.exporter.*",
+    "fastapi",
+    "fastapi.*",
+]
+ignore_missing_imports = true
 
 [tool.bandit]
 exclude_dirs = ["tests"]

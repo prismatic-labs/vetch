@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
     from vetch.wrapper import VetchContext
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 __all__ = [
     "wrap",
     "awrap",
@@ -70,6 +70,8 @@ __all__ = [
     "get_budget_status",
     # v0.1.5: OTLP export
     "configure_otlp_export",
+    # v0.2.3: HTTP endpoint output
+    "configure_http_endpoint",
     # v0.1.5: Green signal API
     "get_cleanest_region",
     # v0.1.5: Logging control
@@ -578,6 +580,11 @@ def __getattr__(name: str) -> object:
         from vetch.otel import configure_otlp_export
 
         return configure_otlp_export
+    # v0.2.3: HTTP endpoint output
+    if name == "configure_http_endpoint":
+        from vetch.emitter import configure_http_endpoint
+
+        return configure_http_endpoint
     # v0.1.5: Green signal API
     if name == "get_cleanest_region":
         from vetch.sensing.grid import get_cleanest_region

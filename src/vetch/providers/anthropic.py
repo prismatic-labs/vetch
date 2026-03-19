@@ -266,9 +266,7 @@ class StreamWrapper:
                 self._output_tokens += getattr(usage, "output_tokens", 0)
 
     def _capture_to_context(self) -> None:
-        ctx = get_active_context()
-        if ctx is None:
-            return
+        from vetch.wrapper import auto_context_for_instrumented_call
 
         final_usage = {
             "text": {
@@ -278,18 +276,41 @@ class StreamWrapper:
             }
         }
 
-        ctx.capture(
-            model=self._model,
-            provider="anthropic",
-            usage=final_usage,  # type: ignore[arg-type]
-            is_stream=True,
-            accumulated_chars=self._accumulated_chars,
-            complete=self._complete,
-            error=self._error,
-            error_type=self._error_type,
-            cache_read_tokens=self._cache_read_tokens,
-            cache_creation_tokens=self._cache_creation_tokens,
-        )
+        ctx = get_active_context()
+
+        if ctx is not None:
+            # Manual wrap() is active — capture to it; it emits on exit
+            ctx.capture(
+                model=self._model,
+                provider="anthropic",
+                usage=final_usage,  # type: ignore[arg-type]
+                is_stream=True,
+                accumulated_chars=self._accumulated_chars,
+                complete=self._complete,
+                error=self._error,
+                error_type=self._error_type,
+                cache_read_tokens=self._cache_read_tokens,
+                cache_creation_tokens=self._cache_creation_tokens,
+            )
+            return
+
+        # Instrumented mode (no manual wrap()) — create auto-context at stream completion
+        with auto_context_for_instrumented_call("anthropic"):
+            ctx = get_active_context()
+            if ctx is not None:
+                ctx.capture(
+                    model=self._model,
+                    provider="anthropic",
+                    usage=final_usage,  # type: ignore[arg-type]
+                    is_stream=True,
+                    accumulated_chars=self._accumulated_chars,
+                    complete=self._complete,
+                    error=self._error,
+                    error_type=self._error_type,
+                    cache_read_tokens=self._cache_read_tokens,
+                    cache_creation_tokens=self._cache_creation_tokens,
+                )
+        # auto-context exits here → event emitted
 
     def __enter__(self) -> StreamWrapper:
         return self
@@ -434,8 +455,8 @@ def patch_anthropic_client(client: Any) -> bool:
             else:
                 wrapper = _WeakMessagesWrapper(messages, _client_originals)
 
-            wrapper.vetch_patched = True  # type: ignore[attr-defined]
-            wrapper._vetch_original = _client_originals[messages]  # type: ignore[attr-defined]
+            wrapper.vetch_patched = True
+            wrapper._vetch_original = _client_originals[messages]
             messages.create = wrapper
 
         logger.debug("Anthropic client patched successfully")

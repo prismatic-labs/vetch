@@ -97,7 +97,7 @@ def get_vertexai_version() -> VersionInfo:
         VersionInfo with version details and tested status.
     """
     try:
-        import google.cloud.aiplatform as aiplatform  # type: ignore[import-not-found, import-untyped]
+        import google.cloud.aiplatform as aiplatform
 
         version = getattr(aiplatform, "__version__", None)
         if version is None:

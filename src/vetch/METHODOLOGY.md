@@ -1,6 +1,7 @@
 # Vetch Methodology
 
 methodology_version: "1.0"
+sdk_version: "0.2.3"
 
 ## Preamble
 Vetch exists because AI systems currently operate with no feedback on their energy consumption. Every inference draws power from infrastructure with real costs—financial, environmental, and systemic. None of this is visible to the developer making the API call.
@@ -8,6 +9,28 @@ Vetch exists because AI systems currently operate with no feedback on their ener
 This methodology is our first attempt to create that feedback loop. It is imperfect. The energy estimates are uncertain. We publish it openly so it can be challenged, corrected, and improved.
 
 We believe imperfect measurement, honestly reported, is better than no measurement at all.
+
+## SDK Instrumentation Model
+
+**As of v0.2.2, automatic instrumentation is production-ready.**
+
+```python
+import vetch
+vetch.instrument()  # All LLM calls are now tracked automatically
+```
+
+`instrument()` patches the OpenAI, Anthropic, Google GenAI, and Vertex AI clients at the module level. Every call — sync, async, streaming, and non-streaming — is tracked without any code changes in the calling application.
+
+**How it works:**
+
+1. `instrument()` stores default `region` and `tags` globally.
+2. Provider wrappers intercept each API response or completed stream.
+3. If a manual `wrap()` context is active, the event is attributed to it.
+4. Otherwise, a short-lived auto-context is created for that single call, calculates energy/carbon/cost, and emits the event.
+
+This means the tracking boundary is the individual API call, not a manually delimited block. For explicit attribution (e.g., attaching tags to a specific feature), `wrap()` remains available and takes precedence.
+
+**Streaming (v0.2.3):** Streaming calls (`stream=True`) are now fully tracked under `instrument()`. The event is emitted when the stream is exhausted (last chunk consumed). If the stream is abandoned mid-way, the event is still emitted with `complete=False` and the characters counted so far.
 
 ## Methodology Version
 This document is versioned. If we change the energy heuristics (e.g., input:output ratio from 1:3 to 1:2.5), methodology_version will increment. Check this field to understand why historical data may differ from current calculations.

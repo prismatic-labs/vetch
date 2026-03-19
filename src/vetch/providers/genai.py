@@ -496,7 +496,7 @@ def instrument_genai_module() -> bool:
         return True
 
     try:
-        import google.genai as genai  # type: ignore[import-not-found, import-untyped]
+        import google.genai as genai
     except ImportError:
         return False
 
@@ -511,7 +511,7 @@ def instrument_genai_module() -> bool:
         patch_client(self)
 
     # Patch Client.__init__
-    genai.Client.__init__ = patched_init
+    genai.Client.__init__ = patched_init  # type: ignore[method-assign]
 
     _module_instrumented = True
     logger.info("Google GenAI module instrumented for automatic tracking")
@@ -534,7 +534,7 @@ def uninstrument_genai_module() -> bool:
         try:
             import google.genai as genai
 
-            genai.Client.__init__ = _module_original_init
+            genai.Client.__init__ = _module_original_init  # type: ignore[method-assign]
             _module_original_init = None
         except ImportError:
             pass

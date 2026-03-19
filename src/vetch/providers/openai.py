@@ -460,23 +460,44 @@ class StreamWrapper:
                 self._cache_read_tokens = getattr(prompt_details, "cached_tokens", None)
 
     def _capture_to_context(self) -> None:
-        """Capture final metadata to active context."""
+        """Capture final metadata to active context (or create auto-context)."""
+        from vetch.wrapper import auto_context_for_instrumented_call
+
         ctx = get_active_context()
-        if ctx is None:
+
+        if ctx is not None:
+            # Manual wrap() is active — capture to it; it emits on exit
+            ctx.capture(
+                model=self._model,
+                provider="openai",
+                usage=self._final_usage,
+                is_stream=True,
+                accumulated_chars=self._accumulated_chars,
+                complete=self._complete,
+                error=self._error,
+                error_type=self._error_type,
+                cache_read_tokens=self._cache_read_tokens,
+                cache_creation_tokens=self._cache_creation_tokens,
+            )
             return
 
-        ctx.capture(
-            model=self._model,
-            provider="openai",
-            usage=self._final_usage,
-            is_stream=True,
-            accumulated_chars=self._accumulated_chars,
-            complete=self._complete,
-            error=self._error,
-            error_type=self._error_type,
-            cache_read_tokens=self._cache_read_tokens,
-            cache_creation_tokens=self._cache_creation_tokens,
-        )
+        # Instrumented mode (no manual wrap()) — create auto-context at stream completion
+        with auto_context_for_instrumented_call("openai"):
+            ctx = get_active_context()
+            if ctx is not None:
+                ctx.capture(
+                    model=self._model,
+                    provider="openai",
+                    usage=self._final_usage,
+                    is_stream=True,
+                    accumulated_chars=self._accumulated_chars,
+                    complete=self._complete,
+                    error=self._error,
+                    error_type=self._error_type,
+                    cache_read_tokens=self._cache_read_tokens,
+                    cache_creation_tokens=self._cache_creation_tokens,
+                )
+        # auto-context exits here → event emitted
 
     def __enter__(self) -> StreamWrapper:
         """Support context manager protocol."""
@@ -711,8 +732,8 @@ def patch_openai_client(client: Any) -> bool:
             else:
                 wrapper = _WeakChatWrapper(completions, _client_originals)
 
-            wrapper.vetch_patched = True  # type: ignore[attr-defined]
-            wrapper._vetch_original = _client_originals[completions]  # type: ignore[attr-defined]
+            wrapper.vetch_patched = True
+            wrapper._vetch_original = _client_originals[completions]
             completions.create = wrapper
 
         # 3. Patch embeddings.create if available
@@ -738,8 +759,8 @@ def patch_openai_client(client: Any) -> bool:
                         else:
                             emb_wrapper = _WeakEmbeddingsWrapper(embeddings, _client_originals)
 
-                        emb_wrapper.vetch_patched = True  # type: ignore[attr-defined]
-                        emb_wrapper._vetch_original = _client_originals[embeddings]  # type: ignore[attr-defined]
+                        emb_wrapper.vetch_patched = True
+                        emb_wrapper._vetch_original = _client_originals[embeddings]
                         embeddings.create = emb_wrapper
                         logger.debug("OpenAI embeddings endpoint patched successfully")
 

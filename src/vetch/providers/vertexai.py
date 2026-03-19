@@ -298,21 +298,40 @@ class StreamWrapper:
             )
 
     def _capture_to_context(self) -> None:
-        """Capture final metadata to active context."""
+        """Capture final metadata to active context (or create auto-context)."""
+        from vetch.wrapper import auto_context_for_instrumented_call
+
         ctx = get_active_context()
-        if ctx is None:
+
+        if ctx is not None:
+            # Manual wrap() is active — capture to it; it emits on exit
+            ctx.capture(
+                model=self._model,
+                provider="vertexai",
+                usage=self._final_usage,
+                is_stream=True,
+                accumulated_chars=self._accumulated_chars,
+                complete=self._complete,
+                error=self._error,
+                error_type=self._error_type,
+            )
             return
 
-        ctx.capture(
-            model=self._model,
-            provider="vertexai",
-            usage=self._final_usage,
-            is_stream=True,
-            accumulated_chars=self._accumulated_chars,
-            complete=self._complete,
-            error=self._error,
-            error_type=self._error_type,
-        )
+        # Instrumented mode (no manual wrap()) — create auto-context at stream completion
+        with auto_context_for_instrumented_call("vertexai"):
+            ctx = get_active_context()
+            if ctx is not None:
+                ctx.capture(
+                    model=self._model,
+                    provider="vertexai",
+                    usage=self._final_usage,
+                    is_stream=True,
+                    accumulated_chars=self._accumulated_chars,
+                    complete=self._complete,
+                    error=self._error,
+                    error_type=self._error_type,
+                )
+        # auto-context exits here → event emitted
 
     def __enter__(self) -> StreamWrapper:
         """Support context manager protocol."""
@@ -559,7 +578,7 @@ def detect_vertexai_model() -> Any | None:
         return None
 
     try:
-        import google.generativeai  # type: ignore[import-not-found, import-untyped]  # noqa: F401
+        import google.generativeai  # noqa: F401
 
         return None  # SDK available but no default model
     except ImportError:

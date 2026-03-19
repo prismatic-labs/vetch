@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-03-19
+
+### Fixed
+- **[CRITICAL] Streaming Calls Not Tracked Under instrument()** (Streaming Auto-Context Bug)
+  - Problem: `instrument()` correctly tracked non-streaming calls (fixed in v0.2.2) but streaming calls (`stream=True`) still silently dropped events. `StreamWrapper._capture_to_context()` checked `if ctx is None: return`, finding no active context and doing nothing.
+  - Root Cause: The v0.2.2 fix used `auto_context_for_instrumented_call` at call-time for non-streaming responses. For streams, context creation needed to happen at stream-completion time (inside `StreamWrapper`), not at API-call time.
+  - Solution: Updated `StreamWrapper._capture_to_context()` in OpenAI, Anthropic, and Vertex AI providers to use `auto_context_for_instrumented_call` when no active context is found at stream exhaustion.
+  - Affected providers: OpenAI (sync + async), Anthropic (sync + async), Vertex AI (sync + async). Google GenAI was already correct.
+  - No double-emission: `auto_context_for_instrumented_call` is a no-op when a manual `wrap()` context is active, preventing duplicate events.
+  - Test coverage: Added `tests/test_streaming_instrument.py` with 11 cases covering all providers, error paths, and the no-double-emit guarantee.
+
+- **Failing test: `test_instrument_genai_module_returns_false_when_not_installed`**
+  - `google-genai` is installed in the dev/CI environment, so the test needed to mock the import rather than assume it was absent.
+  - Fixed with `patch.dict(sys.modules, {"google.genai": None})` + reset of `_module_instrumented` state.
+
+### Added
+- **VETCH_ENDPOINT: First-Class HTTP Output**
+  - `VETCH_ENDPOINT=https://your-endpoint.example.com/ingest` now wires up the HTTP emitter unconditionally — no `VETCH_ENABLE_REMOTE=true` flag required.
+  - `VETCH_API_KEY=...` sends `Authorization: Bearer {key}` on every POST. Leave unset for internal/firewall-protected endpoints that don't require auth.
+  - Legacy `VETCH_OUTPUT=https://...` still works but now prints a hint to use `VETCH_ENDPOINT` instead.
+  - Rate-limited error logging in `HttpHandler`: connection failures log at most once per minute to stderr (previously silent).
+
+- **`vetch.configure_http_endpoint(url, api_key=None)`** — programmatic alternative to `VETCH_ENDPOINT` env var. Useful for multi-destination routing or dynamic configuration.
+
+- **QUICKSTART-SEND.md** — new guide covering all output destinations: local stderr, internal HTTP endpoints, OTLP stacks, file output, multi-destination routing, and green routing with `get_cleanest_region()`.
+
+- **METHODOLOGY.md: SDK Instrumentation Model section**
+  - Documents that `instrument()` is production-ready as of v0.2.2.
+  - Explains the auto-context lifecycle for both non-streaming and streaming calls.
+  - Clarifies the `wrap()` vs `instrument()` relationship and priority.
+
+### Changed
+- `HttpHandler` now accepts `api_key: str | None = None` parameter (backward compatible).
+- `_configure_logging()` checks `VETCH_ENDPOINT` before `VETCH_OUTPUT` on module import.
+
 ## [0.2.2] - 2026-03-16
 
 ### Fixed
