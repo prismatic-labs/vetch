@@ -108,14 +108,10 @@ warn_unused_ignores = false  # Allow ignores for optional dependencies (CI vs lo
 
 [[tool.mypy.overrides]]
 module = [
-    "google.cloud",
-    "google.cloud.*",
-    "google.generativeai",
-    "google.generativeai.*",
-    "google.genai",
-    "google.genai.*",
-    "opentelemetry.sdk.*",
-    "opentelemetry.exporter.*",
+    "google",
+    "google.*",
+    "opentelemetry",
+    "opentelemetry.*",
     "fastapi",
     "fastapi.*",
 ]
