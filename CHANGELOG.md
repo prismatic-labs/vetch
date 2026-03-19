@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`vetch.configure_http_endpoint(url, api_key=None)`** — programmatic alternative to `VETCH_ENDPOINT` env var. Useful for multi-destination routing or dynamic configuration.
 
-- **QUICKSTART-SEND.md** — new guide covering all output destinations: local stderr, internal HTTP endpoints, OTLP stacks, file output, multi-destination routing, and green routing with `get_cleanest_region()`.
+- **QUICKSTART-OUTPUT.md** — new guide covering all output destinations: local stderr, internal HTTP endpoints, OTLP stacks, file output, multi-destination routing, and green routing with `get_cleanest_region()`.
 
 - **METHODOLOGY.md: SDK Instrumentation Model section**
   - Documents that `instrument()` is production-ready as of v0.2.2.
