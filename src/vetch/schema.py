@@ -165,6 +165,7 @@ class InferenceEvent(TypedDict, total=False):
     cache_read_tokens: Union[int, None]  # Tokens read from cache (cost savings)
     cache_creation_tokens: Union[int, None]  # Tokens written to cache (extra cost)
     cache_hit: Union[bool, None]  # True if any cache was used
+    cache_energy_saving_wh: Union[float, None]  # Energy saved vs. uncached baseline (Wh)
 
     # Session tracking (v0.1.6)
     session_id: Union[str, None]  # ID of parent session if event is part of a session

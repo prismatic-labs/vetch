@@ -326,6 +326,16 @@ def _export_event_sync(event: InferenceEvent) -> bool:
                     span.set_attribute("llm.input_tokens", text.get("input_tokens", 0))
                     span.set_attribute("llm.output_tokens", text.get("output_tokens", 0))
 
+            # Extended Thinking mode transparency
+            model_name = event.get("model", "")
+            if isinstance(model_name, str) and model_name.endswith("-thinking"):
+                span.set_attribute("vetch.thinking_mode", True)
+
+            # Cache energy saving
+            cache_saving = event.get("cache_energy_saving_wh")
+            if cache_saving is not None:
+                span.set_attribute("vetch.cache_energy_saving_wh", float(cache_saving))
+
             # Budget status
             if event.get("budget_exceeded"):
                 span.set_attribute("vetch.budget_exceeded", True)

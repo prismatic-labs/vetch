@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-03-22
+
+### ⚠️ BREAKING BEHAVIOR (data changes — no API changes)
+
+- **`gpt-4o-mini` energy ~3× lower** — `gpt-4o-mini` and `gpt-4o-mini-2024-07-18` were incorrectly aliased to `gpt-4o` since v0.1.0. Both models now resolve to a dedicated `gpt-4o-mini` Tier 3 entry (~0.10/0.30 Wh/1k input/output). Historical data will appear ~3× higher than post-upgrade data. **This was a data error, not a regression.** Re-baseline any dashboards or budgets tracking this model.
+
+- **`claude-3-5-haiku-*` energy ~20% higher** — `claude-3-5-haiku`, `claude-3-5-haiku-20241022`, `claude-3-5-haiku-latest`, and `claude-haiku-3-5` were aliased to `claude-3-haiku` (Claude 3 Haiku, a different model). All aliases now point to `claude-3.5-haiku` with a Tier 3 estimate (~0.035/0.105 Wh/1k). Historical data will appear ~20% lower than post-upgrade data. Re-baseline dashboards tracking this model.
+
+### Added
+
+- **Energy registry: 14 new Tier 1 models** from Jegham et al. (arXiv:2505.09598, 2025) — the same paper underpinning GPT-4o since v0.2.0. All new entries are prompt-length-aware (short/medium/long buckets) with IT-equipment-only basis (pre-PUE):
+  - **GPT-4.1**, **GPT-4.5**, **o3-mini**, **o1-mini**, **o4-mini** (medium reasoning effort)
+  - **Claude 3.7 Sonnet Extended Thinking** (`claude-3.7-sonnet-thinking`)
+  - **DeepSeek V3**, **LLaMA 3.1 8B**, **LLaMA 3.1 70B**, **LLaMA 3.3 70B**
+  - **GPT-4o-mini** (Tier 3 — no Jegham figures; own entry fixes alias bug)
+  - **Claude 3.5 Haiku** (Tier 3 — Jegham listed but no figures; own entry fixes alias bug)
+  - **Gemini 2.5 Flash** and **Gemini 2.5 Pro** (Tier 3 proxy — no published data; closes pricing.json reverse gap)
+
+- **Energy registry: 8 upgrades from flat → prompt-length-aware** (Tier 1, Jegham):
+  `gpt-4-turbo` (Tier 3→Tier 1), `gpt-4.1-mini`, `gpt-4.1-nano`, `o1`, `o3`, `deepseek-r1`, `claude-3.7-sonnet`, `llama-3.1-405b`
+
+- **Pricing.json: complete coverage** — 11 new model entries + 6 backfilled energy-only gaps (o1, o3, deepseek-r1, claude-3.7-sonnet, gpt-4.1-mini, gpt-4.1-nano now have non-null cost estimates)
+
+- **Extended Thinking auto-detection** — When `thinking={"type": "enabled"}` is passed to `anthropic.messages.create()`, Vetch automatically uses the `claude-3.7-sonnet-thinking` registry entry, which reflects the higher measured energy of Extended Thinking mode. Requires no user changes.
+
+- **OpenAI streaming: exact token counts** — Vetch now injects `stream_options={"include_usage": True}` before all OpenAI streaming calls. The existing usage-reading code at `StreamWrapper._process_chunk` already handles it. When available, OpenAI returns exact `prompt_tokens` + `completion_tokens` in the final chunk, eliminating estimated tokens for streaming. Prompt cache credits (`prompt_tokens_details.cached_tokens`) are captured automatically.
+
+- **Two-tier streaming token estimation** (for Anthropic, VertexAI, and OpenAI fallback):
+  - **Tier 1 (tiktoken installed):** Per-chunk tiktoken encoding gives ~99% accuracy across all scripts and languages. No buffering.
+  - **Tier 2 (tiktoken not installed):** Script-aware char ratio: Japanese (hiragana/katakana >10%) → 1.7 chars/token; CJK/Hangul (>15%) → 1.5 chars/token; English/other → 4.0 chars/token. Previously always used 4.0.
+
+- **Uncertainty floor** — When token counts are estimated (any tier), `energy_uncertainty_pct` is floored at 50% regardless of model tier. The warning message now includes the content type and ratio used.
+
+- **SDK version compatibility warning** — `vetch.instrument()` now emits a `logging.WARNING` if any installed SDK (openai, vertexai) is outside the tested version range. Previously these checks ran but the results were never surfaced.
+
+- **Cache-hit energy discounting** — When `cache_read_tokens > 0`, Vetch applies a `CACHE_READ_ENERGY_FACTOR = 0.15` discount to cached input tokens (cache reads skip KV-cache recomputation, using ~15% of standard prefill energy). The new `cache_energy_saving_wh` field in `InferenceEvent` shows the Wh saved vs. the uncached baseline (Tier 2 estimate, ±100%). No user changes required — cache token counts are already captured from Anthropic and OpenAI usage payloads.
+
+- **OTel Extended Thinking transparency** — `_export_event_sync()` now sets `vetch.thinking_mode = True` on the span when the resolved model ends with `-thinking`. Enables filtering on thinking vs. standard inference in APM dashboards (Datadog, Honeycomb, Grafana Tempo). Also adds `vetch.cache_energy_saving_wh` span attribute when a cache saving is present.
+
+### Fixed
+
+- **Alias corrections:**
+  - `gpt-4o-mini` → `gpt-4o-mini` (was `gpt-4o`)
+  - `gpt-4o-mini-2024-07-18` → `gpt-4o-mini` (was `gpt-4o`)
+  - `claude-3-5-haiku`, `claude-3-5-haiku-20241022`, `claude-3-5-haiku-latest`, `claude-haiku-3-5` → `claude-3.5-haiku` (was `claude-3-haiku`)
+  - Removed `deepseek-chat` alias (was ambiguously V2 on some providers — use `deepseek-v3-0324` for versioned access)
+
+---
+
 ## [0.2.3] - 2026-03-19
 
 ### Fixed

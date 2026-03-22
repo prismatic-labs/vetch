@@ -59,11 +59,15 @@ class _WeakChatWrapper:
         original = self._originals_dict[completions]
         is_stream = kwargs.get("stream", False)
 
+        if is_stream:
+            kwargs.setdefault("stream_options", {}).setdefault("include_usage", True)
+
         try:
             result = original(*args, **kwargs)
 
             if is_stream:
-                return StreamWrapper(result)
+                model_hint = kwargs.get("model", "unknown")
+                return StreamWrapper(result, model_hint=model_hint)
 
             _after_create(result, *args, **kwargs)
             return result
@@ -90,11 +94,15 @@ class _WeakAsyncChatWrapper:
         original = self._originals_dict[completions]
         is_stream = kwargs.get("stream", False)
 
+        if is_stream:
+            kwargs.setdefault("stream_options", {}).setdefault("include_usage", True)
+
         try:
             result = await original(*args, **kwargs)
 
             if is_stream:
-                return AsyncStreamWrapper(result)
+                model_hint = kwargs.get("model", "unknown")
+                return AsyncStreamWrapper(result, model_hint=model_hint)
 
             _after_create(result, *args, **kwargs)
             return result
@@ -386,11 +394,12 @@ class StreamWrapper:
     Captures final usage from the last chunk if available.
     """
 
-    def __init__(self, stream: Any) -> None:
+    def __init__(self, stream: Any, model_hint: str = "unknown") -> None:
         """Initialize stream wrapper.
 
         Args:
             stream: The original OpenAI stream.
+            model_hint: Model name from the request kwargs (used for tiktoken).
         """
         self._stream = stream
         self._accumulated_chars = 0
@@ -401,6 +410,19 @@ class StreamWrapper:
         self._complete = False
         self._error = False
         self._error_type: str | None = None
+
+        # Tier 1: tiktoken buffered counting (~100-char buffer reduces encode() call frequency)
+        from vetch.calculation import _get_tiktoken_encoding
+
+        self._tiktoken_enc = _get_tiktoken_encoding(model_hint)
+        self._tik_token_count = 0
+        self._tik_buffer = ""  # flushed every ~100 chars
+
+        # Tier 2: script-aware char counting (only first _SCRIPT_SAMPLE_LIMIT chars sampled)
+        self._hiragana_katakana_chars = 0  # \u3040-\u30ff
+        self._cjk_ideograph_chars = 0  # \u4e00-\u9fff
+        self._hangul_chars = 0  # \uac00-\ud7a3
+        self._script_sample_chars = 0  # chars seen during sampling window
 
     def __iter__(self) -> StreamWrapper:
         """Return self as iterator."""
@@ -440,6 +462,28 @@ class StreamWrapper:
                 content = getattr(delta, "content", None)
                 if content:
                     self._accumulated_chars += len(content)
+                    if self._tiktoken_enc is not None:
+                        # Tier 1: buffer chunks; encode when buffer reaches ~100 chars
+                        self._tik_buffer += content
+                        if len(self._tik_buffer) >= 100:
+                            self._tik_token_count += len(
+                                self._tiktoken_enc.encode(self._tik_buffer)
+                            )
+                            self._tik_buffer = ""
+                    else:
+                        # Tier 2: sample only the first _SCRIPT_SAMPLE_LIMIT chars
+                        from vetch.calculation import _SCRIPT_SAMPLE_LIMIT
+
+                        if self._script_sample_chars < _SCRIPT_SAMPLE_LIMIT:
+                            for ch in content:
+                                cp = ord(ch)
+                                if 0x3040 <= cp <= 0x30FF:
+                                    self._hiragana_katakana_chars += 1
+                                elif 0x4E00 <= cp <= 0x9FFF:
+                                    self._cjk_ideograph_chars += 1
+                                elif 0xAC00 <= cp <= 0xD7A3:
+                                    self._hangul_chars += 1
+                            self._script_sample_chars += len(content)
 
         # Check for usage in chunk (OpenAI includes in final chunk with stream_options)
         usage = getattr(chunk, "usage", None)
@@ -461,7 +505,24 @@ class StreamWrapper:
 
     def _capture_to_context(self) -> None:
         """Capture final metadata to active context (or create auto-context)."""
+        from vetch.calculation import _detect_content_type_hint
         from vetch.wrapper import auto_context_for_instrumented_call
+
+        # Flush any remaining tiktoken buffer
+        if self._tiktoken_enc is not None and self._tik_buffer:
+            self._tik_token_count += len(self._tiktoken_enc.encode(self._tik_buffer))
+            self._tik_buffer = ""
+
+        content_type_hint = (
+            "en"
+            if self._tiktoken_enc is not None
+            else _detect_content_type_hint(
+                self._hiragana_katakana_chars,
+                self._cjk_ideograph_chars,
+                self._hangul_chars,
+                self._script_sample_chars,
+            )
+        )
 
         ctx = get_active_context()
 
@@ -478,6 +539,8 @@ class StreamWrapper:
                 error_type=self._error_type,
                 cache_read_tokens=self._cache_read_tokens,
                 cache_creation_tokens=self._cache_creation_tokens,
+                accumulated_tik_tokens=self._tik_token_count,
+                content_type_hint=content_type_hint,
             )
             return
 
@@ -496,6 +559,8 @@ class StreamWrapper:
                     error_type=self._error_type,
                     cache_read_tokens=self._cache_read_tokens,
                     cache_creation_tokens=self._cache_creation_tokens,
+                    accumulated_tik_tokens=self._tik_token_count,
+                    content_type_hint=content_type_hint,
                 )
         # auto-context exits here → event emitted
 
@@ -586,10 +651,13 @@ def _wrapped_create(original: Any) -> Any:
     if inspect.iscoroutinefunction(original):
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             is_stream = kwargs.get("stream", False)
+            if is_stream and "stream_options" not in kwargs:
+                kwargs["stream_options"] = {"include_usage": True}
             try:
                 result = await original(*args, **kwargs)
                 if is_stream:
-                    return AsyncStreamWrapper(result)
+                    model_hint = kwargs.get("model", "unknown")
+                    return AsyncStreamWrapper(result, model_hint=model_hint)
                 _after_create(result, *args, **kwargs)
                 return result
             except Exception as e:
@@ -603,13 +671,16 @@ def _wrapped_create(original: Any) -> Any:
     # Handle sync function
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         is_stream = kwargs.get("stream", False)
+        if is_stream:
+            kwargs.setdefault("stream_options", {}).setdefault("include_usage", True)
 
         try:
             result = original(*args, **kwargs)
 
             if is_stream:
                 # Wrap the stream to capture during iteration
-                return StreamWrapper(result)
+                model_hint = kwargs.get("model", "unknown")
+                return StreamWrapper(result, model_hint=model_hint)
 
             # Non-streaming: capture immediately
             _after_create(result, *args, **kwargs)

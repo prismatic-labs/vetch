@@ -54,12 +54,17 @@ class _WeakMessagesWrapper:
 
         original = self._originals_dict[messages]
         is_stream = kwargs.get("stream", False)
+        thinking_param = kwargs.get("thinking", {})
+        is_thinking = (
+            isinstance(thinking_param, dict) and thinking_param.get("type") == "enabled"
+        )
 
         try:
             result = original(*args, **kwargs)
 
             if is_stream:
-                return StreamWrapper(result)
+                model_hint = kwargs.get("model", "unknown")
+                return StreamWrapper(result, model_hint=model_hint, is_thinking=is_thinking)
 
             _after_create(result, *args, **kwargs)
             return result
@@ -85,12 +90,17 @@ class _WeakAsyncMessagesWrapper:
 
         original = self._originals_dict[messages]
         is_stream = kwargs.get("stream", False)
+        thinking_param = kwargs.get("thinking", {})
+        is_thinking = (
+            isinstance(thinking_param, dict) and thinking_param.get("type") == "enabled"
+        )
 
         try:
             result = await original(*args, **kwargs)
 
             if is_stream:
-                return AsyncStreamWrapper(result)
+                model_hint = kwargs.get("model", "unknown")
+                return AsyncStreamWrapper(result, model_hint=model_hint, is_thinking=is_thinking)
 
             _after_create(result, *args, **kwargs)
             return result
@@ -167,6 +177,11 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         usage, cache_read, cache_create = extract_usage(result)
         model = extract_model(result)
 
+        # Extended Thinking auto-detection for non-streaming
+        thinking_param = kwargs.get("thinking", {})
+        if isinstance(thinking_param, dict) and thinking_param.get("type") == "enabled":
+            model = model + "-thinking"
+
         ctx = get_active_context()
         if ctx is not None:
             ctx.capture(
@@ -204,10 +219,14 @@ class StreamWrapper:
     Captures usage from message_start and message_delta events.
     """
 
-    def __init__(self, stream: Any) -> None:
+    def __init__(
+        self, stream: Any, model_hint: str = "unknown", is_thinking: bool = False
+    ) -> None:
         self._stream = stream
         self._accumulated_chars = 0
         self._model = "unknown"
+        self._model_hint = model_hint
+        self._is_thinking = is_thinking
         self._input_tokens = 0
         self._output_tokens = 0
         self._cache_read_tokens: int | None = None
@@ -215,6 +234,19 @@ class StreamWrapper:
         self._complete = False
         self._error = False
         self._error_type: str | None = None
+
+        # Tier 1: tiktoken buffered counting (~100-char buffer reduces encode() call frequency)
+        from vetch.calculation import _get_tiktoken_encoding
+
+        self._tiktoken_enc = _get_tiktoken_encoding(model_hint)
+        self._tik_token_count = 0
+        self._tik_buffer = ""  # flushed every ~100 chars
+
+        # Tier 2: script-aware char counting (only first _SCRIPT_SAMPLE_LIMIT chars sampled)
+        self._hiragana_katakana_chars = 0  # \u3040-\u30ff
+        self._cjk_ideograph_chars = 0  # \u4e00-\u9fff
+        self._hangul_chars = 0  # \uac00-\ud7a3
+        self._script_sample_chars = 0  # chars seen during sampling window
 
     def __iter__(self) -> StreamWrapper:
         return self
@@ -243,6 +275,8 @@ class StreamWrapper:
             msg = getattr(chunk, "message", None)
             if msg:
                 self._model = getattr(msg, "model", "unknown")
+                if self._is_thinking:
+                    self._model = self._model + "-thinking"
                 usage = getattr(msg, "usage", None)
                 if usage:
                     self._input_tokens += getattr(usage, "input_tokens", 0)
@@ -258,7 +292,30 @@ class StreamWrapper:
             delta = getattr(chunk, "delta", None)
             if delta:
                 text = getattr(delta, "text", "")
-                self._accumulated_chars += len(text)
+                if text:
+                    self._accumulated_chars += len(text)
+                    if self._tiktoken_enc is not None:
+                        # Tier 1: buffer chunks; encode when buffer reaches ~100 chars
+                        self._tik_buffer += text
+                        if len(self._tik_buffer) >= 100:
+                            self._tik_token_count += len(
+                                self._tiktoken_enc.encode(self._tik_buffer)
+                            )
+                            self._tik_buffer = ""
+                    else:
+                        # Tier 2: sample only the first _SCRIPT_SAMPLE_LIMIT chars
+                        from vetch.calculation import _SCRIPT_SAMPLE_LIMIT
+
+                        if self._script_sample_chars < _SCRIPT_SAMPLE_LIMIT:
+                            for ch in text:
+                                cp = ord(ch)
+                                if 0x3040 <= cp <= 0x30FF:
+                                    self._hiragana_katakana_chars += 1
+                                elif 0x4E00 <= cp <= 0x9FFF:
+                                    self._cjk_ideograph_chars += 1
+                                elif 0xAC00 <= cp <= 0xD7A3:
+                                    self._hangul_chars += 1
+                            self._script_sample_chars += len(text)
 
         elif event_type == "message_delta":
             usage = getattr(chunk, "usage", None)
@@ -266,7 +323,13 @@ class StreamWrapper:
                 self._output_tokens += getattr(usage, "output_tokens", 0)
 
     def _capture_to_context(self) -> None:
+        from vetch.calculation import _detect_content_type_hint
         from vetch.wrapper import auto_context_for_instrumented_call
+
+        # Flush any remaining tiktoken buffer
+        if self._tiktoken_enc is not None and self._tik_buffer:
+            self._tik_token_count += len(self._tiktoken_enc.encode(self._tik_buffer))
+            self._tik_buffer = ""
 
         final_usage = {
             "text": {
@@ -275,6 +338,17 @@ class StreamWrapper:
                 "total_tokens": self._input_tokens + self._output_tokens,
             }
         }
+
+        content_type_hint = (
+            "en"
+            if self._tiktoken_enc is not None
+            else _detect_content_type_hint(
+                self._hiragana_katakana_chars,
+                self._cjk_ideograph_chars,
+                self._hangul_chars,
+                self._script_sample_chars,
+            )
+        )
 
         ctx = get_active_context()
 
@@ -291,6 +365,8 @@ class StreamWrapper:
                 error_type=self._error_type,
                 cache_read_tokens=self._cache_read_tokens,
                 cache_creation_tokens=self._cache_creation_tokens,
+                accumulated_tik_tokens=self._tik_token_count,
+                content_type_hint=content_type_hint,
             )
             return
 
@@ -309,6 +385,8 @@ class StreamWrapper:
                     error_type=self._error_type,
                     cache_read_tokens=self._cache_read_tokens,
                     cache_creation_tokens=self._cache_creation_tokens,
+                    accumulated_tik_tokens=self._tik_token_count,
+                    content_type_hint=content_type_hint,
                 )
         # auto-context exits here → event emitted
 
@@ -381,10 +459,17 @@ def _wrapped_create(original: Any) -> Any:
 
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             is_stream = kwargs.get("stream", False)
+            thinking_param = kwargs.get("thinking", {})
+            is_thinking = (
+                isinstance(thinking_param, dict) and thinking_param.get("type") == "enabled"
+            )
             try:
                 result = await original(*args, **kwargs)
                 if is_stream:
-                    return AsyncStreamWrapper(result)
+                    model_hint = kwargs.get("model", "unknown")
+                    return AsyncStreamWrapper(
+                        result, model_hint=model_hint, is_thinking=is_thinking
+                    )
                 _after_create(result, *args, **kwargs)
                 return result
             except Exception as e:
@@ -397,10 +482,15 @@ def _wrapped_create(original: Any) -> Any:
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         is_stream = kwargs.get("stream", False)
+        thinking_param = kwargs.get("thinking", {})
+        is_thinking = (
+            isinstance(thinking_param, dict) and thinking_param.get("type") == "enabled"
+        )
         try:
             result = original(*args, **kwargs)
             if is_stream:
-                return StreamWrapper(result)
+                model_hint = kwargs.get("model", "unknown")
+                return StreamWrapper(result, model_hint=model_hint, is_thinking=is_thinking)
             _after_create(result, *args, **kwargs)
             return result
         except Exception as e:

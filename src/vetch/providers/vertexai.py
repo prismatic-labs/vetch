@@ -254,6 +254,19 @@ class StreamWrapper:
         self._error = False
         self._error_type: str | None = None
 
+        # Tier 1: tiktoken buffered counting (~100-char buffer reduces encode() call frequency)
+        from vetch.calculation import _get_tiktoken_encoding
+
+        self._tiktoken_enc = _get_tiktoken_encoding(model_name)
+        self._tik_token_count = 0
+        self._tik_buffer = ""  # flushed every ~100 chars
+
+        # Tier 2: script-aware char counting (only first _SCRIPT_SAMPLE_LIMIT chars sampled)
+        self._hiragana_katakana_chars = 0  # \u3040-\u30ff
+        self._cjk_ideograph_chars = 0  # \u4e00-\u9fff
+        self._hangul_chars = 0  # \uac00-\ud7a3
+        self._script_sample_chars = 0  # chars seen during sampling window
+
     def __iter__(self) -> StreamWrapper:
         """Return self as iterator."""
         return self
@@ -282,6 +295,28 @@ class StreamWrapper:
         text = getattr(chunk, "text", None)
         if text:
             self._accumulated_chars += len(text)
+            if self._tiktoken_enc is not None:
+                # Tier 1: buffer chunks; encode when buffer reaches ~100 chars
+                self._tik_buffer += text
+                if len(self._tik_buffer) >= 100:
+                    self._tik_token_count += len(
+                        self._tiktoken_enc.encode(self._tik_buffer)
+                    )
+                    self._tik_buffer = ""
+            else:
+                # Tier 2: sample only the first _SCRIPT_SAMPLE_LIMIT chars
+                from vetch.calculation import _SCRIPT_SAMPLE_LIMIT
+
+                if self._script_sample_chars < _SCRIPT_SAMPLE_LIMIT:
+                    for ch in text:
+                        cp = ord(ch)
+                        if 0x3040 <= cp <= 0x30FF:
+                            self._hiragana_katakana_chars += 1
+                        elif 0x4E00 <= cp <= 0x9FFF:
+                            self._cjk_ideograph_chars += 1
+                        elif 0xAC00 <= cp <= 0xD7A3:
+                            self._hangul_chars += 1
+                    self._script_sample_chars += len(text)
 
         # Check for usage in chunk
         usage_metadata = getattr(chunk, "usage_metadata", None)
@@ -299,7 +334,24 @@ class StreamWrapper:
 
     def _capture_to_context(self) -> None:
         """Capture final metadata to active context (or create auto-context)."""
+        from vetch.calculation import _detect_content_type_hint
         from vetch.wrapper import auto_context_for_instrumented_call
+
+        # Flush any remaining tiktoken buffer
+        if self._tiktoken_enc is not None and self._tik_buffer:
+            self._tik_token_count += len(self._tiktoken_enc.encode(self._tik_buffer))
+            self._tik_buffer = ""
+
+        content_type_hint = (
+            "en"
+            if self._tiktoken_enc is not None
+            else _detect_content_type_hint(
+                self._hiragana_katakana_chars,
+                self._cjk_ideograph_chars,
+                self._hangul_chars,
+                self._script_sample_chars,
+            )
+        )
 
         ctx = get_active_context()
 
@@ -314,6 +366,8 @@ class StreamWrapper:
                 complete=self._complete,
                 error=self._error,
                 error_type=self._error_type,
+                accumulated_tik_tokens=self._tik_token_count,
+                content_type_hint=content_type_hint,
             )
             return
 
@@ -330,6 +384,8 @@ class StreamWrapper:
                     complete=self._complete,
                     error=self._error,
                     error_type=self._error_type,
+                    accumulated_tik_tokens=self._tik_token_count,
+                    content_type_hint=content_type_hint,
                 )
         # auto-context exits here → event emitted
 

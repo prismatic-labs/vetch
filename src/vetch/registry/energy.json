@@ -10,36 +10,92 @@
     "basis": "MoE architecture (~1.8T total, ~220B active per token). Energy scaled for active parameters only."
   },
   "gpt-4-turbo": {
-    "wh_per_1k_input": 0.18,
-    "wh_per_1k_output": 0.55,
-    "tier": 3,
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 1.656, "wh_per_1k_output": 4.969 },
+      "medium": { "wh_per_1k_input": 1.690, "wh_per_1k_output": 5.069 },
+      "long":   { "wh_per_1k_input": 0.671, "wh_per_1k_output": 2.012 }
+    },
     "architecture": "moe",
     "total_params_b": 1800,
     "active_params_b": 220,
     "quantization": "bf16",
-    "basis": "Estimated ~25% efficiency gain over GPT-4 base, MoE active params."
+    "basis": "Jegham et al. (2025) measured via API observation. Short/medium cost nearly equal — GPT-4 Turbo lacks efficiency gains of newer architectures. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
   },
   "gpt-4o": {
     "tier": 1,
     "prompt_length": {
-      "short": {
-        "wh_per_1k_input": 0.421,
-        "wh_per_1k_output": 1.263
-      },
-      "medium": {
-        "wh_per_1k_input": 0.304,
-        "wh_per_1k_output": 0.911
-      },
-      "long": {
-        "wh_per_1k_input": 0.123,
-        "wh_per_1k_output": 0.370
-      }
+      "short":  { "wh_per_1k_input": 0.421, "wh_per_1k_output": 1.263 },
+      "medium": { "wh_per_1k_input": 0.304, "wh_per_1k_output": 0.911 },
+      "long":   { "wh_per_1k_input": 0.123, "wh_per_1k_output": 0.370 }
     },
     "architecture": "moe",
     "total_params_b": 200,
     "active_params_b": 50,
     "quantization": "bf16",
-    "basis": "Jegham et al. (2025) 'How Hungry is AI?' - Hardware measurements in commercial datacenters. Non-linear model: short (<1k tokens), medium (1k-5k), long (>5k). Source: arXiv:2505.09598"
+    "basis": "Jegham et al. (2025) 'How Hungry is AI?' - Hardware measurements in commercial datacenters. Non-linear model: short (<1k tokens), medium (1k-5k), long (>5k). IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "gpt-4.1": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.918, "wh_per_1k_output": 2.753 },
+      "medium": { "wh_per_1k_input": 0.628, "wh_per_1k_output": 1.885 },
+      "long":   { "wh_per_1k_input": 0.292, "wh_per_1k_output": 0.875 }
+    },
+    "architecture": "moe",
+    "total_params_b": 200,
+    "active_params_b": 50,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "gpt-4.1-mini": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.421, "wh_per_1k_output": 1.263 },
+      "medium": { "wh_per_1k_input": 0.212, "wh_per_1k_output": 0.636 },
+      "long":   { "wh_per_1k_input": 0.110, "wh_per_1k_output": 0.330 }
+    },
+    "architecture": "moe",
+    "total_params_b": 100,
+    "active_params_b": 25,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). Medium: 0.847 Wh for 1k in + 1k out. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "gpt-4.1-nano": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.103, "wh_per_1k_output": 0.309 },
+      "medium": { "wh_per_1k_input": 0.068, "wh_per_1k_output": 0.203 },
+      "long":   { "wh_per_1k_input": 0.031, "wh_per_1k_output": 0.094 }
+    },
+    "architecture": "moe",
+    "total_params_b": 50,
+    "active_params_b": 12,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). Medium: 0.271 Wh for 1k in + 1k out. Most energy-efficient model in benchmark. Medium values match previous flat entry. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "gpt-4.5": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 6.723, "wh_per_1k_output": 20.169 },
+      "medium": { "wh_per_1k_input": 5.125, "wh_per_1k_output": 15.375 },
+      "long":   { "wh_per_1k_input": 2.103, "wh_per_1k_output": 6.310 }
+    },
+    "architecture": "moe",
+    "total_params_b": 200,
+    "active_params_b": 50,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). Very high — comparable to o3. Not a typo. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "gpt-4o-mini": {
+    "wh_per_1k_input": 0.10,
+    "wh_per_1k_output": 0.30,
+    "tier": 3,
+    "architecture": "moe",
+    "total_params_b": 20,
+    "active_params_b": 8,
+    "quantization": "bf16",
+    "basis": "Estimated. Was incorrectly aliased to gpt-4o in prior versions. Smaller MoE, similar scale to gpt-4.1-mini. No Jegham measurement. Tier 3 ±1000% until direct benchmark available."
   },
   "gpt-3.5-turbo": {
     "wh_per_1k_input": 0.046,
@@ -50,6 +106,71 @@
     "active_params_b": 20,
     "quantization": "bf16",
     "basis": "Dense architecture (~20B), optimized batching. Active = total for dense models."
+  },
+  "o1": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 4.446, "wh_per_1k_output": 13.339 },
+      "medium": { "wh_per_1k_input": 3.025, "wh_per_1k_output":  9.075 },
+      "long":   { "wh_per_1k_input": 1.206, "wh_per_1k_output":  3.618 }
+    },
+    "architecture": "reasoning",
+    "total_params_b": 200,
+    "active_params_b": 50,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). Medium: 12.1 Wh for 1k in + 1k out. Reasoning model with extended chain-of-thought. Medium values match previous flat entry. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "o1-mini": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.631, "wh_per_1k_output": 1.892 },
+      "medium": { "wh_per_1k_input": 0.400, "wh_per_1k_output": 1.199 },
+      "long":   { "wh_per_1k_input": 0.249, "wh_per_1k_output": 0.746 }
+    },
+    "architecture": "reasoning",
+    "total_params_b": 100,
+    "active_params_b": 25,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). Lightweight reasoning model. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "o3": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input":  7.026, "wh_per_1k_output": 21.079 },
+      "medium": { "wh_per_1k_input":  5.354, "wh_per_1k_output": 16.061 },
+      "long":   { "wh_per_1k_input":  2.705, "wh_per_1k_output":  8.115 }
+    },
+    "architecture": "reasoning",
+    "total_params_b": 200,
+    "active_params_b": 50,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). Medium: 21.414 Wh for 1k in + 1k out. Advanced reasoning model. 79x more energy than GPT-4.1 nano. Medium values match previous flat entry. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "o3-mini": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.850, "wh_per_1k_output": 2.549 },
+      "medium": { "wh_per_1k_input": 0.612, "wh_per_1k_output": 1.836 },
+      "long":   { "wh_per_1k_input": 0.201, "wh_per_1k_output": 0.604 }
+    },
+    "architecture": "reasoning",
+    "total_params_b": 100,
+    "active_params_b": 25,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "o4-mini": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.974, "wh_per_1k_output": 2.921 },
+      "medium": { "wh_per_1k_input": 0.420, "wh_per_1k_output": 1.259 },
+      "long":   { "wh_per_1k_input": 0.130, "wh_per_1k_output": 0.391 }
+    },
+    "architecture": "reasoning",
+    "total_params_b": 100,
+    "active_params_b": 25,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025) medium reasoning effort (API default). High-effort figures are ~3x higher. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
   },
   "claude-3-opus": {
     "wh_per_1k_input": 0.32,
@@ -89,7 +210,43 @@
     "total_params_b": 70,
     "active_params_b": 70,
     "quantization": "bf16",
-    "basis": "Dense ~70B, improved efficiency over Claude 3 Sonnet."
+    "basis": "Dense ~70B, improved efficiency over Claude 3 Sonnet. No Jegham measurement. Most widely deployed Anthropic model; flagged as priority for Tier upgrade in v0.2.5."
+  },
+  "claude-3.5-haiku": {
+    "wh_per_1k_input": 0.035,
+    "wh_per_1k_output": 0.105,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 20,
+    "active_params_b": 20,
+    "quantization": "bf16",
+    "basis": "Estimated. Claude 3.5 Haiku is faster/smaller than 3.5 Sonnet (~20B). Jegham et al. (2025) listed in infrastructure table but did not publish energy figures. Tier 3 ±1000%."
+  },
+  "claude-3.7-sonnet": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.836, "wh_per_1k_output": 2.508 },
+      "medium": { "wh_per_1k_input": 0.695, "wh_per_1k_output": 2.086 },
+      "long":   { "wh_per_1k_input": 0.381, "wh_per_1k_output": 1.142 }
+    },
+    "architecture": "dense",
+    "total_params_b": 70,
+    "active_params_b": 70,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). Medium: 2.781 Wh for 1k in + 1k out. Ranked highest in eco-efficiency among large models. Medium values match previous flat entry. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "claude-3.7-sonnet-thinking": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 3.490, "wh_per_1k_output": 10.469 },
+      "medium": { "wh_per_1k_input": 1.421, "wh_per_1k_output":  4.263 },
+      "long":   { "wh_per_1k_input": 1.175, "wh_per_1k_output":  3.524 }
+    },
+    "architecture": "dense",
+    "total_params_b": 70,
+    "active_params_b": 70,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025) Extended Thinking variant. Auto-detected in v0.2.4 via thinking={type:enabled} kwarg. ~2x more energy than standard claude-3.7-sonnet. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
   },
   "gemini-1.5-pro": {
     "wh_per_1k_input": 0.21,
@@ -114,24 +271,35 @@
   "gemini-2.0-flash": {
     "tier": 1,
     "prompt_length": {
-      "short": {
-        "wh_per_1k_input": 0.068,
-        "wh_per_1k_output": 0.205
-      },
-      "medium": {
-        "wh_per_1k_input": 0.068,
-        "wh_per_1k_output": 0.205
-      },
-      "long": {
-        "wh_per_1k_input": 0.095,
-        "wh_per_1k_output": 0.287
-      }
+      "short":  { "wh_per_1k_input": 0.068, "wh_per_1k_output": 0.205 },
+      "medium": { "wh_per_1k_input": 0.068, "wh_per_1k_output": 0.205 },
+      "long":   { "wh_per_1k_input": 0.095, "wh_per_1k_output": 0.287 }
     },
     "architecture": "moe",
     "total_params_b": 100,
     "active_params_b": 25,
     "quantization": "bf16",
     "basis": "Tier 1 - Google Environmental Report (Aug 2025): 0.24 Wh per median Gemini Apps prompt. Reverse-engineered assuming 1600 token median (800 in, 800 out), PUE 1.10, 3:1 output/input ratio. CRITICAL ASSUMPTION: If median prompt is actually shorter (e.g., 400 tokens), these values could be 4x higher. Cloud-optimized (hyperscale batching). Long context (>128k): +40% due to KV-cache memory pressure. See GEMINI_CALIBRATION.md. Source: https://cloud.google.com/blog/products/infrastructure/measuring-the-environmental-impact-of-ai-inference/"
+  },
+  "gemini-2.5-flash": {
+    "wh_per_1k_input": 0.068,
+    "wh_per_1k_output": 0.205,
+    "tier": 3,
+    "architecture": "moe",
+    "total_params_b": 100,
+    "active_params_b": 25,
+    "quantization": "bf16",
+    "basis": "Estimated. No published energy figures or Jegham measurement for Gemini 2.5 Flash. Value proxied from Gemini 2.0 Flash (same order of magnitude). Efficiency direction vs 2.0 Flash is uncertain — increased capability may offset architectural gains. Use VETCH_REGION + live grid data for any carbon commitments. Tier 3 ±1000%."
+  },
+  "gemini-2.5-pro": {
+    "wh_per_1k_input": 0.21,
+    "wh_per_1k_output": 0.63,
+    "tier": 3,
+    "architecture": "moe",
+    "total_params_b": 500,
+    "active_params_b": 100,
+    "quantization": "bf16",
+    "basis": "Estimated. No published energy figures or Jegham measurement for Gemini 2.5 Pro. Value proxied from Gemini 1.5 Pro (same frontier MoE tier). Efficiency direction vs 1.5 Pro is uncertain. Tier 3 ±1000%."
   },
   "llama-3-70b": {
     "wh_per_1k_input": 0.12,
@@ -143,15 +311,57 @@
     "quantization": "bf16",
     "basis": "Dense 70B. Meta published training energy reverse-scaled for inference."
   },
+  "llama-3.1-8b": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.103, "wh_per_1k_output": 0.309 },
+      "medium": { "wh_per_1k_input": 0.082, "wh_per_1k_output": 0.247 },
+      "long":   { "wh_per_1k_input": 0.042, "wh_per_1k_output": 0.125 }
+    },
+    "architecture": "dense",
+    "total_params_b": 8,
+    "active_params_b": 8,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "llama-3.1-70b": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 1.101, "wh_per_1k_output": 3.303 },
+      "medium": { "wh_per_1k_input": 0.890, "wh_per_1k_output": 2.669 },
+      "long":   { "wh_per_1k_input": 0.802, "wh_per_1k_output": 2.405 }
+    },
+    "architecture": "dense",
+    "total_params_b": 70,
+    "active_params_b": 70,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). Separate from legacy llama-3-70b entry. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
   "llama-3.1-405b": {
-    "wh_per_1k_input": 0.65,
-    "wh_per_1k_output": 1.94,
-    "tier": 3,
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 1.991, "wh_per_1k_output": 5.974 },
+      "medium": { "wh_per_1k_input": 1.728, "wh_per_1k_output": 5.183 },
+      "long":   { "wh_per_1k_input": 1.431, "wh_per_1k_output": 4.294 }
+    },
     "architecture": "dense",
     "total_params_b": 405,
     "active_params_b": 405,
     "quantization": "bf16",
-    "basis": "Dense 405B. Largest open-weight dense model."
+    "basis": "Jegham et al. (2025). Largest open-weight dense model. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "llama-3.3-70b": {
+    "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 0.247, "wh_per_1k_output": 0.741 },
+      "medium": { "wh_per_1k_input": 0.214, "wh_per_1k_output": 0.643 },
+      "long":   { "wh_per_1k_input": 0.114, "wh_per_1k_output": 0.341 }
+    },
+    "architecture": "dense",
+    "total_params_b": 70,
+    "active_params_b": 70,
+    "quantization": "bf16",
+    "basis": "Jegham et al. (2025). ~4x more efficient than llama-3.1-70b. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
   },
   "mixtral-8x7b": {
     "wh_per_1k_input": 0.037,
@@ -173,64 +383,30 @@
     "quantization": "bf16",
     "basis": "MoE with 8 experts, 2 active. 141B total, ~39B active per token."
   },
-  "gpt-4.1-nano": {
-    "wh_per_1k_input": 0.068,
-    "wh_per_1k_output": 0.203,
-    "tier": 1,
-    "architecture": "moe",
-    "total_params_b": 50,
-    "active_params_b": 12,
-    "quantization": "bf16",
-    "basis": "Jegham et al. (2025) measured: 0.271 Wh for medium prompt (1k in, 1k out). Most energy-efficient model in benchmark. Source: arXiv:2505.09598"
-  },
-  "gpt-4.1-mini": {
-    "wh_per_1k_input": 0.212,
-    "wh_per_1k_output": 0.635,
-    "tier": 1,
-    "architecture": "moe",
-    "total_params_b": 100,
-    "active_params_b": 25,
-    "quantization": "bf16",
-    "basis": "Jegham et al. (2025) measured: 0.847 Wh for medium prompt (1k in, 1k out). Source: arXiv:2505.09598"
-  },
-  "o1": {
-    "wh_per_1k_input": 3.025,
-    "wh_per_1k_output": 9.075,
-    "tier": 1,
-    "architecture": "reasoning",
-    "total_params_b": 200,
-    "active_params_b": 50,
-    "quantization": "bf16",
-    "basis": "Jegham et al. (2025) measured: 12.1 Wh for medium prompt (1k in, 1k out). Reasoning model with extended chain-of-thought. 40x more energy than GPT-4.1 nano. Source: arXiv:2505.09598"
-  },
-  "o3": {
-    "wh_per_1k_input": 5.354,
-    "wh_per_1k_output": 16.061,
-    "tier": 1,
-    "architecture": "reasoning",
-    "total_params_b": 200,
-    "active_params_b": 50,
-    "quantization": "bf16",
-    "basis": "Jegham et al. (2025) measured: 21.414 Wh for medium prompt (1k in, 1k out). Advanced reasoning model. 79x more energy than GPT-4.1 nano. Source: arXiv:2505.09598"
-  },
   "deepseek-r1": {
-    "wh_per_1k_input": 7.25,
-    "wh_per_1k_output": 21.75,
     "tier": 1,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 23.815, "wh_per_1k_output": 71.445 },
+      "medium": { "wh_per_1k_input":  7.250, "wh_per_1k_output": 21.750 },
+      "long":   { "wh_per_1k_input":  2.320, "wh_per_1k_output":  6.959 }
+    },
     "architecture": "reasoning",
     "total_params_b": 671,
     "active_params_b": 37,
     "quantization": "bf16",
-    "basis": "Jegham et al. (2025) measured: 29.0 Wh for medium prompt (1k in, 1k out). Most energy-intensive model in benchmark. 107x more energy than GPT-4.1 nano. Source: arXiv:2505.09598"
+    "basis": "Jegham et al. (2025). Medium: 29.0 Wh for 1k in + 1k out. Most energy-intensive in benchmark. Short is very high — short prompts trigger maximal thinking overhead. Medium values match previous flat entry. IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
   },
-  "claude-3.7-sonnet": {
-    "wh_per_1k_input": 0.695,
-    "wh_per_1k_output": 2.086,
+  "deepseek-v3": {
     "tier": 1,
-    "architecture": "dense",
-    "total_params_b": 70,
-    "active_params_b": 70,
+    "prompt_length": {
+      "short":  { "wh_per_1k_input": 3.514, "wh_per_1k_output": 10.541 },
+      "medium": { "wh_per_1k_input": 2.282, "wh_per_1k_output":  6.847 },
+      "long":   { "wh_per_1k_input": 0.954, "wh_per_1k_output":  2.863 }
+    },
+    "architecture": "moe",
+    "total_params_b": 671,
+    "active_params_b": 37,
     "quantization": "bf16",
-    "basis": "Jegham et al. (2025) measured: 2.781 Wh for medium prompt (1k in, 1k out). Ranked highest in eco-efficiency among large models. Source: arXiv:2505.09598"
+    "basis": "Jegham et al. (2025). IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
   }
 }

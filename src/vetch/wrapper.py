@@ -574,6 +574,8 @@ class VetchContext:
         usage = None
         is_stream = False
         accumulated_chars = 0
+        accumulated_tik_tokens = 0
+        content_type_hint = "en"
 
         # Cache tokens
         cache_read_tokens: int | None = None
@@ -586,6 +588,8 @@ class VetchContext:
             is_stream = captured.is_stream
             is_embedding = captured.is_embedding
             accumulated_chars = captured.accumulated_chars
+            accumulated_tik_tokens = captured.accumulated_tik_tokens
+            content_type_hint = captured.content_type_hint
             raw_crt = captured.cache_read_tokens
             cache_read_tokens = raw_crt if isinstance(raw_crt, int) else None
             raw_cct = captured.cache_creation_tokens
@@ -608,6 +612,8 @@ class VetchContext:
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
             existing_warnings=self._warnings,
+            accumulated_tik_tokens=accumulated_tik_tokens,
+            content_type_hint=content_type_hint,
         )
 
         # Propagate usage_estimated counter for monitoring dashboards
@@ -641,6 +647,7 @@ class VetchContext:
         usage = metrics.usage
         usage_estimated = metrics.usage_estimated
         usage_estimation_method = metrics.usage_estimation_method
+        cache_energy_saving_wh = metrics.cache_energy_saving_wh
         tracking_degraded = metrics.tracking_degraded
         request_fingerprint = metrics.request_fingerprint
 
@@ -732,6 +739,7 @@ class VetchContext:
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
             cache_hit=bool(isinstance(cache_read_tokens, int) and cache_read_tokens > 0),
+            cache_energy_saving_wh=cache_energy_saving_wh,
             session_id=active_session.session_id if active_session else None,
             trace_id=None,  # TODO: Extract from OpenTelemetry context
             span_id=None,  # TODO: Extract from OpenTelemetry context

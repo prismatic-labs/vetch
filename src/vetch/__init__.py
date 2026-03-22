@@ -312,6 +312,22 @@ def instrument(
 
             logging.getLogger("vetch").debug(f"Failed to instrument Google GenAI: {e}")
 
+        # Warn if any installed SDKs are outside tested version ranges
+        try:
+            import logging as _logging
+
+            from vetch.compat import get_all_sdk_versions
+
+            _vetch_log = _logging.getLogger("vetch")
+            for _sdk_name, _sdk_info in get_all_sdk_versions().items():
+                if _sdk_info.installed and not _sdk_info.tested:
+                    _vetch_log.warning(
+                        f"vetch: {_sdk_name} {_sdk_info.version} is outside the tested "
+                        f"version range. Instrumentation may behave unexpectedly."
+                    )
+        except Exception:
+            pass
+
         _instrumented = instrumented_any
         return instrumented_any
 

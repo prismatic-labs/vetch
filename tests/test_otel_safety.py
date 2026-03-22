@@ -541,3 +541,82 @@ class TestAutoConfiguration:
         otel._auto_configure()
 
         mock_configure.assert_not_called()
+
+
+class TestV024OtelSpanAttributes:
+    """Tests for v0.2.4 OTel span attribute additions."""
+
+    def setup_method(self):
+        """Configure a fake tracer for testing."""
+        from unittest.mock import MagicMock
+        otel._otlp_configured = True
+        self._mock_span = MagicMock()
+        self._mock_tracer = MagicMock()
+        self._mock_cm = MagicMock()
+        self._mock_cm.__enter__ = MagicMock(return_value=self._mock_span)
+        self._mock_cm.__exit__ = MagicMock(return_value=False)
+        self._mock_tracer.start_as_current_span.return_value = self._mock_cm
+        otel._tracer = self._mock_tracer
+
+    def teardown_method(self):
+        otel._otlp_configured = False
+        otel._tracer = None
+
+    def _get_set_attrs(self):
+        """Return dict of all set_attribute calls."""
+        return {
+            call.args[0]: call.args[1]
+            for call in self._mock_span.set_attribute.call_args_list
+        }
+
+    def test_thinking_mode_attribute_set_for_thinking_model(self):
+        """vetch.thinking_mode=True when model ends with -thinking."""
+        event = {
+            "model": "claude-3.7-sonnet-thinking",
+            "provider": "anthropic",
+            "estimated_energy_wh": 0.001,
+            "estimated_carbon_g": 0.0005,
+            "estimated_cost_usd": 0.01,
+        }
+        otel._export_event_sync(event)
+        attrs = self._get_set_attrs()
+        assert attrs.get("vetch.thinking_mode") is True
+
+    def test_thinking_mode_not_set_for_normal_model(self):
+        """vetch.thinking_mode should NOT be set for non-thinking models."""
+        event = {
+            "model": "claude-3.7-sonnet",
+            "provider": "anthropic",
+            "estimated_energy_wh": 0.001,
+            "estimated_carbon_g": 0.0005,
+            "estimated_cost_usd": 0.01,
+        }
+        otel._export_event_sync(event)
+        attrs = self._get_set_attrs()
+        assert "vetch.thinking_mode" not in attrs
+
+    def test_cache_energy_saving_attribute_set_when_present(self):
+        """vetch.cache_energy_saving_wh attribute set when event has value."""
+        event = {
+            "model": "gpt-4o",
+            "provider": "openai",
+            "estimated_energy_wh": 0.001,
+            "estimated_carbon_g": 0.0005,
+            "estimated_cost_usd": 0.01,
+            "cache_energy_saving_wh": 0.0005,
+        }
+        otel._export_event_sync(event)
+        attrs = self._get_set_attrs()
+        assert "vetch.cache_energy_saving_wh" in attrs
+        assert abs(attrs["vetch.cache_energy_saving_wh"] - 0.0005) < 1e-9
+
+    def test_cache_energy_saving_not_set_when_absent(self):
+        """vetch.cache_energy_saving_wh not set when event has no saving."""
+        event = {
+            "model": "gpt-4o",
+            "provider": "openai",
+            "estimated_energy_wh": 0.001,
+        }
+        otel._export_event_sync(event)
+        attrs = self._get_set_attrs()
+        assert "vetch.cache_energy_saving_wh" not in attrs

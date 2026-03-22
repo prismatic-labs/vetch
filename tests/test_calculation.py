@@ -409,3 +409,267 @@ class TestTieredPricing:
             tokens=100000, base_rate_per_1k=0.00125, tier_threshold=None, tier_multiplier=2.0
         )
         assert abs(cost - 0.125) < 0.0001
+
+
+class TestV024RegistryUpdates:
+    """Tests for v0.2.4 energy registry upgrades and new entries."""
+
+    def test_claude_37_sonnet_prompt_length_aware(self) -> None:
+        """claude-3.7-sonnet should have different energy per token at short vs long prompts."""
+        short_e, _, _, _, _, _ = calculate_energy(100, 300, "claude-3.7-sonnet")
+        long_e, _, _, _, _, _ = calculate_energy(10000, 1500, "claude-3.7-sonnet")
+        assert short_e is not None and long_e is not None
+        # short per-token cost should be higher than long per-token cost
+        short_per_token = short_e / (100 + 300)
+        long_per_token = long_e / (10000 + 1500)
+        assert short_per_token > long_per_token
+
+    def test_claude_37_sonnet_thinking_higher_energy(self) -> None:
+        """Extended Thinking variant should consume more energy than standard."""
+        standard_e, _, _, _, _, known_s = calculate_energy(1000, 1000, "claude-3.7-sonnet")
+        thinking_e, _, _, _, _, known_t = calculate_energy(
+            1000, 1000, "claude-3.7-sonnet-thinking"
+        )
+        assert known_s is True
+        assert known_t is True
+        assert standard_e is not None and thinking_e is not None
+        assert thinking_e > standard_e
+
+    def test_o3_mini_tier1(self) -> None:
+        """o3-mini should be a Tier 1 entry with reasonable energy."""
+        energy, tier, _, _, _, known = calculate_energy(1000, 1000, "o3-mini")
+        assert known is True
+        assert tier == 1
+        assert energy is not None and energy > 0
+
+    def test_gpt41_prompt_length_aware(self) -> None:
+        """gpt-4.1 should be prompt-length-aware (short != long)."""
+        short_e, _, _, _, _, _ = calculate_energy(100, 300, "gpt-4.1")
+        long_e, _, _, _, _, _ = calculate_energy(10000, 1500, "gpt-4.1")
+        assert short_e is not None and long_e is not None
+        assert short_e != long_e
+
+    def test_deepseek_v3_tier1(self) -> None:
+        """deepseek-v3 should be a Tier 1 entry."""
+        energy, tier, _, _, _, known = calculate_energy(1000, 1000, "deepseek-v3")
+        assert known is True
+        assert tier == 1
+        assert energy is not None and energy > 0
+
+    def test_llama_33_more_efficient_than_31(self) -> None:
+        """llama-3.3-70b should be significantly more efficient than llama-3.1-70b."""
+        e31, _, _, _, _, _ = calculate_energy(1000, 1000, "llama-3.1-70b")
+        e33, _, _, _, _, _ = calculate_energy(1000, 1000, "llama-3.3-70b")
+        assert e31 is not None and e33 is not None
+        # Jegham: 3.3 is ~4x more efficient
+        assert e33 < e31 * 0.5
+
+    def test_claude_35_haiku_separate_from_claude_3_haiku(self) -> None:
+        """claude-3-5-haiku alias should resolve to claude-3.5-haiku, not claude-3-haiku."""
+        model_35, _ = resolve_model("claude-3-5-haiku")
+        model_3, _ = resolve_model("claude-3-haiku")
+        assert model_35 != model_3
+        assert model_35 == "claude-3.5-haiku"
+
+    def test_gpt4_turbo_upgraded_to_tier1(self) -> None:
+        """gpt-4-turbo should now be Tier 1 (upgraded from Tier 3)."""
+        _, tier, _, _, _, known = calculate_energy(1000, 1000, "gpt-4-turbo")
+        assert known is True
+        assert tier == 1
+
+    def test_gpt4o_mini_alias_corrected(self) -> None:
+        """gpt-4o-mini energy should be much lower than gpt-4o (alias fix)."""
+        mini_e, _, _, _, _, _ = calculate_energy(1000, 1000, "gpt-4o-mini")
+        full_e, _, _, _, _, _ = calculate_energy(1000, 1000, "gpt-4o")
+        assert mini_e is not None and full_e is not None
+        # gpt-4o-mini is Tier 3 (~0.10+0.30 per-1k), gpt-4o is Tier 1 (~0.304+0.911 per-1k)
+        assert mini_e < full_e
+
+    def test_pricing_backfill_o1(self) -> None:
+        """o1 should now have non-null cost estimate."""
+        cost, *_ = calculate_cost(1000, 1000, "o1")
+        assert cost is not None and cost > 0
+
+    def test_pricing_backfill_o3(self) -> None:
+        """o3 should now have non-null cost estimate."""
+        cost, *_ = calculate_cost(1000, 1000, "o3")
+        assert cost is not None and cost > 0
+
+    def test_pricing_backfill_claude_37_sonnet(self) -> None:
+        """claude-3.7-sonnet should now have non-null cost estimate."""
+        cost, *_ = calculate_cost(1000, 1000, "claude-3.7-sonnet")
+        assert cost is not None and cost > 0
+
+    def test_pricing_backfill_gpt41(self) -> None:
+        """gpt-4.1 should have non-null cost estimate."""
+        cost, *_ = calculate_cost(1000, 1000, "gpt-4.1")
+        assert cost is not None and cost > 0
+
+
+class TestV024TokenizationFallback:
+    """Tests for v0.2.4 script-aware token estimation improvements."""
+
+    def test_prepare_metrics_tiktoken_fallback(self) -> None:
+        """When accumulated_tik_tokens > 0 and no usage, use tiktoken count."""
+        from vetch.calculation import prepare_inference_metrics
+
+        metrics = prepare_inference_metrics(
+            model="gpt-4o",
+            provider="openai",
+            usage=None,
+            accumulated_chars=400,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+            accumulated_tik_tokens=100,
+            content_type_hint="en",
+        )
+        assert metrics.usage_estimated is True
+        assert metrics.usage_estimation_method == "tiktoken"
+        assert metrics.usage is not None
+        assert metrics.usage["text"]["output_tokens"] == 100  # type: ignore[index]
+
+    def test_prepare_metrics_cjk_ratio(self) -> None:
+        """CJK content_type_hint should use 1.5 chars/token ratio."""
+        from vetch.calculation import prepare_inference_metrics
+
+        metrics = prepare_inference_metrics(
+            model="gpt-4o",
+            provider="openai",
+            usage=None,
+            accumulated_chars=300,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+            accumulated_tik_tokens=0,
+            content_type_hint="cjk",
+        )
+        assert metrics.usage_estimated is True
+        assert metrics.usage is not None
+        # 300 chars / 1.5 = 200 output tokens
+        assert metrics.usage["text"]["output_tokens"] == 200  # type: ignore[index]
+
+    def test_prepare_metrics_japanese_ratio(self) -> None:
+        """Japanese content_type_hint should use 1.7 chars/token ratio."""
+        from vetch.calculation import prepare_inference_metrics
+
+        metrics = prepare_inference_metrics(
+            model="gpt-4o",
+            provider="openai",
+            usage=None,
+            accumulated_chars=170,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+            accumulated_tik_tokens=0,
+            content_type_hint="ja",
+        )
+        assert metrics.usage_estimated is True
+        assert metrics.usage is not None
+        # 170 chars / 1.7 = 100 output tokens
+        assert metrics.usage["text"]["output_tokens"] == 100  # type: ignore[index]
+
+    def test_uncertainty_floor_when_usage_estimated(self) -> None:
+        """When token counts are estimated, uncertainty should be floored at 50%."""
+        from vetch.calculation import prepare_inference_metrics
+
+        metrics = prepare_inference_metrics(
+            model="gpt-4o",  # Tier 1 = 50% normally
+            provider="openai",
+            usage=None,
+            accumulated_chars=400,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+            accumulated_tik_tokens=0,
+            content_type_hint="en",
+        )
+        assert metrics.usage_estimated is True
+        assert metrics.energy_uncertainty_pct is not None
+        assert metrics.energy_uncertainty_pct >= 50
+
+
+class TestV024CacheEnergyDiscount:
+    """Tests for v0.2.4 cache-hit energy discounting."""
+
+    def test_cache_read_tokens_reduce_energy(self) -> None:
+        """cache_read_tokens should reduce energy vs. uncached baseline."""
+        full_energy, *_ = calculate_energy(1000, 500, "gpt-4o")
+        cached_energy, *_ = calculate_energy(1000, 500, "gpt-4o", cache_read_tokens=800)
+        assert full_energy is not None
+        assert cached_energy is not None
+        assert cached_energy < full_energy
+
+    def test_cache_discount_factor_approx_15pct(self) -> None:
+        """Cache reads should cost ~15% of normal prefill energy."""
+        # 1000 input tokens, all from cache, no output
+        full_energy, *_ = calculate_energy(1000, 0, "gpt-4o")
+        cached_energy, *_ = calculate_energy(1000, 0, "gpt-4o", cache_read_tokens=1000)
+        assert full_energy is not None and full_energy > 0
+        assert cached_energy is not None and cached_energy > 0
+        # Cached should be ~15% of full prefill
+        ratio = cached_energy / full_energy
+        assert 0.10 <= ratio <= 0.25, f"Expected ~0.15, got {ratio:.3f}"
+
+    def test_zero_cache_tokens_no_discount(self) -> None:
+        """cache_read_tokens=0 should give same result as no cache arg."""
+        energy_no_arg, *_ = calculate_energy(1000, 500, "gpt-4o")
+        energy_zero, *_ = calculate_energy(1000, 500, "gpt-4o", cache_read_tokens=0)
+        assert energy_no_arg == energy_zero
+
+    def test_cache_tokens_capped_at_input_tokens(self) -> None:
+        """cache_read_tokens exceeding in_tokens should be clamped."""
+        normal, *_ = calculate_energy(500, 200, "gpt-4o", cache_read_tokens=500)
+        excess, *_ = calculate_energy(500, 200, "gpt-4o", cache_read_tokens=9999)
+        assert normal == excess
+
+    def test_prepare_metrics_cache_saving_populated(self) -> None:
+        """prepare_inference_metrics should populate cache_energy_saving_wh."""
+        from vetch.calculation import prepare_inference_metrics
+
+        usage = {"text": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}}
+        metrics = prepare_inference_metrics(
+            model="gpt-4o",
+            provider="openai",
+            usage=usage,
+            accumulated_chars=0,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=800,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+        )
+        assert metrics.cache_energy_saving_wh is not None
+        assert metrics.cache_energy_saving_wh > 0
+
+    def test_prepare_metrics_no_cache_saving_when_no_cache(self) -> None:
+        """With no cache_read_tokens, cache_energy_saving_wh should be None."""
+        from vetch.calculation import prepare_inference_metrics
+
+        usage = {"text": {"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500}}
+        metrics = prepare_inference_metrics(
+            model="gpt-4o",
+            provider="openai",
+            usage=usage,
+            accumulated_chars=0,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+        )
+        assert metrics.cache_energy_saving_wh is None

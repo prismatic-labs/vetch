@@ -44,6 +44,9 @@ class CapturedCall:
     # Prompt caching metadata
     cache_read_tokens: int | None = None
     cache_creation_tokens: int | None = None
+    # Streaming token estimation (tiktoken or script-aware char ratio)
+    accumulated_tik_tokens: int = 0
+    content_type_hint: str = "en"
 
 
 @dataclass
@@ -111,6 +114,8 @@ class TrackingContext:
         warnings: list[str] | None = None,
         cache_read_tokens: int | None = None,
         cache_creation_tokens: int | None = None,
+        accumulated_tik_tokens: int = 0,
+        content_type_hint: str = "en",
     ) -> None:
         """Capture metadata from an LLM call.
 
@@ -141,6 +146,8 @@ class TrackingContext:
             warnings=warnings or [],
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
+            accumulated_tik_tokens=accumulated_tik_tokens,
+            content_type_hint=content_type_hint,
         )
 
 

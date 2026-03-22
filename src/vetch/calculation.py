@@ -240,9 +240,46 @@ def get_uncertainty_pct(tier: int) -> int:
     return TIER_UNCERTAINTY_PCT.get(tier, 1000)
 
 
+# Prompt-length bucket thresholds (input tokens).
+# Derived from Jegham et al. (2025) experimental design: short=100, medium=1000, long=10000.
+# The boundaries sit midway between each scenario's input size.
+PROMPT_LENGTH_SHORT_THRESHOLD = 1000   # < 1000 tokens → "short" bucket
+PROMPT_LENGTH_MEDIUM_THRESHOLD = 5000  # 1000–4999 tokens → "medium" bucket
+                                       # ≥ 5000 tokens → "long" bucket
+
 # Tiktoken availability flag (lazy-loaded)
 _TIKTOKEN_AVAILABLE: bool | None = None
 _TIKTOKEN_WARNING_ISSUED = False
+
+# Number of accumulated chars after which script-detection sampling stops.
+# Language doesn't change mid-response; sampling the first 500 chars is sufficient.
+_SCRIPT_SAMPLE_LIMIT = 500
+
+
+def _detect_content_type_hint(
+    hiragana_katakana_chars: int,
+    cjk_ideograph_chars: int,
+    hangul_chars: int,
+    total_chars: int,
+) -> str:
+    """Determine content type hint from script character counts.
+
+    Used by all streaming providers (Tier 2 fallback when tiktoken is unavailable).
+    Only the first ``_SCRIPT_SAMPLE_LIMIT`` characters of a stream are sampled, so
+    ``total_chars`` passed here should be the sampled count, not the full stream length.
+
+    Returns:
+        ``"ja"`` (Japanese), ``"cjk"`` (Chinese/Korean), or ``"en"`` (all others).
+    """
+    if total_chars == 0:
+        return "en"
+    ja_ratio = hiragana_katakana_chars / total_chars
+    cjk_ratio = (cjk_ideograph_chars + hangul_chars) / total_chars
+    if ja_ratio > 0.10:
+        return "ja"
+    if cjk_ratio > 0.15:
+        return "cjk"
+    return "en"
 
 
 def _get_tiktoken_encoding(model: str | None) -> Any:
@@ -332,11 +369,25 @@ def estimate_tokens(text: str | None, model: str | None = None) -> int:
     return max(1, char_count // 4)
 
 
+CACHE_READ_ENERGY_FACTOR = 0.15
+"""Energy fraction for cached input tokens vs. fresh prefill.
+
+Cache reads skip the prefill (KV-cache population), which is the most
+compute-intensive part of inference. Only memory-bandwidth is needed to
+load the existing KV-cache entries.
+
+Estimated at 10–20% of standard prefill energy (midpoint: 15%).
+Source: architectural analysis — no direct empirical measurement available;
+treat as Tier 2 (±100%) estimate for the discount itself.
+"""
+
+
 def calculate_energy(
     input_tokens: int,
     output_tokens: int,
     model: str,
     energy_override: dict[str, Any] | None = None,
+    cache_read_tokens: int = 0,
 ) -> tuple[float, int, int, str, str, bool]:
     """Calculate energy consumption in Watt-hours.
 
@@ -356,6 +407,8 @@ def calculate_energy(
         output_tokens: Number of output tokens.
         model: Model identifier.
         energy_override: User-provided energy values.
+        cache_read_tokens: Tokens read from prompt cache. These skip prefill
+            computation and use only ~15% of standard input energy.
 
     Returns:
         Tuple of (energy_wh, tier, uncertainty_pct, source, basis, model_known).
@@ -390,9 +443,9 @@ def calculate_energy(
             # Rationale: Fixed-cost amortization happens during prefill (input).
             # Autoregressive generation (output) is memory-bandwidth bound and linear.
             # Using total_tokens incorrectly subsidizes "chatty" responses.
-            if input_tokens < 1000:
+            if input_tokens < PROMPT_LENGTH_SHORT_THRESHOLD:
                 category = "short"
-            elif input_tokens < 5000:
+            elif input_tokens < PROMPT_LENGTH_MEDIUM_THRESHOLD:
                 category = "medium"
             else:
                 category = "long"
@@ -418,7 +471,14 @@ def calculate_energy(
         basis = entry["basis"]
         source = "fallback"
 
-    energy_wh = (in_tokens * wh_in + out_tokens * wh_out) / 1000
+    # Apply cache read discount: cached tokens skip prefill, use ~15% of normal input energy
+    cache_tokens = min(max(0, cache_read_tokens), in_tokens)
+    fresh_tokens = in_tokens - cache_tokens
+    energy_wh = (
+        fresh_tokens * wh_in
+        + cache_tokens * wh_in * CACHE_READ_ENERGY_FACTOR
+        + out_tokens * wh_out
+    ) / 1000
     uncertainty_pct = get_uncertainty_pct(tier)
     return energy_wh, tier, uncertainty_pct, source, basis, known
 
@@ -987,6 +1047,7 @@ class InferenceMetrics:
         "tracking_degraded",
         "request_fingerprint",
         "warnings",
+        "cache_energy_saving_wh",
     )
 
     def __init__(self) -> None:
@@ -1017,6 +1078,7 @@ class InferenceMetrics:
         self.tracking_degraded: bool = False
         self.request_fingerprint: str | None = None
         self.warnings: list[str] = []
+        self.cache_energy_saving_wh: float | None = None
 
 
 def prepare_inference_metrics(
@@ -1030,6 +1092,8 @@ def prepare_inference_metrics(
     cache_read_tokens: int | None,
     cache_creation_tokens: int | None,
     existing_warnings: list[str],
+    accumulated_tik_tokens: int = 0,
+    content_type_hint: str = "en",
 ) -> InferenceMetrics:
     """Compute all energy/carbon/cost metrics for a single inference call.
 
@@ -1068,9 +1132,36 @@ def prepare_inference_metrics(
         metrics.grid_ts = ts.isoformat().replace("+00:00", "Z")
 
     # 2. Token estimation fallback for streams without usage data
-    if (not usage or not usage.get("text")) and accumulated_chars > 0:
-        estimated_output_tokens = max(1, accumulated_chars // 4)
-        estimated_input_tokens = estimated_output_tokens * 2
+    if (not usage or not usage.get("text")) and (
+        accumulated_tik_tokens > 0 or accumulated_chars > 0
+    ):
+        if accumulated_tik_tokens > 0:
+            # Tier 1: tiktoken per-chunk counts (~99% accurate, all scripts)
+            estimated_output_tokens = max(1, accumulated_tik_tokens)
+            estimated_input_tokens = estimated_output_tokens * 2
+            metrics.usage_estimated = True
+            metrics.usage_estimation_method = "tiktoken"
+            metrics.warnings.append(
+                f"Token usage estimated from tiktoken ({accumulated_tik_tokens} output tokens). "
+                f"Energy uncertainty floored at ±50%."
+            )
+        else:
+            # Tier 2: script-aware char ratio
+            if content_type_hint == "ja":
+                _ratio = 1.7
+            elif content_type_hint == "cjk":
+                _ratio = 1.5
+            else:
+                _ratio = 4.0
+            estimated_output_tokens = max(1, int(accumulated_chars / _ratio))
+            estimated_input_tokens = estimated_output_tokens * 2
+            metrics.usage_estimated = True
+            metrics.usage_estimation_method = "char_ratio"
+            metrics.warnings.append(
+                f"Token usage estimated from {accumulated_chars} chars "
+                f"(~{_ratio} chars/token, {content_type_hint} content). "
+                f"Energy uncertainty floored at ±50%."
+            )
         usage = {
             "text": {
                 "input_tokens": estimated_input_tokens,
@@ -1078,12 +1169,6 @@ def prepare_inference_metrics(
                 "total_tokens": estimated_input_tokens + estimated_output_tokens,
             }
         }
-        metrics.usage_estimated = True
-        metrics.usage_estimation_method = "char_ratio"
-        metrics.warnings.append(
-            f"Token usage estimated from {accumulated_chars} chars "
-            f"(~4 chars/token). Actual usage may differ by ±50%."
-        )
 
     metrics.usage = usage
 
@@ -1100,6 +1185,7 @@ def prepare_inference_metrics(
                 if reasoning:
                     in_tokens += reasoning.get("input_tokens", 0)
 
+            _cache_tokens = int(cache_read_tokens) if cache_read_tokens else 0
             (
                 metrics.energy_wh,
                 metrics.energy_tier,
@@ -1112,7 +1198,20 @@ def prepare_inference_metrics(
                 out_tokens,
                 model,
                 cast("dict[str, Any]", energy_override),
+                cache_read_tokens=_cache_tokens,
             )
+
+            # Compute cache energy saving vs. uncached baseline
+            if _cache_tokens > 0 and metrics.energy_wh is not None:
+                (baseline_energy_wh, *_) = calculate_energy(
+                    in_tokens,
+                    out_tokens,
+                    model,
+                    cast("dict[str, Any]", energy_override),
+                    cache_read_tokens=0,
+                )
+                if baseline_energy_wh is not None:
+                    metrics.cache_energy_saving_wh = baseline_energy_wh - metrics.energy_wh
 
             if not metrics.model_known and model != "unknown":
                 metrics.warnings.append(
@@ -1164,6 +1263,16 @@ def prepare_inference_metrics(
                 metrics.cost_cache_write_usd *= price_multiplier
                 metrics.cost_cache_read_usd *= price_multiplier
                 metrics.billing_tier = f"list×{price_multiplier}"
+
+    # 3b. Floor energy uncertainty when token counts are estimated.
+    # Only applied when energy_wh is non-zero — a zero-energy result has no meaningful
+    # uncertainty to floor (50% of 0 Wh = 0 Wh, but it pollutes dashboard filters).
+    if (
+        metrics.usage_estimated
+        and metrics.energy_uncertainty_pct is not None
+        and metrics.energy_wh
+    ):
+        metrics.energy_uncertainty_pct = max(metrics.energy_uncertainty_pct, 50)
 
     # 4. Tracking degradation score
     grid_quality_score = {"live": 0.0, "delayed": 1.0, "blind": 2.0, "unknown": 3.0}
