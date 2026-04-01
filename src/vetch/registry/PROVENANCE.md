@@ -59,7 +59,7 @@ These values are intended for **relative comparison** and **trend analysis**, no
 
 As of v0.2.4, most major commercial models are upgraded to **Tier 1** using empirical measurements from:
 
-> Jiang, S. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598
+> Jegham, N. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598
 
 ### Coverage (v0.2.4)
 
@@ -103,9 +103,22 @@ When `thinking={"type": "enabled"}` is passed to `anthropic.messages.create()`, 
 
 **Indic scripts** — Devanagari, Bengali, Tamil, and similar scripts tokenize poorly in all current models (3–8 Unicode code points per token). The char-count fallback will underestimate token counts for Indic text.
 
+## Research Context: Cost of Reasoning Strategies
+
+From Aglin et al. (2026), arXiv:2603.20224 — "Beyond Test-Time Compute Strategies: Advocating Energy-per-Token in LLM Inference":
+
+- **Chain-of-thought prompting on smaller models uses 120–150× more energy** than baseline inference for the same task, due to dramatically longer output sequences.
+- **Majority voting** adds 72–177% energy with minimal accuracy improvement.
+- The paper advocates intelligent query routing — selectively deploying reasoning techniques only where task complexity justifies the cost — rather than applying CoT or extended thinking universally.
+
+**Relationship to vetch's Extended Thinking tracking:** The 2–4× energy overhead vetch measures for `claude-3.7-sonnet-thinking` reflects API-level measurement at medium prompt length. The 120–150× figure is a task-level finding for CoT on small models (LLaMA 1B/8B on MMLU), where reasoning overhead dominates. Both are valid in their context — the Aglin figure illustrates the extreme end of the reasoning cost spectrum.
+
+**Registry implication:** Vetch currently has no mechanism to track whether a reasoning strategy (CoT prompt, extended thinking, majority voting) was used. `vetch.thinking_mode` (added v0.2.4) covers the Extended Thinking case explicitly. General CoT via prompt engineering remains invisible to the SDK.
+
 ## References
 
 *   Pope, R. et al. (2022). "Efficiently Scaling Transformer Inference." MLSys 2023. arXiv:2211.05102
 *   Luccioni, A.S. et al. (2023). "Power Hungry Processing: Watts Driving the Cost of AI Deployment?" FAccT 2024. arXiv:2311.16863
-*   Jiang, S. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598
+*   Jegham, N. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598
 *   Uptime Institute (2023). Global Data Center Survey.
+*   Aglin, G. et al. (2026). "Beyond Test-Time Compute Strategies: Advocating Energy-per-Token in LLM Inference." arXiv:2603.20224
