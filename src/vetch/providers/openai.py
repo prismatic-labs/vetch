@@ -203,10 +203,16 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
         reasoning_tokens = getattr(completion_details, "reasoning_tokens", 0) or 0
 
     # Build usage dict with text and optional image/reasoning
+    # OpenAI's completion_tokens INCLUDES reasoning_tokens, so we subtract
+    # them here to avoid double-counting when the calculation engine adds
+    # reasoning.output_tokens separately for energy purposes.
+    completion_tokens = getattr(usage, "completion_tokens", 0)
+    visible_output_tokens = completion_tokens - reasoning_tokens
+
     usage_dict: Usage = {
         "text": {
             "input_tokens": getattr(usage, "prompt_tokens", 0),
-            "output_tokens": getattr(usage, "completion_tokens", 0),
+            "output_tokens": visible_output_tokens,
             "total_tokens": getattr(usage, "total_tokens", 0),
         }
     }
@@ -224,8 +230,8 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     # Add reasoning usage if present (o1/o3 thinking models)
     if isinstance(reasoning_tokens, int) and reasoning_tokens > 0:
         usage_dict["reasoning"] = {
-            "input_tokens": reasoning_tokens,
-            "output_tokens": 0,  # Reasoning tokens are input-side (thinking)
+            "input_tokens": 0,
+            "output_tokens": reasoning_tokens,  # Generated (decode), not prefill
             "total_tokens": reasoning_tokens,
         }
 

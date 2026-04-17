@@ -450,8 +450,13 @@ def calculate_energy(
             else:
                 category = "long"
 
-            # Get coefficients for this prompt length
-            pl_entry = entry["prompt_length"][category]
+            # Get coefficients for this prompt length, falling back to
+            # medium if the measured category is unavailable (e.g., gpt-4
+            # has no "long" measurement in Jegham et al.)
+            pl_data = entry["prompt_length"]
+            if category not in pl_data:
+                category = "medium"
+            pl_entry = pl_data[category]
             wh_in = pl_entry["wh_per_1k_input"]
             wh_out = pl_entry["wh_per_1k_output"]
             basis = entry.get("basis", f"Jegham et al. (2025) measured data ({category} prompt)")
@@ -484,8 +489,10 @@ def calculate_energy(
 
 
 # Default PUE (Power Usage Effectiveness) for data centers
-# Industry average: ~1.58 (Uptime Institute 2023)
-# We use 1.2 as a reasonable default for unknown providers
+# Hyperscaler average: ~1.10-1.15 (Google, Azure, AWS sustainability reports)
+# Global industry average is ~1.58 (Uptime Institute 2023), but LLM inference
+# runs in hyperscaler DCs, not enterprise on-prem. 1.2 is a conservative
+# default for "probably a hyperscaler we don't recognize."
 DEFAULT_PUE = 1.2
 
 # Provider-specific PUE values from official sustainability reports (Tier 1 data)
@@ -527,8 +534,8 @@ def _infer_provider_from_model(model: str) -> str | None:
     model_lower = model.lower()
 
     # OpenAI models (Azure-backed)
-    openai_prefixes = ["gpt-", "o1-", "o3-", "text-davinci", "text-embedding"]
-    if any(prefix in model_lower for prefix in openai_prefixes):
+    openai_prefixes = ["gpt-", "o1", "o3", "o4", "text-davinci", "text-embedding"]
+    if any(model_lower.startswith(prefix) for prefix in openai_prefixes):
         return "openai"
 
     # Anthropic models (AWS-backed)
@@ -972,9 +979,10 @@ def calculate_cost(
 
     # Cache-aware cost calculation
     # Cache read tokens are charged at a discount (default: 10% of input price)
-    # Cache creation tokens are charged at a premium (default: 125% of input price)
+    # Cache creation tokens: 1.0 = same as input price (OpenAI default),
+    # 1.25 = Anthropic premium. Only override if the model explicitly sets it.
     cache_read_discount = entry.get("cache_read_discount", 0.1)
-    cache_creation_premium = entry.get("cache_creation_premium", 1.25)
+    cache_creation_premium = entry.get("cache_creation_premium", 1.0)
 
     # Base input tokens (excluding cached tokens)
     effective_input = input_tokens
@@ -1179,11 +1187,16 @@ def prepare_inference_metrics(
             in_tokens = text.get("input_tokens", 0)
             out_tokens = text.get("output_tokens", 0)
 
-            # Include reasoning tokens (o1/o3 thinking models) in energy calc
+            # Include reasoning tokens (o1/o3 thinking, Gemini thinking).
+            # These are generated (decode), so they count as output for energy.
+            # Note: OpenAI's provider subtracts reasoning from text.output_tokens
+            # to avoid double-counting (completion_tokens includes reasoning).
+            # GenAI's candidates_token_count does NOT include thought tokens,
+            # so they are additive here.
             if usage.get("reasoning"):
                 reasoning = usage["reasoning"]
                 if reasoning:
-                    in_tokens += reasoning.get("input_tokens", 0)
+                    out_tokens += reasoning.get("output_tokens", 0)
 
             _cache_tokens = int(cache_read_tokens) if cache_read_tokens else 0
             (

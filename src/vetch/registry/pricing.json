@@ -8,8 +8,8 @@
     "usd_per_1k_output": 0.03
   },
   "gpt-4o": {
-    "usd_per_1k_input": 0.005,
-    "usd_per_1k_output": 0.015,
+    "usd_per_1k_input": 0.0025,
+    "usd_per_1k_output": 0.010,
     "cache_read_discount": 0.5,
     "cache_creation_premium": 1.0
   },
@@ -22,19 +22,19 @@
   "gpt-4.1": {
     "usd_per_1k_input": 0.002,
     "usd_per_1k_output": 0.008,
-    "cache_read_discount": 0.5,
+    "cache_read_discount": 0.25,
     "cache_creation_premium": 1.0
   },
   "gpt-4.1-mini": {
     "usd_per_1k_input": 0.0004,
     "usd_per_1k_output": 0.0016,
-    "cache_read_discount": 0.5,
+    "cache_read_discount": 0.25,
     "cache_creation_premium": 1.0
   },
   "gpt-4.1-nano": {
     "usd_per_1k_input": 0.0001,
     "usd_per_1k_output": 0.0004,
-    "cache_read_discount": 0.5,
+    "cache_read_discount": 0.25,
     "cache_creation_premium": 1.0
   },
   "gpt-4.5": {
@@ -45,27 +45,98 @@
     "usd_per_1k_input": 0.0005,
     "usd_per_1k_output": 0.0015
   },
+  "gpt-5": {
+    "usd_per_1k_input": 0.00125,
+    "usd_per_1k_output": 0.010,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.0
+  },
+  "gpt-5-mini": {
+    "usd_per_1k_input": 0.00025,
+    "usd_per_1k_output": 0.002,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.0
+  },
+  "gpt-5-nano": {
+    "usd_per_1k_input": 0.00005,
+    "usd_per_1k_output": 0.0004,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.0
+  },
+  "gpt-5-pro": {
+    "usd_per_1k_input": 0.015,
+    "usd_per_1k_output": 0.120
+  },
+  "gpt-5.1": {
+    "usd_per_1k_input": 0.00125,
+    "usd_per_1k_output": 0.010,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.0
+  },
+  "gpt-5.2": {
+    "usd_per_1k_input": 0.00175,
+    "usd_per_1k_output": 0.014,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.0
+  },
+  "gpt-5.2-pro": {
+    "usd_per_1k_input": 0.021,
+    "usd_per_1k_output": 0.168
+  },
+  "gpt-5.4": {
+    "usd_per_1k_input": 0.0025,
+    "usd_per_1k_output": 0.015,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.0
+  },
+  "gpt-5.4-mini": {
+    "usd_per_1k_input": 0.00075,
+    "usd_per_1k_output": 0.0045,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.0
+  },
+  "gpt-5.4-nano": {
+    "usd_per_1k_input": 0.0002,
+    "usd_per_1k_output": 0.00125,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.0
+  },
+  "gpt-5.4-pro": {
+    "usd_per_1k_input": 0.030,
+    "usd_per_1k_output": 0.180
+  },
   "o1": {
     "usd_per_1k_input": 0.015,
     "usd_per_1k_output": 0.060,
     "cache_read_discount": 0.5
   },
   "o1-mini": {
-    "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.012
+    "usd_per_1k_input": 0.0011,
+    "usd_per_1k_output": 0.0044,
+    "cache_read_discount": 0.5
+  },
+  "o1-pro": {
+    "usd_per_1k_input": 0.150,
+    "usd_per_1k_output": 0.600
   },
   "o3": {
-    "usd_per_1k_input": 0.010,
-    "usd_per_1k_output": 0.040
+    "usd_per_1k_input": 0.002,
+    "usd_per_1k_output": 0.008,
+    "cache_read_discount": 0.25
   },
   "o3-mini": {
     "usd_per_1k_input": 0.0011,
-    "usd_per_1k_output": 0.0044
+    "usd_per_1k_output": 0.0044,
+    "cache_read_discount": 0.5
+  },
+  "o3-pro": {
+    "usd_per_1k_input": 0.020,
+    "usd_per_1k_output": 0.080
   },
   "o4-mini": {
     "usd_per_1k_input": 0.0011,
     "usd_per_1k_output": 0.0044,
-    "cache_read_discount": 0.5
+    "cache_read_discount": 0.25
   },
   "claude-3-opus": {
     "usd_per_1k_input": 0.015,
@@ -98,6 +169,12 @@
     "cache_creation_premium": 1.25
   },
   "claude-3.7-sonnet": {
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25
+  },
+  "claude-sonnet-4": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,
     "cache_read_discount": 0.1,

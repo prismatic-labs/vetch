@@ -55,8 +55,8 @@ class TestExtractUsage:
         assert usage["text"]["total_tokens"] == 150
         # Reasoning tokens should be present
         assert "reasoning" in usage
-        assert usage["reasoning"]["input_tokens"] == 8200
-        assert usage["reasoning"]["output_tokens"] == 0
+        assert usage["reasoning"]["input_tokens"] == 0
+        assert usage["reasoning"]["output_tokens"] == 8200
         assert usage["reasoning"]["total_tokens"] == 8200
 
     def test_returns_none_when_no_usage_metadata(self):

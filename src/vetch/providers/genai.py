@@ -232,8 +232,8 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     reasoning_tokens = getattr(usage_metadata, "thought_token_count", 0)
     if reasoning_tokens > 0:
         usage_dict["reasoning"] = {
-            "input_tokens": reasoning_tokens,
-            "output_tokens": 0,  # Reasoning tokens are input-side (thinking)
+            "input_tokens": 0,
+            "output_tokens": reasoning_tokens,  # Generated (decode), not prefill
             "total_tokens": reasoning_tokens,
         }
 

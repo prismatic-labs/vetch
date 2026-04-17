@@ -1,7 +1,7 @@
 # Vetch Methodology
 
-methodology_version: "1.0"
-sdk_version: "0.2.3"
+methodology_version: "1.1"
+sdk_version: "0.3.0"
 
 ## Preamble
 Vetch exists because AI systems currently operate with no feedback on their energy consumption. Every inference draws power from infrastructure with real costs—financial, environmental, and systemic. None of this is visible to the developer making the API call.
@@ -12,7 +12,7 @@ We believe imperfect measurement, honestly reported, is better than no measureme
 
 ## SDK Instrumentation Model
 
-**As of v0.2.2, automatic instrumentation is production-ready.**
+**As of v0.3.0, automatic instrumentation is production-ready.**
 
 ```python
 import vetch
@@ -30,23 +30,29 @@ vetch.instrument()  # All LLM calls are now tracked automatically
 
 This means the tracking boundary is the individual API call, not a manually delimited block. For explicit attribution (e.g., attaching tags to a specific feature), `wrap()` remains available and takes precedence.
 
-**Streaming (v0.2.3):** Streaming calls (`stream=True`) are now fully tracked under `instrument()`. The event is emitted when the stream is exhausted (last chunk consumed). If the stream is abandoned mid-way, the event is still emitted with `complete=False` and the characters counted so far.
+**Streaming:** Streaming calls (`stream=True`) are fully tracked under `instrument()`. The event is emitted when the stream is exhausted (last chunk consumed). If the stream is abandoned mid-way, the event is still emitted with `complete=False` and the characters counted so far.
 
 ## Methodology Version
 This document is versioned. If we change the energy heuristics (e.g., input:output ratio from 1:3 to 1:2.5), methodology_version will increment. Check this field to understand why historical data may differ from current calculations.
 
-**Current: methodology_version 1.0**
+**Current: methodology_version 1.1**
 
-## The Formula
-Energy (primary measurement):
+## The Formulas
+
+### Energy (primary measurement)
 `energy_wh = (input_tokens × wh_per_1k_input + output_tokens × wh_per_1k_output) / 1000`
 
-Carbon (derived from energy + grid):
+Energy is the primary metric. It is derived from model-specific estimates (see tier system below) and exact token counts (from provider response).
+
+### Carbon (derived from energy + grid + PUE)
 `carbon_g = energy_wh × PUE × grid_intensity / 1000`
 
-Energy is the primary metric. It is derived from model-specific estimates (uncertain, tier 3) and exact token counts (from provider response).
-
 Carbon is a derived metric. It compounds energy uncertainty with grid data. Grid intensity is real-time and accurate when available (signal_quality: live). Carbon inherits all uncertainty from energy, plus regional and temporal variation in grid mix.
+
+### Water (derived from energy + WUE)
+`water_l = (energy_wh / 1000) × WUE`
+
+Water measures datacenter cooling consumption. WUE (Water Usage Effectiveness, liters per kWh) varies significantly by datacenter location and cooling technology (range: 0.2–3.5 L/kWh). Water estimates carry ±200% uncertainty vs ±50% for carbon.
 
 ## Token Counts
 Exact. Extracted from provider response usage field. For interrupted streams where usage is unavailable, we report null. We do not estimate tokens from text. We do not bundle tokenizer libraries.
@@ -67,16 +73,17 @@ This is our largest uncertainty.
 
 **Tier 0 (Measured)**: Available when users run local GPU inference (Ollama, vLLM, llama.cpp) and use hardware sensors to capture actual power draw. Limitations: Requires compatible GPU (NVIDIA via pynvml, AMD via rocm-smi), baseline subtraction introduces noise, short inferences are less accurate.
 
-**Tier 1 (Vendor-Published)**: The gold standard. If OpenAI published "GPT-4o uses 0.5 Wh per 1k tokens," we'd use that. Currently, no major provider publishes this data. Academic measurements on specific hardware with rigorous methodology qualify for Tier 1.
+**Tier 1 (Vendor-Published)**: The gold standard. Academic measurements on specific hardware with rigorous methodology qualify for Tier 1. As of v0.3.0, 22 models have Tier 1 data from Jegham et al. (2025).
 
 **Tier 2 (Validated)**: Aggregated from multiple crowdsourced Tier 0 measurements or independent academic studies. Example: "Llama 3.1 8B averages 0.12 Wh/1k tokens across 47 user submissions (std dev 0.03)."
 
-**Tier 3 (Estimated)**: Current default for most models. Based on:
+**Tier 3 (Estimated)**: Current default for models without measurements. Based on:
 - Parameter count → FLOPs per token
-- Architecture class (dense, MoE, hybrid)
+- Architecture class (dense, MoE, hybrid, reasoning)
 - Hardware efficiency assumptions (H100 baseline)
+- Price-tier proxying from architecturally similar measured models
 
-Tier 3 estimates should be treated as order-of-magnitude guidance, not precise measurements.
+Tier 3 estimates should be treated as order-of-magnitude guidance (±1000%), not precise measurements.
 
 ### Architecture-Aware Estimation
 
@@ -88,6 +95,7 @@ For Mixture-of-Experts (MoE) models, we estimate energy based on **active parame
 | GPT-4o | ~200B | ~50B | 4x |
 | Mixtral 8x7B | 47B | 13B | 3.6x |
 | Gemini 1.5 Pro | ~500B | ~100B | 5x |
+| DeepSeek-R1 | 671B | 37B | 18x |
 
 **Dense models** (Claude, Llama) use all parameters per token, so total = active.
 
@@ -117,38 +125,70 @@ Tier 1 (vendor/peer-reviewed)
 Tier 0 (measured: your specific setup)
 ```
 
-### 2025 Breakthrough: Tier 1 Measurements
+### Tier 1 Measurements: Jegham et al. (2025)
 
-**Major Update (March 2026):** Vetch 0.1.7 incorporates the first large-scale, infrastructure-aware benchmarking of LLM energy consumption from **Jegham et al. (2025)** published in "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference" (arXiv:2505.09598).
+Vetch 0.3.0 incorporates the first large-scale, infrastructure-aware benchmarking of LLM energy consumption from **Jegham et al. (2025)** published in "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference" (arXiv:2505.09598).
 
-This research provided hardware measurements for 30 state-of-the-art models deployed in commercial datacenters, enabling us to upgrade key models from Tier 3 (estimated) to **Tier 1 (measured)**:
+This research provided hardware measurements for 30 state-of-the-art models deployed in commercial datacenters. We have incorporated measurements for **22 models at Tier 1**, covering all major providers:
 
-| Model | Status | Energy (medium prompt) | Tier |
-|-------|--------|----------------------|------|
-| GPT-4.1 nano | ✅ Upgraded | 0.271 Wh (most efficient) | 1 |
-| GPT-4o | ✅ Upgraded | 1.214 Wh | 1 |
-| Claude-3.7 Sonnet | ✅ Upgraded | 2.781 Wh | 1 |
-| o1 | ✅ Added | 12.1 Wh (reasoning model) | 1 |
-| o3 | ✅ Added | 21.4 Wh (advanced reasoning) | 1 |
-| DeepSeek-R1 | ✅ Added | 29.0 Wh (most intensive) | 1 |
+| Model | Energy (medium prompt) | Tier | Notes |
+|-------|----------------------|------|-------|
+| GPT-4.1 nano | 0.271 Wh | 1 | Most efficient in benchmark |
+| GPT-4.1 mini | 0.847 Wh | 1 | |
+| GPT-4o | 1.214 Wh | 1 | |
+| GPT-4o-mini | 1.418 Wh | 1 | More energy than GPT-4o (smaller model, less efficient batching) |
+| GPT-4.1 | 2.513 Wh | 1 | |
+| Claude-3.7 Sonnet | 2.781 Wh | 1 | Best eco-efficiency among large models |
+| Claude-3.7 Sonnet (thinking) | 5.684 Wh | 1 | ~2x standard variant |
+| GPT-4 | 6.512 Wh | 1 | Legacy MoE, significantly less efficient |
+| GPT-4 Turbo | 6.759 Wh | 1 | |
+| GPT-4.5 | 20.500 Wh | 1 | Comparable to o3 |
+| Gemini 2.0 Flash | 0.273 Wh | 1 | Calibrated from Google Environmental Report |
+| Llama 3.1 8B | 0.329 Wh | 1 | |
+| Llama 3.3 70B | 0.857 Wh | 1 | ~4x more efficient than Llama 3.1 70B |
+| Llama 3.1 70B | 3.559 Wh | 1 | |
+| Llama 3.1 405B | 6.911 Wh | 1 | Largest open-weight dense model |
+| o1-mini | 1.599 Wh | 1 | Lightweight reasoning |
+| o3-mini | 2.448 Wh | 1 | |
+| o4-mini | 1.679 Wh | 1 | Medium reasoning effort |
+| o1 | 12.100 Wh | 1 | Reasoning model |
+| o3 | 21.414 Wh | 1 | Advanced reasoning |
+| DeepSeek-V3 | 9.129 Wh | 1 | |
+| DeepSeek-R1 | 29.000 Wh | 1 | Most energy-intensive in benchmark |
 
 **Key Findings:**
-- **Reasoning models consume 40-100x more energy** than efficient models like GPT-4.1 nano
+- **Reasoning models consume 40-107x more energy** than efficient models like GPT-4.1 nano
 - **Non-linear energy scaling:** Short prompts use more energy per token than long prompts due to fixed overhead costs
 - **Range of efficiency:** Most energy-intensive model (DeepSeek-R1) consumes **107x more** than the most efficient (GPT-4.1 nano) for identical prompts
+- **Smaller is not always greener:** GPT-4o-mini uses more energy than GPT-4o at medium prompt lengths (1.418 vs 1.214 Wh) — batching efficiency matters more than parameter count
 
-### Non-Linear Energy Model (0.1.7+)
+### GPT-5 Family (Tier 3 Estimates)
+
+The GPT-5 family (gpt-5, 5-mini, 5-nano, 5-pro, 5.1, 5.2, 5.2-pro, 5.4, 5.4-mini, 5.4-nano, 5.4-pro) has no published energy data. All entries are **Tier 3 (±1000%)**, proxied from architecturally similar measured models:
+
+| GPT-5 Variant | Proxy Source | Rationale |
+|---------------|-------------|-----------|
+| gpt-5, 5.1, 5.4 | GPT-4.1 medium | Same frontier MoE architecture class |
+| gpt-5-mini, 5.4-mini | GPT-4.1-mini medium | Similar price tier, mini architecture |
+| gpt-5-nano, 5.4-nano | GPT-4.1-nano medium | Similar price tier, nano architecture |
+| gpt-5-pro, 5.4-pro | o3 medium | Reasoning architecture, premium compute |
+| gpt-5.2 | GPT-4.1 medium (scaled 1.27x) | Priced ~40% above GPT-5 |
+| gpt-5.2-pro | o3 medium | Most expensive reasoning variant |
+
+These estimates will be upgraded to Tier 1 when measurements become available.
+
+### Non-Linear Energy Model
 
 **Critical Discovery:** Energy consumption is **not linear** with token count. Jegham's measurements reveal:
 
-**GPT-4o Energy by Prompt Length:**
-- **Short** (<1k tokens): 1.05 Wh per 1k tokens
-- **Medium** (1k-5k tokens): 0.61 Wh per 1k tokens
-- **Long** (>5k tokens): 0.16 Wh per 1k tokens
+**GPT-4o Energy by Prompt Length (composite per 1k total tokens):**
+- **Short** (<1k tokens): ~1.05 Wh per 1k tokens
+- **Medium** (1k-5k tokens): ~0.61 Wh per 1k tokens
+- **Long** (>5k tokens): ~0.16 Wh per 1k tokens
 
 Longer prompts are ~6x more efficient per-token due to amortization of fixed costs (model loading, memory allocation, batching overhead).
 
-**Implementation:** Vetch 0.1.7 introduces prompt-length-aware coefficients for models with measured data. The calculation engine automatically selects appropriate coefficients based on total token count:
+**Implementation:** Vetch uses prompt-length-aware coefficients for models with measured data. The calculation engine automatically selects appropriate coefficients based on total token count:
 
 ```python
 if total_tokens < 1000:
@@ -201,7 +241,7 @@ We plan to enable crowdsourced energy measurements from local inference users:
 vetch calibrate --provider ollama --model llama3.1:8b
 
 # Output:
-# Baseline: 145W | Inference: 287W (Δ142W) | Duration: 3.2s
+# Baseline: 145W | Inference: 287W (delta 142W) | Duration: 3.2s
 # Energy: 0.126 Wh / 1k tokens (vs registry: 0.089 Wh, Tier 3)
 #
 # Submit to Vetch Registry? [y/N]
@@ -229,7 +269,7 @@ Note: There is no Tier 0 or Tier 2 for PUE because:
 - No "crowdsourced PUE" makes sense (PUE is a facility property, not per-request)
 
 **Auto-detection:** Vetch infers provider from model name:
-- `gpt-*`, `o1-*`, `o3-*` → OpenAI (Azure-backed, PUE 1.12)
+- `gpt-*`, `o1-*`, `o3-*`, `o4-*` → OpenAI (Azure-backed, PUE 1.12)
 - `claude-*` → Anthropic (AWS-backed, PUE 1.15)
 - `gemini-*`, `gemma-*` → Vertex AI (Google Cloud, PUE 1.10)
 
@@ -248,6 +288,28 @@ Note: There is no Tier 0 or Tier 2 for PUE because:
 5. **Embodied carbon excluded**: PUE only measures operational energy. Manufacturing GPUs, building datacenters, and decommissioning equipment contribute 10-20% of lifecycle emissions but are not captured by PUE.
 
 **Bottom line:** Provider-specific PUE improves the datacenter efficiency component of carbon calculation by ~5-10%, but **overall carbon estimates remain order-of-magnitude** due to Tier 3 energy-per-token estimates and regional grid variations (which matter 10-100x more than PUE).
+
+## WUE (Water Usage Effectiveness)
+
+WUE measures datacenter water consumption for cooling, in liters per kWh of IT energy. Vetch uses **provider-specific WUE values**:
+
+| Provider | WUE (L/kWh) | Source |
+|----------|-------------|--------|
+| **Google Cloud** | 1.1 | Efficient water-free cooling in many datacenters |
+| **Microsoft Azure / OpenAI** | 1.7 | Microsoft sustainability disclosures |
+| **AWS / Anthropic** | 2.2 | AWS sustainability report |
+| **Unknown/Default** | 1.8 | Industry average for air-cooled datacenters |
+
+**Water calculation:**
+`water_l = (energy_wh / 1000) × WUE`
+
+**Cascading lookup:** WUE resolution follows: explicit override → region-specific (from `wue.json`) → provider-specific → default (1.8).
+
+**Limitations:**
+- WUE varies dramatically by datacenter location (arid vs. humid climates, water-free vs. evaporative cooling)
+- Provider WUE values are fleet averages; individual datacenters may differ by 3-5x
+- Water estimates carry **±200% uncertainty** — higher than carbon estimates
+- Some datacenters use water-free cooling (WUE ≈ 0), others rely heavily on evaporative cooling (WUE > 3.0)
 
 ## Grid Carbon Intensity
 
@@ -289,11 +351,11 @@ We want better data. If you have inference energy measurements—from internal b
 ### Tier Assignment for Contributions
 - **Tier 0**: Reserved for user-calibrated values on their own hardware
 - **Tier 1**: Requires peer-reviewed publication or official vendor data
-- **Tier 2**: Requires clear methodology, sample size ≥10, reproducible setup
+- **Tier 2**: Requires clear methodology, sample size >= 10, reproducible setup
 - **Tier 3**: Theoretical estimates (parameter-based) - default for new models
 
 ### How to Submit
 - Pull request against `registry/energy.json`
 - Email to marco@prismaticlabs.ai
 - Open an issue with the data
-- (Coming soon) `vetch calibrate --submit` for automated Tier 0 → Tier 2 aggregation
+- (Coming soon) `vetch calibrate --submit` for automated Tier 0 -> Tier 2 aggregation

@@ -12,6 +12,7 @@ Vetch is a Python SDK that wraps LLM API calls to log energy consumption, cost, 
 
 **→ [Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
 **→ [Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
+**→ [Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across 48 models
 
 ## Why Vetch?
 
@@ -21,11 +22,13 @@ Provider dashboards (OpenAI Usage, Anthropic Console, Google Cloud Billing) show
 
 **Sustainability Instrumentation**
 
-Begin tracking AI inference emissions for future CSRD (EU) and SEC (US) Scope 3 reporting. Vetch now includes **Tier 1 (±50%)** hardware-measured energy data for popular models:
-- **GPT-4o, o1, o3** - Measured in Azure datacenters
-- **Claude-3.7 Sonnet** - Measured in AWS datacenters
-- **DeepSeek-R1** - Reasoning model benchmarks
-- **200+ models** use Tier 3 (order-of-magnitude) estimates
+Begin tracking AI inference emissions for future CSRD (EU) and SEC (US) Scope 3 reporting. Vetch includes **Tier 1 (±50%)** hardware-measured energy data for popular models:
+- **GPT-4o, GPT-4o-mini, GPT-4.1 family, GPT-4.5, o1, o3, o4-mini** - Measured in Azure datacenters
+- **Claude-3.7 Sonnet** (standard + Extended Thinking) - Measured in AWS datacenters
+- **DeepSeek-R1, DeepSeek-V3** - Reasoning and MoE benchmarks
+- **Llama 3.1 (8B, 70B, 405B), Llama 3.3 70B** - Open-weight measurements
+- **GPT-5 family** (gpt-5, gpt-5-mini, gpt-5-nano, gpt-5.4 etc.) - Tier 3 estimates
+- **48 models** in the registry, with Tier 3 (order-of-magnitude) estimates for unmeasured models
 
 Source: [Jegham et al. (2025)](https://arxiv.org/abs/2505.09598) - First large-scale LLM energy measurements in commercial datacenters.
 
@@ -80,31 +83,30 @@ pip install vetch
 
 ## Quick Start
 
-The simplest way to use Vetch is with `instrument()` — one line at startup, and all LLM calls are tracked automatically:
+Vetch offers two instrumentation modes — choose the one that fits your use case:
+
+### `instrument()` — Global, Zero-Touch
+
+One line at startup. Every LLM call across all providers is tracked automatically. Best for services, APIs, and production deployments where you want blanket coverage:
 
 ```python
 import vetch
 import openai
 
-# One line to instrument all providers
-# Non-blocking and fail-open: Vetch failures never break your LLM calls
-# Overhead: <5ms per call, zero added latency for streaming
 vetch.instrument(region="us-east-1", tags={"service": "chat-api"})
 
-# All LLM calls are now automatically tracked
+# All LLM calls are now automatically tracked — nothing else to change
 client = openai.OpenAI()
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello world"}]
 )
-# Energy, cost, and carbon events emitted automatically!
+# Energy, cost, and carbon events emitted automatically
 ```
 
-**See [QUICKSTART.md](QUICKSTART.md) for a complete 60-second guide.**
+### `wrap()` — Per-Call, Explicit
 
-### Per-Call Control
-
-For granular control or when you prefer explicit wrappers:
+Context manager around individual calls. Best when you need per-call metrics, different tags per call, or want to avoid global patching:
 
 ```python
 from vetch import wrap
@@ -115,11 +117,25 @@ with wrap(region="us-east-1", tags={"team": "ml", "env": "prod"}) as ctx:
         messages=[{"role": "user", "content": "Hello world"}]
     )
 
-# Access inference metadata (cost shown first)
+# Access inference metadata directly
 print(f"Cost:   ${ctx.event['estimated_cost_usd']}")
 print(f"Energy: {ctx.event['estimated_energy_wh']} Wh")
 print(f"Carbon: {ctx.event['estimated_carbon_g']} gCO2e")
 ```
+
+**When to use which:**
+
+| | `instrument()` | `wrap()` |
+|--|----------------|----------|
+| Setup | One line at startup | Context manager per call |
+| Scope | All calls, all providers | Individual calls |
+| Tags | Same tags for everything | Different tags per call |
+| Metrics access | Via event callbacks | Via `ctx.event` dict |
+| Best for | Production services | Notebooks, experiments, per-feature attribution |
+
+Both are fail-open (never break your LLM calls) and add <5ms overhead.
+
+**See [QUICKSTART.md](QUICKSTART.md) for a complete 60-second guide.**
 
 ### Async Support
 
@@ -266,6 +282,54 @@ vetch.configure_otlp_export(
 # Export a pre-built Grafana dashboard
 # vetch dashboard --export grafana --output grafana_vetch.json
 ```
+
+## MCP Server (AI Agent Integration)
+
+Vetch ships an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that gives AI agents real-time access to energy, cost, and carbon data. Agents can check budgets, compare models, and make sustainability-aware decisions mid-conversation.
+
+### Setup
+
+```bash
+pip install vetch[mcp]
+```
+
+Add to your MCP client configuration (e.g., Claude Desktop `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "vetch": {
+      "command": "vetch-mcp",
+      "env": {
+        "VETCH_REGION": "us-east-1"
+      }
+    }
+  }
+}
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `vetch_estimate` | Estimate energy, carbon, water, and cost for a model + token count |
+| `vetch_compare` | Compare multiple models side-by-side (flags cheapest/greenest) |
+| `vetch_session_stats` | Aggregated session metrics + waste advisories |
+| `vetch_status` | Health check, version, and budget status |
+| `vetch_check_budget` | Remaining budget (threshold, accumulated, percentage used) |
+| `vetch_grid_intensity` | Live carbon intensity for a grid region |
+| `vetch_cleanest_region` | Find the lowest-carbon region from a list |
+| `vetch_registry_lookup` | Raw energy/pricing data for a model |
+
+### Available Resources
+
+| URI | Description |
+|-----|-------------|
+| `vetch://registry/models` | All model names in the registry |
+| `vetch://config` | Current Vetch configuration |
+| `vetch://version` | Vetch version string |
+
+The MCP server uses stdio transport and dispatches synchronous Vetch calls via `asyncio.to_thread` to avoid blocking the event loop.
 
 ## CLI Usage
 

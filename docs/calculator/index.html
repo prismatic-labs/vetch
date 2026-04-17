@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prismatic Labs - AI Inference Calculator</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+  /* Header */
+  header { text-align: center; margin-bottom: 2.5rem; }
+  header h1 { font-size: 2rem; font-weight: 700; margin-bottom: 0.25rem; }
+  header h1 span { color: var(--green); }
+  header p { color: var(--text-muted); font-size: 0.95rem; }
+  header .badges { margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; }
+  header .badge {
+    font-size: 0.7rem; padding: 0.2rem 0.55rem; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+  }
+
+  /* Controls */
+  .controls {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.5rem; margin-bottom: 1.5rem;
+  }
+  .controls-grid {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;
+  }
+  @media (max-width: 700px) { .controls-grid { grid-template-columns: 1fr; } }
+  label { display: block; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  select, input[type="number"] {
+    width: 100%; padding: 0.55rem 0.75rem; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text); font-size: 0.9rem; outline: none;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+  select { cursor: pointer; }
+
+  /* Compare bar */
+  .compare-bar {
+    display: flex; align-items: center; gap: 0.75rem; margin-top: 1rem;
+    padding-top: 1rem; border-top: 1px solid var(--border);
+  }
+  .compare-bar label { margin-bottom: 0; flex-shrink: 0; }
+  .compare-bar select { max-width: 250px; }
+  .btn {
+    padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); cursor: pointer; font-size: 0.85rem;
+    transition: all 0.15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-accent { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+  .btn-accent:hover { opacity: 0.9; color: #000; }
+
+  /* Results */
+  .results { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  @media (max-width: 700px) { .results { grid-template-columns: 1fr; } }
+  .result-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 1.25rem; position: relative;
+  }
+  .result-card.compare { border-color: var(--purple); }
+  .result-card .card-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid var(--border);
+  }
+  .card-header h3 { font-size: 1rem; font-weight: 600; }
+  .card-header .tier-badge {
+    font-size: 0.65rem; padding: 0.15rem 0.45rem; border-radius: 4px;
+    font-weight: 600; text-transform: uppercase;
+  }
+  .tier-1 { background: rgba(63,185,80,0.15); color: var(--green); }
+  .tier-3 { background: rgba(210,153,34,0.15); color: var(--orange); }
+
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  .metric { }
+  .metric .value { font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .metric .label { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .metric.cost .value { color: var(--accent); }
+  .metric.energy .value { color: var(--orange); }
+  .metric.carbon .value { color: var(--text); }
+  .metric.water .value { color: var(--purple); }
+
+  .analogies {
+    margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border);
+    font-size: 0.8rem; color: var(--text-muted);
+  }
+  .analogies p { margin-bottom: 0.25rem; }
+
+  .delta {
+    display: inline-block; font-size: 0.75rem; padding: 0.1rem 0.4rem;
+    border-radius: 4px; margin-left: 0.35rem; font-weight: 600;
+  }
+  .delta.cheaper { background: rgba(63,185,80,0.15); color: var(--green); }
+  .delta.pricier { background: rgba(248,81,73,0.15); color: var(--red); }
+
+  /* Leaderboard */
+  .leaderboard {
+    margin-top: 2rem; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.25rem;
+  }
+  .leaderboard h3 { font-size: 1rem; margin-bottom: 1rem; }
+  .bar-chart { display: flex; flex-direction: column; gap: 0.35rem; }
+  .bar-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; }
+  .bar-label { width: 140px; text-align: right; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
+  .bar-track { flex: 1; height: 20px; background: var(--bg); border-radius: 4px; overflow: hidden; position: relative; }
+  .bar-fill { height: 100%; border-radius: 4px; min-width: 2px; transition: width 0.3s; }
+  .bar-fill.t1 { background: var(--green); }
+  .bar-fill.t3 { background: var(--orange); }
+  .bar-value { width: 70px; font-size: 0.75rem; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .bar-row.active .bar-label { color: var(--text); font-weight: 600; }
+
+  /* Footer */
+  footer {
+    margin-top: 3rem; text-align: center; padding: 1.5rem;
+    border-top: 1px solid var(--border); color: var(--text-muted); font-size: 0.8rem;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+  footer a:hover { text-decoration: underline; }
+
+  /* Hide compare by default */
+  .result-card.compare.hidden { display: none; }
+  .results.single { grid-template-columns: 1fr; max-width: 500px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1><span>prismatic labs</span> inference calculator</h1>
+    <p>See the energy, carbon, water, and cost of every LLM call</p>
+    <div class="badges">
+      <span class="badge">48 models</span>
+      <span class="badge">Tier 1 hardware measurements</span>
+      <span class="badge">Jegham et al. 2025</span>
+      <span class="badge">Apache 2.0</span>
+    </div>
+  </header>
+
+  <div class="controls">
+    <div class="controls-grid">
+      <div>
+        <label for="model">Model</label>
+        <select id="model"></select>
+      </div>
+      <div>
+        <label for="input-tokens">Input tokens</label>
+        <input type="number" id="input-tokens" value="1000" min="0" step="100">
+      </div>
+      <div>
+        <label for="output-tokens">Output tokens</label>
+        <input type="number" id="output-tokens" value="500" min="0" step="100">
+      </div>
+    </div>
+    <div class="compare-bar">
+      <label>Compare with</label>
+      <select id="compare-model"><option value="">-- none --</option></select>
+      <button class="btn btn-accent" id="swap-btn" title="Swap models">Swap</button>
+    </div>
+  </div>
+
+  <div class="results single" id="results">
+    <div class="result-card" id="card-primary"></div>
+    <div class="result-card compare hidden" id="card-compare"></div>
+  </div>
+
+  <div class="leaderboard" id="leaderboard">
+    <h3>Energy leaderboard (Wh per call)</h3>
+    <div class="bar-chart" id="bar-chart"></div>
+  </div>
+</div>
+
+<footer>
+  <p>
+    Data: <a href="https://arxiv.org/abs/2505.09598" target="_blank">Jegham et al. (2025)</a> &middot;
+    SDK: <a href="https://github.com/prismatic-labs/vetch" target="_blank">github.com/prismatic-labs/vetch</a> &middot;
+    <code>pip install vetch</code>
+  </p>
+  <p style="margin-top:0.5rem">
+    Tier 1 = hardware-measured (&plusmn;50%). Tier 3 = order-of-magnitude estimate (&plusmn;1000%).
+    Carbon assumes 440 gCO2e/kWh global average. Water assumes 1.7 L/kWh (OpenAI/Azure default).
+  </p>
+</footer>
+
+<script>
+const MODELS = {"claude-3-haiku": {"wh_in": 0.028, "wh_out": 0.083, "usd_in": 0.00025, "usd_out": 0.00125, "tier": 3, "arch": "dense", "params": 20, "active": 20}, "claude-3-opus": {"wh_in": 0.32, "wh_out": 0.92, "usd_in": 0.015, "usd_out": 0.075, "tier": 3, "arch": "dense", "params": 175, "active": 175}, "claude-3-sonnet": {"wh_in": 0.14, "wh_out": 0.42, "usd_in": 0.003, "usd_out": 0.015, "tier": 3, "arch": "dense", "params": 70, "active": 70}, "claude-3.5-haiku": {"wh_in": 0.035, "wh_out": 0.105, "usd_in": 0.0008, "usd_out": 0.004, "tier": 3, "arch": "dense", "params": 20, "active": 20}, "claude-3.5-sonnet": {"wh_in": 0.11, "wh_out": 0.33, "usd_in": 0.003, "usd_out": 0.015, "tier": 3, "arch": "dense", "params": 70, "active": 70}, "claude-3.7-sonnet": {"wh_in_s": 0.836, "wh_out_s": 2.508, "wh_in_m": 0.695, "wh_out_m": 2.086, "wh_in_l": 0.381, "wh_out_l": 1.142, "usd_in": 0.003, "usd_out": 0.015, "tier": 1, "arch": "dense", "params": 70, "active": 70, "pl": true}, "claude-3.7-sonnet-thinking": {"wh_in_s": 3.49, "wh_out_s": 10.469, "wh_in_m": 1.421, "wh_out_m": 4.263, "wh_in_l": 1.175, "wh_out_l": 3.524, "usd_in": 0.003, "usd_out": 0.015, "tier": 1, "arch": "dense", "params": 70, "active": 70, "pl": true}, "deepseek-r1": {"wh_in_s": 23.815, "wh_out_s": 71.445, "wh_in_m": 7.25, "wh_out_m": 21.75, "wh_in_l": 2.32, "wh_out_l": 6.959, "usd_in": 0.00055, "usd_out": 0.00219, "tier": 1, "arch": "reasoning", "params": 671, "active": 37, "pl": true}, "deepseek-v3": {"wh_in_s": 3.514, "wh_out_s": 10.541, "wh_in_m": 2.282, "wh_out_m": 6.847, "wh_in_l": 0.954, "wh_out_l": 2.863, "usd_in": 0.00027, "usd_out": 0.0011, "tier": 1, "arch": "moe", "params": 671, "active": 37, "pl": true}, "gemini-1.5-flash": {"wh_in": 0.055, "wh_out": 0.17, "usd_in": 0.00035, "usd_out": 0.00105, "tier": 3, "arch": "moe", "params": 100, "active": 25}, "gemini-1.5-pro": {"wh_in": 0.21, "wh_out": 0.65, "usd_in": 0.00125, "usd_out": 0.005, "tier": 3, "arch": "moe", "params": 500, "active": 100}, "gemini-2.0-flash": {"wh_in_s": 0.068, "wh_out_s": 0.205, "wh_in_m": 0.068, "wh_out_m": 0.205, "wh_in_l": 0.095, "wh_out_l": 0.287, "usd_in": 0.0001, "usd_out": 0.0004, "tier": 1, "arch": "moe", "params": 100, "active": 25, "pl": true}, "gemini-2.5-flash": {"wh_in": 0.068, "wh_out": 0.205, "usd_in": 0.0001, "usd_out": 0.0004, "tier": 3, "arch": "moe", "params": 100, "active": 25}, "gemini-2.5-pro": {"wh_in": 0.21, "wh_out": 0.63, "usd_in": 0.00125, "usd_out": 0.01, "tier": 3, "arch": "moe", "params": 500, "active": 100}, "gpt-3.5-turbo": {"wh_in": 0.046, "wh_out": 0.14, "usd_in": 0.0005, "usd_out": 0.0015, "tier": 3, "arch": "dense", "params": 20, "active": 20}, "gpt-4": {"wh_in_s": 1.978, "wh_out_s": 5.934, "wh_in_m": 1.628, "wh_out_m": 4.884, "wh_in_l": 0, "wh_out_l": 0, "usd_in": 0.03, "usd_out": 0.06, "tier": 1, "arch": "moe", "params": 1800, "active": 220, "pl": true}, "gpt-4-turbo": {"wh_in_s": 1.656, "wh_out_s": 4.969, "wh_in_m": 1.69, "wh_out_m": 5.069, "wh_in_l": 0.671, "wh_out_l": 2.012, "usd_in": 0.01, "usd_out": 0.03, "tier": 1, "arch": "moe", "params": 1800, "active": 220, "pl": true}, "gpt-4.1": {"wh_in_s": 0.918, "wh_out_s": 2.753, "wh_in_m": 0.628, "wh_out_m": 1.885, "wh_in_l": 0.292, "wh_out_l": 0.875, "usd_in": 0.002, "usd_out": 0.008, "tier": 1, "arch": "moe", "params": 200, "active": 50, "pl": true}, "gpt-4.1-mini": {"wh_in_s": 0.421, "wh_out_s": 1.263, "wh_in_m": 0.212, "wh_out_m": 0.636, "wh_in_l": 0.11, "wh_out_l": 0.33, "usd_in": 0.0004, "usd_out": 0.0016, "tier": 1, "arch": "moe", "params": 100, "active": 25, "pl": true}, "gpt-4.1-nano": {"wh_in_s": 0.103, "wh_out_s": 0.309, "wh_in_m": 0.068, "wh_out_m": 0.203, "wh_in_l": 0.031, "wh_out_l": 0.094, "usd_in": 0.0001, "usd_out": 0.0004, "tier": 1, "arch": "moe", "params": 50, "active": 12, "pl": true}, "gpt-4.5": {"wh_in_s": 6.723, "wh_out_s": 20.169, "wh_in_m": 5.125, "wh_out_m": 15.375, "wh_in_l": 2.103, "wh_out_l": 6.31, "usd_in": 0.075, "usd_out": 0.15, "tier": 1, "arch": "moe", "params": 200, "active": 50, "pl": true}, "gpt-4o": {"wh_in_s": 0.421, "wh_out_s": 1.263, "wh_in_m": 0.304, "wh_out_m": 0.911, "wh_in_l": 0.123, "wh_out_l": 0.37, "usd_in": 0.0025, "usd_out": 0.01, "tier": 1, "arch": "moe", "params": 200, "active": 50, "pl": true}, "gpt-4o-mini": {"wh_in_s": 0.421, "wh_out_s": 1.263, "wh_in_m": 0.355, "wh_out_m": 1.064, "wh_in_l": 0.145, "wh_out_l": 0.436, "usd_in": 0.00015, "usd_out": 0.0006, "tier": 1, "arch": "moe", "params": 20, "active": 8, "pl": true}, "gpt-5": {"wh_in": 0.63, "wh_out": 1.88, "usd_in": 0.00125, "usd_out": 0.01, "tier": 3, "arch": "moe", "params": 200, "active": 50}, "gpt-5-mini": {"wh_in": 0.21, "wh_out": 0.64, "usd_in": 0.00025, "usd_out": 0.002, "tier": 3, "arch": "moe", "params": 100, "active": 25}, "gpt-5-nano": {"wh_in": 0.07, "wh_out": 0.2, "usd_in": 5e-05, "usd_out": 0.0004, "tier": 3, "arch": "moe", "params": 50, "active": 12}, "gpt-5-pro": {"wh_in": 3.0, "wh_out": 9.0, "usd_in": 0.015, "usd_out": 0.12, "tier": 3, "arch": "reasoning", "params": 200, "active": 50}, "gpt-5.1": {"wh_in": 0.63, "wh_out": 1.88, "usd_in": 0.00125, "usd_out": 0.01, "tier": 3, "arch": "moe", "params": 200, "active": 50}, "gpt-5.2": {"wh_in": 0.8, "wh_out": 2.4, "usd_in": 0.00175, "usd_out": 0.014, "tier": 3, "arch": "moe", "params": 200, "active": 50}, "gpt-5.2-pro": {"wh_in": 5.4, "wh_out": 16.1, "usd_in": 0.021, "usd_out": 0.168, "tier": 3, "arch": "reasoning", "params": 200, "active": 50}, "gpt-5.4": {"wh_in": 0.63, "wh_out": 1.88, "usd_in": 0.0025, "usd_out": 0.015, "tier": 3, "arch": "moe", "params": 200, "active": 50}, "gpt-5.4-mini": {"wh_in": 0.21, "wh_out": 0.64, "usd_in": 0.00075, "usd_out": 0.0045, "tier": 3, "arch": "moe", "params": 100, "active": 25}, "gpt-5.4-nano": {"wh_in": 0.07, "wh_out": 0.2, "usd_in": 0.0002, "usd_out": 0.00125, "tier": 3, "arch": "moe", "params": 50, "active": 12}, "gpt-5.4-pro": {"wh_in": 5.4, "wh_out": 16.1, "usd_in": 0.03, "usd_out": 0.18, "tier": 3, "arch": "reasoning", "params": 200, "active": 50}, "llama-3-70b": {"wh_in": 0.12, "wh_out": 0.3, "usd_in": 0.0, "usd_out": 0.0, "tier": 3, "arch": "dense", "params": 70, "active": 70}, "llama-3.1-405b": {"wh_in_s": 1.991, "wh_out_s": 5.974, "wh_in_m": 1.728, "wh_out_m": 5.183, "wh_in_l": 1.431, "wh_out_l": 4.294, "usd_in": 0.0, "usd_out": 0.0, "tier": 1, "arch": "dense", "params": 405, "active": 405, "pl": true}, "llama-3.1-70b": {"wh_in_s": 1.101, "wh_out_s": 3.303, "wh_in_m": 0.89, "wh_out_m": 2.669, "wh_in_l": 0.802, "wh_out_l": 2.405, "usd_in": 0.0, "usd_out": 0.0, "tier": 1, "arch": "dense", "params": 70, "active": 70, "pl": true}, "llama-3.1-8b": {"wh_in_s": 0.103, "wh_out_s": 0.309, "wh_in_m": 0.082, "wh_out_m": 0.247, "wh_in_l": 0.042, "wh_out_l": 0.125, "usd_in": 0.0, "usd_out": 0.0, "tier": 1, "arch": "dense", "params": 8, "active": 8, "pl": true}, "llama-3.3-70b": {"wh_in_s": 0.247, "wh_out_s": 0.741, "wh_in_m": 0.214, "wh_out_m": 0.643, "wh_in_l": 0.114, "wh_out_l": 0.341, "usd_in": 0.0, "usd_out": 0.0, "tier": 1, "arch": "dense", "params": 70, "active": 70, "pl": true}, "mixtral-8x22b": {"wh_in": 0.12, "wh_out": 0.36, "usd_in": 0.0, "usd_out": 0.0, "tier": 3, "arch": "moe", "params": 141, "active": 39}, "mixtral-8x7b": {"wh_in": 0.037, "wh_out": 0.11, "usd_in": 0.0, "usd_out": 0.0, "tier": 3, "arch": "moe", "params": 47, "active": 13}, "o1": {"wh_in_s": 4.446, "wh_out_s": 13.339, "wh_in_m": 3.025, "wh_out_m": 9.075, "wh_in_l": 1.206, "wh_out_l": 3.618, "usd_in": 0.015, "usd_out": 0.06, "tier": 1, "arch": "reasoning", "params": 200, "active": 50, "pl": true}, "o1-mini": {"wh_in_s": 0.631, "wh_out_s": 1.892, "wh_in_m": 0.4, "wh_out_m": 1.199, "wh_in_l": 0.249, "wh_out_l": 0.746, "usd_in": 0.0011, "usd_out": 0.0044, "tier": 1, "arch": "reasoning", "params": 100, "active": 25, "pl": true}, "o1-pro": {"wh_in": 5.4, "wh_out": 16.1, "usd_in": 0.15, "usd_out": 0.6, "tier": 3, "arch": "reasoning", "params": 200, "active": 50}, "o3": {"wh_in_s": 7.026, "wh_out_s": 21.079, "wh_in_m": 5.354, "wh_out_m": 16.061, "wh_in_l": 2.705, "wh_out_l": 8.115, "usd_in": 0.002, "usd_out": 0.008, "tier": 1, "arch": "reasoning", "params": 200, "active": 50, "pl": true}, "o3-mini": {"wh_in_s": 0.85, "wh_out_s": 2.549, "wh_in_m": 0.612, "wh_out_m": 1.836, "wh_in_l": 0.201, "wh_out_l": 0.604, "usd_in": 0.0011, "usd_out": 0.0044, "tier": 1, "arch": "reasoning", "params": 100, "active": 25, "pl": true}, "o3-pro": {"wh_in": 7.0, "wh_out": 21.0, "usd_in": 0.02, "usd_out": 0.08, "tier": 3, "arch": "reasoning", "params": 200, "active": 50}, "o4-mini": {"wh_in_s": 0.974, "wh_out_s": 2.921, "wh_in_m": 0.42, "wh_out_m": 1.259, "wh_in_l": 0.13, "wh_out_l": 0.391, "usd_in": 0.0011, "usd_out": 0.0044, "tier": 1, "arch": "reasoning", "params": 100, "active": 25, "pl": true}};
+
+const DEFAULT_GRID = 440;    // gCO2e/kWh global average
+const DEFAULT_PUE = 1.2;
+const DEFAULT_WUE = 1.7;     // L/kWh (OpenAI/Azure)
+
+const POPULAR = ['gpt-4o','gpt-4.1','gpt-4.1-mini','gpt-4.1-nano','gpt-5','gpt-5.4','gpt-5-mini',
+  'o3','o4-mini','o3-mini','claude-3.7-sonnet','gemini-2.0-flash','deepseek-r1'];
+
+function getEnergy(m, inTok, outTok) {
+  const d = MODELS[m]; if (!d) return 0;
+  const total = inTok + outTok;
+  let whi, who;
+  if (d.pl) {
+    if (total < 1000)      { whi = d.wh_in_s; who = d.wh_out_s; }
+    else if (total < 5000) { whi = d.wh_in_m; who = d.wh_out_m; }
+    else                   { whi = d.wh_in_l || d.wh_in_m; who = d.wh_out_l || d.wh_out_m; }
+  } else {
+    whi = d.wh_in; who = d.wh_out;
+  }
+  return (inTok * whi + outTok * who) / 1000;
+}
+
+function getCost(m, inTok, outTok) {
+  const d = MODELS[m]; if (!d) return 0;
+  return (inTok * d.usd_in + outTok * d.usd_out) / 1000;
+}
+
+function fmt(n, digits) {
+  if (n === 0) return '0';
+  if (n < 0.001) return n.toExponential(1);
+  if (n < 1) return n.toFixed(digits || 4);
+  if (n < 100) return n.toFixed(digits || 2);
+  return n.toFixed(digits || 1);
+}
+
+function fmtUsd(n) {
+  if (n === 0) return '$0';
+  if (n < 0.0001) return '$' + n.toExponential(1);
+  if (n < 0.01) return '$' + n.toFixed(5);
+  return '$' + n.toFixed(4);
+}
+
+function renderCard(el, model, inTok, outTok, refEnergy, refCost) {
+  const d = MODELS[model];
+  const energy = getEnergy(model, inTok, outTok);
+  const cost = getCost(model, inTok, outTok);
+  const carbon = (energy * DEFAULT_PUE * DEFAULT_GRID) / 1000;
+  const water = (energy * DEFAULT_PUE * DEFAULT_WUE) / 1000 * 1000; // ml
+  const tier = d ? d.tier : 3;
+
+  let deltaE = '', deltaC = '';
+  if (refEnergy !== undefined && refEnergy > 0) {
+    const pctE = ((energy - refEnergy) / refEnergy * 100);
+    const clsE = pctE <= 0 ? 'cheaper' : 'pricier';
+    deltaE = `<span class="delta ${clsE}">${pctE <= 0 ? '' : '+'}${pctE.toFixed(0)}% energy</span>`;
+  }
+  if (refCost !== undefined && refCost > 0) {
+    const pctC = ((cost - refCost) / refCost * 100);
+    const clsC = pctC <= 0 ? 'cheaper' : 'pricier';
+    deltaC = `<span class="delta ${clsC}">${pctC <= 0 ? '' : '+'}${pctC.toFixed(0)}% cost</span>`;
+  }
+
+  // Analogies
+  const ledMinutes = (energy / 10 * 60).toFixed(1);
+  const phones = (energy / 12).toFixed(2);
+  const co2Breaths = (carbon / 0.04).toFixed(0);
+
+  el.innerHTML = `
+    <div class="card-header">
+      <h3>${model} ${deltaE}${deltaC}</h3>
+      <span class="tier-badge tier-${tier}">Tier ${tier}</span>
+    </div>
+    <div class="metrics">
+      <div class="metric cost">
+        <div class="value">${fmtUsd(cost)}</div>
+        <div class="label">Cost</div>
+      </div>
+      <div class="metric energy">
+        <div class="value">${fmt(energy)} Wh</div>
+        <div class="label">Energy</div>
+      </div>
+      <div class="metric carbon">
+        <div class="value">${fmt(carbon)} g</div>
+        <div class="label">CO2e</div>
+      </div>
+      <div class="metric water">
+        <div class="value">${fmt(water, 1)} ml</div>
+        <div class="label">Water</div>
+      </div>
+    </div>
+    <div class="analogies">
+      <p>Equivalent to powering an LED bulb for <strong>${ledMinutes} min</strong> or charging <strong>${phones}</strong> phones</p>
+    </div>
+  `;
+}
+
+function renderLeaderboard(inTok, outTok, primary, compare) {
+  const items = Object.keys(MODELS).map(m => ({
+    name: m, energy: getEnergy(m, inTok, outTok), tier: MODELS[m].tier
+  })).sort((a, b) => a.energy - b.energy);
+
+  const max = items[items.length - 1].energy || 1;
+  const chart = document.getElementById('bar-chart');
+  chart.innerHTML = items.map(it => {
+    const pct = Math.max(0.5, (it.energy / max) * 100);
+    const active = (it.name === primary || it.name === compare) ? ' active' : '';
+    const tierCls = it.tier === 1 ? 't1' : 't3';
+    return `<div class="bar-row${active}">
+      <span class="bar-label">${it.name}</span>
+      <div class="bar-track"><div class="bar-fill ${tierCls}" style="width:${pct}%"></div></div>
+      <span class="bar-value">${fmt(it.energy)} Wh</span>
+    </div>`;
+  }).join('');
+}
+
+function update() {
+  const model = document.getElementById('model').value;
+  const compare = document.getElementById('compare-model').value;
+  const inTok = parseInt(document.getElementById('input-tokens').value) || 0;
+  const outTok = parseInt(document.getElementById('output-tokens').value) || 0;
+
+  const resultsEl = document.getElementById('results');
+  const compareCard = document.getElementById('card-compare');
+
+  if (compare && compare !== model) {
+    resultsEl.classList.remove('single');
+    compareCard.classList.remove('hidden');
+    compareCard.classList.add('compare');
+
+    const refEnergy = getEnergy(model, inTok, outTok);
+    const refCost = getCost(model, inTok, outTok);
+    renderCard(document.getElementById('card-primary'), model, inTok, outTok);
+    renderCard(compareCard, compare, inTok, outTok, refEnergy, refCost);
+  } else {
+    resultsEl.classList.add('single');
+    compareCard.classList.add('hidden');
+    renderCard(document.getElementById('card-primary'), model, inTok, outTok);
+  }
+
+  renderLeaderboard(inTok, outTok, model, compare);
+}
+
+// Init
+function init() {
+  const modelSel = document.getElementById('model');
+  const compareSel = document.getElementById('compare-model');
+  const names = Object.keys(MODELS).sort();
+
+  // Popular first, then rest
+  const popular = POPULAR.filter(m => MODELS[m]);
+  const rest = names.filter(m => !popular.includes(m));
+
+  const popGroup = document.createElement('optgroup');
+  popGroup.label = 'Popular';
+  popular.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; popGroup.appendChild(o); });
+  modelSel.appendChild(popGroup);
+
+  const allGroup = document.createElement('optgroup');
+  allGroup.label = 'All models';
+  rest.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; allGroup.appendChild(o); });
+  modelSel.appendChild(allGroup);
+
+  // Compare dropdown
+  const noneOpt = document.createElement('option');
+  noneOpt.value = ''; noneOpt.textContent = '-- none --';
+  compareSel.appendChild(noneOpt);
+  const popGroup2 = document.createElement('optgroup');
+  popGroup2.label = 'Popular';
+  popular.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; popGroup2.appendChild(o); });
+  compareSel.appendChild(popGroup2);
+  const allGroup2 = document.createElement('optgroup');
+  allGroup2.label = 'All models';
+  rest.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; allGroup2.appendChild(o); });
+  compareSel.appendChild(allGroup2);
+
+  // Default selections
+  modelSel.value = 'gpt-4o';
+  compareSel.value = 'gpt-4.1';
+
+  // Events
+  modelSel.addEventListener('change', update);
+  compareSel.addEventListener('change', update);
+  document.getElementById('input-tokens').addEventListener('input', update);
+  document.getElementById('output-tokens').addEventListener('input', update);
+  document.getElementById('swap-btn').addEventListener('click', () => {
+    const tmp = modelSel.value;
+    modelSel.value = compareSel.value;
+    compareSel.value = tmp;
+    update();
+  });
+
+  update();
+}
+
+init();
+</script>
+</body>
+</html>

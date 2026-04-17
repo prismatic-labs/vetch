@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from vetch.calculation import (
+    _infer_provider_from_model,
     calculate_carbon,
     calculate_cost,
     calculate_energy,
@@ -106,6 +107,20 @@ class TestEnergyCalculation:
         assert basis == "Custom measurement"
 
 
+class TestPromptLengthFallback:
+    """Tests for prompt-length category fallback when a category is missing."""
+
+    def test_gpt4_long_prompt_falls_back_to_medium(self) -> None:
+        """GPT-4 has no 'long' measurement — should fall back to medium."""
+        # GPT-4 medium: 1.628 Wh/1k input, 4.884 Wh/1k output
+        # 6000 input tokens → would be "long" but GPT-4 only has short/medium
+        energy, tier, _, _, _, known = calculate_energy(6000, 500, "gpt-4")
+        expected = (6000 * 1.628 + 500 * 4.884) / 1000  # Uses medium coefficients
+        assert energy == pytest.approx(expected)
+        assert tier == 1
+        assert known is True
+
+
 class TestCarbonCalculation:
     """Tests for carbon emissions calculation."""
 
@@ -120,19 +135,39 @@ class TestCarbonCalculation:
         assert pue_source == "explicit override"
 
 
+class TestProviderDetection:
+    """Tests for provider inference from model names."""
+
+    @pytest.mark.parametrize(
+        "model, expected",
+        [
+            ("gpt-4o", "openai"),
+            ("gpt-5.4-mini", "openai"),
+            ("o1-mini", "openai"),
+            ("o3", "openai"),
+            ("o4-mini", "openai"),
+            ("claude-3.7-sonnet", "anthropic"),
+            ("gemini-2.5-pro", "google"),
+            ("llama-3.1-70b", None),
+        ],
+    )
+    def test_infer_provider(self, model: str, expected: str | None) -> None:
+        assert _infer_provider_from_model(model) == expected
+
+
 class TestCostCalculation:
     """Tests for cost estimation."""
 
     def test_calculate_cost_known_model(self) -> None:
-        """Calculate cost for a known model (gpt-4o: $0.005 in, $0.015 out)."""
-        # (1000 * 0.005 + 500 * 0.015) / 1000 = (5.0 + 7.5) / 1000 = $0.0125
+        """Calculate cost for a known model (gpt-4o: $0.0025 in, $0.010 out)."""
+        # (1000 * 0.0025 + 500 * 0.010) / 1000 = (2.5 + 5.0) / 1000 = $0.0075
         total, cost_in, cost_out, cache_write, cache_read, tier = calculate_cost(
             1000, 500, "gpt-4o"
         )
 
-        assert total == pytest.approx(0.0125)
-        assert cost_in == pytest.approx(0.005)
-        assert cost_out == pytest.approx(0.0075)
+        assert total == pytest.approx(0.0075)
+        assert cost_in == pytest.approx(0.0025)
+        assert cost_out == pytest.approx(0.005)
         assert cache_write == 0.0
         assert cache_read == 0.0
         assert tier == "list"
@@ -478,12 +513,14 @@ class TestV024RegistryUpdates:
         assert tier == 1
 
     def test_gpt4o_mini_alias_corrected(self) -> None:
-        """gpt-4o-mini energy should be much lower than gpt-4o (alias fix)."""
+        """gpt-4o-mini has its own energy data (no longer aliased to gpt-4o)."""
         mini_e, _, _, _, _, _ = calculate_energy(1000, 1000, "gpt-4o-mini")
         full_e, _, _, _, _, _ = calculate_energy(1000, 1000, "gpt-4o")
         assert mini_e is not None and full_e is not None
-        # gpt-4o-mini is Tier 3 (~0.10+0.30 per-1k), gpt-4o is Tier 1 (~0.304+0.911 per-1k)
-        assert mini_e < full_e
+        # Jegham (2025): gpt-4o-mini medium 1.418 Wh, gpt-4o medium 1.214 Wh
+        # Mini is surprisingly LESS efficient per-token despite smaller model —
+        # likely due to different batching/serving infrastructure.
+        assert mini_e != full_e  # They have distinct energy profiles
 
     def test_pricing_backfill_o1(self) -> None:
         """o1 should now have non-null cost estimate."""
