@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, cast
 from vetch import __version__
 from vetch.emitter import emit_event
 from vetch.schema import SCHEMA_VERSION
+from vetch.stats import SessionStats
 
 if TYPE_CHECKING:
     from vetch.schema import InferenceEvent
@@ -126,6 +127,10 @@ class Session:
         self.tags = dict(tags) if tags else None
         self._emit = emit
         self._max_calls = max_calls
+
+        # Per-session stats for advisory analysis (stall detection, etc.)
+        # Isolated from the global singleton — safe for multi-user contexts.
+        self.stats = SessionStats()
 
         # Accumulation state (thread-safe)
         self._lock = threading.Lock()
@@ -229,11 +234,17 @@ class Session:
         Called internally by VetchContext on exit. Respects max_calls
         limit to prevent OOM in long-running agentic loops.
 
+        Also updates the per-session ``SessionStats`` instance for
+        advisory analysis (stall detection, caching, RAG patterns).
+
         Args:
             event: The inference event to register.
         """
+        # Per-session stats (always updated, outside the lock since
+        # SessionStats.update is not thread-safe — we protect it here)
         with self._lock:
             self._call_count += 1
+            self.stats.update(event)
 
             # Safety: stop accumulating after max_calls to prevent OOM
             if self._max_calls > 0 and self._call_count > self._max_calls:

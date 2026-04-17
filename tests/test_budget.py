@@ -13,6 +13,7 @@ from vetch.budget import (
     BudgetAlert,
     check_budgets,
     clear_budgets,
+    get_budget_detail,
     get_budget_status,
     on_budget_alert,
     remove_budget,
@@ -221,6 +222,78 @@ class TestGetBudgetStatus:
         assert status["session"]["accumulated_cost"] == 30.0
         assert status["session"]["accumulated_energy"] == 3.0
         assert status["session"]["accumulated_carbon"] == 150.0
+
+
+class TestGetBudgetDetail:
+    """Tests for get_budget_detail() — actionable budget view."""
+
+    def setup_method(self) -> None:
+        clear_budgets()
+
+    def teardown_method(self) -> None:
+        clear_budgets()
+
+    def test_empty_when_no_budgets(self) -> None:
+        """No budgets configured returns empty dict."""
+        assert get_budget_detail() == {}
+
+    def test_includes_threshold_and_remaining(self) -> None:
+        """Detail includes threshold, accumulated, remaining, percentage."""
+        set_budget("session", cost_usd=10.0, window="session")
+        check_budgets(cost_usd=3.0, energy_wh=0.0, carbon_g=0.0)
+
+        detail = get_budget_detail()
+
+        assert "session" in detail
+        cost = detail["session"]["cost_usd"]
+        assert cost["threshold"] == 10.0
+        assert cost["accumulated"] == 3.0
+        assert cost["remaining"] == 7.0
+        assert cost["percentage_used"] == 30.0
+
+    def test_remaining_floors_at_zero(self) -> None:
+        """Remaining never goes negative when budget is exceeded."""
+        set_budget("small", cost_usd=1.0, window="session")
+        check_budgets(cost_usd=5.0, energy_wh=0.0, carbon_g=0.0)
+
+        detail = get_budget_detail()
+        cost = detail["small"]["cost_usd"]
+        assert cost["remaining"] == 0.0
+        assert cost["percentage_used"] == 100.0
+
+    def test_percentage_caps_at_100(self) -> None:
+        """Percentage used caps at 100% even when exceeded."""
+        set_budget("capped", cost_usd=1.0, window="session")
+        check_budgets(cost_usd=3.0, energy_wh=0.0, carbon_g=0.0)
+
+        detail = get_budget_detail()
+        assert detail["capped"]["cost_usd"]["percentage_used"] == 100.0
+
+    def test_only_configured_metrics_shown(self) -> None:
+        """Only metrics with thresholds appear in detail."""
+        set_budget("cost-only", cost_usd=5.0, window="session")
+
+        detail = get_budget_detail()
+        assert "cost_usd" in detail["cost-only"]
+        assert "energy_wh" not in detail["cost-only"]
+        assert "carbon_g" not in detail["cost-only"]
+
+    def test_multiple_metrics(self) -> None:
+        """Budget with multiple thresholds shows all of them."""
+        set_budget("multi", cost_usd=10.0, energy_wh=5.0, carbon_g=100.0, window="session")
+        check_budgets(cost_usd=2.0, energy_wh=1.0, carbon_g=20.0)
+
+        detail = get_budget_detail()
+        assert detail["multi"]["cost_usd"]["remaining"] == 8.0
+        assert detail["multi"]["energy_wh"]["remaining"] == 4.0
+        assert detail["multi"]["carbon_g"]["remaining"] == 80.0
+
+    def test_window_included(self) -> None:
+        """Detail includes the budget window."""
+        set_budget("hourly", cost_usd=5.0, window="hour")
+
+        detail = get_budget_detail()
+        assert detail["hourly"]["window"] == "hour"
 
 
 class TestBudgetAlert:

@@ -144,3 +144,134 @@ class TestFormatAdvisories:
 
         result = format_advisories(advisories, "text")
         assert "$25.50" in result
+
+
+class TestStallDetection:
+    """Tests for STALL-001 agentic stall advisory.
+
+    STALL-001 fires when ALL of:
+    - total_requests > 10
+    - window_size >= 10
+    - ≥80% of the window has <5 output tokens
+    - input_similarity >= 0.5 (repetitive inputs)
+    """
+
+    @staticmethod
+    def _make_stalled_stats(
+        num_calls: int = 15,
+        output_tokens: int = 0,
+        cost_per_call: float = 0.10,
+        input_tokens: int = 500,
+    ) -> SessionStats:
+        """Build a SessionStats that simulates a stalled loop."""
+        stats = SessionStats()
+        for _ in range(num_calls):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {
+                    "text": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                    }
+                },
+                "estimated_cost_usd": cost_per_call,
+            })
+        return stats
+
+    def test_stall_triggers(self) -> None:
+        """STALL-001 fires with 15 identical calls producing 0 output tokens."""
+        stats = self._make_stalled_stats(num_calls=15, output_tokens=0)
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 1
+        assert stall[0].severity in ("WARNING", "CRITICAL")
+        assert "stalled" in stall[0].description.lower()
+
+    def test_stall_triggers_low_output(self) -> None:
+        """STALL-001 fires when output tokens are consistently < 5."""
+        stats = self._make_stalled_stats(num_calls=15, output_tokens=3)
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 1
+
+    def test_stall_does_not_trigger_normal_output(self) -> None:
+        """STALL-001 does NOT fire with normal output (200+ tokens)."""
+        stats = self._make_stalled_stats(num_calls=15, output_tokens=200)
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 0
+
+    def test_stall_does_not_trigger_few_calls(self) -> None:
+        """STALL-001 does NOT fire with only 5 calls (below threshold)."""
+        stats = self._make_stalled_stats(num_calls=5, output_tokens=0)
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 0
+
+    def test_stall_does_not_trigger_diverse_inputs(self) -> None:
+        """STALL-001 does NOT fire when inputs are all different.
+
+        Even if output is low, diverse inputs mean the model is trying
+        different things — not stuck in a loop.
+        """
+        stats = SessionStats()
+        for i in range(15):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 500 + i, "output_tokens": 0}},
+                "estimated_cost_usd": 0.10,
+            })
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 0
+
+    def test_stall_severity_warning(self) -> None:
+        """STALL-001 is WARNING when stalled cost <= $5."""
+        stats = self._make_stalled_stats(
+            num_calls=15, output_tokens=0, cost_per_call=0.10,
+        )
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 1
+        assert stall[0].severity == "WARNING"
+
+    def test_stall_severity_critical(self) -> None:
+        """STALL-001 is CRITICAL when stalled cost > $5."""
+        stats = self._make_stalled_stats(
+            num_calls=15, output_tokens=0, cost_per_call=1.00,
+        )
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 1
+        assert stall[0].severity == "CRITICAL"
+        assert stall[0].potential_savings_usd is not None
+        assert stall[0].potential_savings_usd > 5.0
+
+    def test_stall_cost_is_per_call(self) -> None:
+        """Wasted cost is summed from stalled calls, not total * fraction."""
+        stats = self._make_stalled_stats(
+            num_calls=15, output_tokens=0, cost_per_call=0.50,
+        )
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 1
+        assert "$" in stall[0].description
+        # 15 calls * $0.50 = $7.50 wasted (all in window, all stalled)
+        assert stall[0].potential_savings_usd == 7.5
+
+    def test_stall_description_mentions_similarity(self) -> None:
+        """STALL-001 description mentions input similarity %."""
+        stats = self._make_stalled_stats(num_calls=15, output_tokens=0)
+        advisories = generate_advisories(stats)
+
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(stall) == 1
+        assert "similarity" in stall[0].description.lower()

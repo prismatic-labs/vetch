@@ -494,3 +494,59 @@ class TestSessionMemorySafeguards:
 
         session.register_event({"estimated_cost_usd": 2.0})  # type: ignore[arg-type]
         assert session._saturated is True
+
+
+class TestSessionStatsIsolation:
+    """Tests for per-session SessionStats (stall detection isolation)."""
+
+    def test_session_has_own_stats(self) -> None:
+        """Each Session carries its own SessionStats instance."""
+        import vetch
+
+        s1 = vetch.Session(emit=False)
+        s2 = vetch.Session(emit=False)
+        assert s1.stats is not s2.stats
+
+    def test_register_event_updates_session_stats(self) -> None:
+        """register_event feeds the per-session SessionStats."""
+        import vetch
+
+        session = vetch.Session(emit=False)
+        session.register_event({  # type: ignore[arg-type]
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 500, "output_tokens": 0}},
+            "estimated_cost_usd": 0.10,
+        })
+
+        assert session.stats.total_requests == 1
+        assert session.stats.total_cost_usd == pytest.approx(0.10)
+        assert len(session.stats.recent_calls) == 1
+
+    def test_sessions_do_not_share_stall_data(self) -> None:
+        """Two sessions have fully isolated stall detection state."""
+        import vetch
+
+        s1 = vetch.Session(emit=False)
+        s2 = vetch.Session(emit=False)
+
+        # s1: 15 stalled calls
+        for _ in range(15):
+            s1.register_event({  # type: ignore[arg-type]
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 500, "output_tokens": 0}},
+                "estimated_cost_usd": 0.10,
+            })
+
+        # s2: 15 healthy calls
+        for _ in range(15):
+            s2.register_event({  # type: ignore[arg-type]
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 500, "output_tokens": 200}},
+                "estimated_cost_usd": 0.10,
+            })
+
+        summary1 = s1.stats.summary()
+        summary2 = s2.stats.summary()
+
+        assert summary1["recent_low_output_count"] == 15
+        assert summary2["recent_low_output_count"] == 0

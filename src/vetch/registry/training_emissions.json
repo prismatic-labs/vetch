@@ -1,0 +1,9 @@
+{
+  "_source": "Stanford AI Index 2026, Epoch AI",
+  "_updated": "2026-04-15",
+  "Grok 4":         {"co2e_tonnes": 72816, "year": 2025},
+  "Grok 3":         {"co2e_tonnes": 59200, "year": 2025},
+  "GPT-4":          {"co2e_tonnes": 5184,  "year": 2023},
+  "Llama 3.1 405B": {"co2e_tonnes": 8930,  "year": 2024},
+  "DeepSeek v3":    {"co2e_tonnes": 597,   "year": 2024}
+}

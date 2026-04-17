@@ -117,3 +117,121 @@ class TestSessionStats:
         assert summary["total_input_tokens"] == 1000
         assert summary["total_output_tokens"] == 200
         assert summary["average_input_output_ratio"] == 5.0
+
+    def test_recent_output_tokens_populated(self) -> None:
+        """Verify rolling window is populated on update."""
+        stats = SessionStats()
+        stats.update({
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 42}},
+        })
+        assert stats.recent_output_tokens == [42]
+
+    def test_recent_calls_bounded(self) -> None:
+        """Verify rolling window doesn't exceed maxlen=20."""
+        stats = SessionStats()
+        for i in range(30):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": i}},
+            })
+        assert len(stats.recent_calls) == 20
+        # Should contain the last 20 values (10..29)
+        assert stats.recent_output_tokens == list(range(10, 30))
+
+    def test_summary_includes_recent_fields(self) -> None:
+        """Verify summary includes stall detection metrics."""
+        stats = SessionStats()
+        for _ in range(5):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 0}},
+                "estimated_cost_usd": 0.10,
+            })
+        summary = stats.summary()
+        assert "recent_avg_output_tokens" in summary
+        assert "recent_low_output_count" in summary
+        assert "recent_low_output_fraction" in summary
+        assert "recent_window_size" in summary
+        assert "recent_stalled_cost_usd" in summary
+        assert "recent_input_similarity" in summary
+        assert summary["recent_avg_output_tokens"] == 0.0
+        assert summary["recent_low_output_count"] == 5
+        assert summary["recent_low_output_fraction"] == 1.0
+        assert summary["recent_window_size"] == 5
+        assert summary["recent_stalled_cost_usd"] == pytest.approx(0.5)
+        # All 5 calls had input_tokens=100, so similarity = 1.0
+        assert summary["recent_input_similarity"] == 1.0
+
+    def test_stalled_cost_only_counts_low_output(self) -> None:
+        """Verify wasted cost sums only low-output calls, not all calls."""
+        stats = SessionStats()
+        # 3 normal calls at $1.00 each
+        for _ in range(3):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 500, "output_tokens": 200}},
+                "estimated_cost_usd": 1.00,
+            })
+        # 2 stalled calls at $0.50 each
+        for _ in range(2):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 500, "output_tokens": 0}},
+                "estimated_cost_usd": 0.50,
+            })
+        summary = stats.summary()
+        assert summary["recent_stalled_cost_usd"] == pytest.approx(1.0)
+
+    def test_input_similarity_diverse_inputs(self) -> None:
+        """Verify input similarity is low when inputs vary."""
+        stats = SessionStats()
+        for i in range(10):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 100 + i, "output_tokens": 50}},
+            })
+        summary = stats.summary()
+        # All different input token counts → similarity = 1/10 = 0.1
+        assert summary["recent_input_similarity"] == pytest.approx(0.1)
+
+    def test_water_ml_initialized_to_zero(self) -> None:
+        """Verify initial water is zero."""
+        stats = SessionStats()
+        assert stats.total_water_ml == 0.0
+
+    def test_water_ml_accumulated_from_ml(self) -> None:
+        """Verify water accumulation from estimated_water_ml (MCP-style events)."""
+        stats = SessionStats()
+        stats.update({
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+            "estimated_water_ml": 1.5,
+        })
+        stats.update({
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+            "estimated_water_ml": 2.5,
+        })
+        assert stats.total_water_ml == pytest.approx(4.0)
+
+    def test_water_ml_accumulated_from_liters(self) -> None:
+        """Verify water accumulation from estimated_water_l (wrapper-style events)."""
+        stats = SessionStats()
+        stats.update({
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+            "estimated_water_l": 0.003,
+        })
+        assert stats.total_water_ml == pytest.approx(3.0)
+
+    def test_water_ml_in_summary(self) -> None:
+        """Verify summary includes total_water_ml."""
+        stats = SessionStats()
+        stats.update({
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+            "estimated_water_ml": 5.0,
+        })
+        summary = stats.summary()
+        assert summary["total_water_ml"] == pytest.approx(5.0)

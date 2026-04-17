@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-from vetch.stats import SessionStats
+from vetch.stats import STALL_FRACTION_TRIGGER, SessionStats
 
 
 class Advisory(NamedTuple):
@@ -59,6 +59,37 @@ def generate_advisories(stats: SessionStats) -> list[Advisory]:
                 "Ensure your retriever is optimized. "
                 "Consider compressing context or using a smaller model for the reading phase."
             )
+        ))
+
+    # 3. Agentic Stall Detection
+    # Fires when ≥80 % of the recent window produces <5 output tokens AND
+    # the inputs are repetitive (suggests the model is stuck on the same
+    # prompt, not legitimately sending small tool pings).
+    recent_low = summary.get("recent_low_output_count", 0)
+    low_fraction = summary.get("recent_low_output_fraction", 0.0)
+    window_size = summary.get("recent_window_size", 0)
+    input_similarity = summary.get("recent_input_similarity", 0.0)
+    stalled_cost = summary.get("recent_stalled_cost_usd", 0.0)
+
+    if (
+        stats.total_requests > 10
+        and window_size >= 10
+        and low_fraction >= STALL_FRACTION_TRIGGER
+        and input_similarity >= 0.5
+    ):
+        severity = "CRITICAL" if stalled_cost > 5.0 else "WARNING"
+        advisories.append(Advisory(
+            code="STALL-001",
+            severity=severity,
+            title="Agentic Stall Detected",
+            description=(
+                f"{recent_low} of last {window_size} calls produced <5 output tokens "
+                f"({low_fraction:.0%} of window) with {input_similarity:.0%} input "
+                "similarity. This suggests a stalled agentic loop — the model may be "
+                "stuck on repeated tool failures or empty completions. "
+                f"Estimated wasted cost: ${stalled_cost:.2f}."
+            ),
+            potential_savings_usd=stalled_cost,
         ))
 
     return advisories

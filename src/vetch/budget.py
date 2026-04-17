@@ -22,7 +22,7 @@ import time
 import warnings
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 # Window durations in seconds
 _WINDOW_SECONDS = {
@@ -375,6 +375,57 @@ def get_budget_status() -> dict[str, dict[str, float | int]]:
             }
             for name, b in _budgets.items()
         }
+
+
+def get_budget_detail() -> dict[str, dict[str, Any]]:
+    """Get detailed budget status including thresholds and remaining amounts.
+
+    Unlike :func:`get_budget_status` (which returns only accumulated values),
+    this function returns the full picture an agent needs to make decisions:
+    threshold, accumulated, remaining, and percentage used for each metric.
+
+    Returns:
+        Dict mapping budget names to their detail dicts.
+
+    Example::
+
+        detail = get_budget_detail()
+        # {
+        #     "env-session-cost": {
+        #         "window": "session",
+        #         "alert_count": 0,
+        #         "cost_usd": {
+        #             "threshold": 10.0,
+        #             "accumulated": 2.30,
+        #             "remaining": 7.70,
+        #             "percentage_used": 23.0
+        #         }
+        #     }
+        # }
+    """
+    with _lock:
+        result: dict[str, dict[str, Any]] = {}
+        for name, b in _budgets.items():
+            detail: dict[str, Any] = {
+                "window": b.window,
+                "alert_count": b._alert_count,
+            }
+            for metric, threshold, accumulated in [
+                ("cost_usd", b.cost_usd, b._accumulated_cost),
+                ("energy_wh", b.energy_wh, b._accumulated_energy),
+                ("carbon_g", b.carbon_g, b._accumulated_carbon),
+            ]:
+                if threshold is not None:
+                    detail[metric] = {
+                        "threshold": threshold,
+                        "accumulated": round(accumulated, 6),
+                        "remaining": round(max(0, threshold - accumulated), 6),
+                        "percentage_used": round(
+                            min(100, accumulated / threshold * 100), 1
+                        ) if threshold > 0 else 0.0,
+                    }
+            result[name] = detail
+        return result
 
 
 # Environment-based auto-configuration

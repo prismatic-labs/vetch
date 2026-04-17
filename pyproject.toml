@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.2.4"
+version = "0.3.0"
 description = "Planet-aware observability for LLM inference"
 readme = "README.md"
 license = "Apache-2.0"
@@ -47,6 +47,7 @@ otel = [  # OpenTelemetry OTLP export
     "opentelemetry-exporter-otlp-proto-grpc>=1.0",
 ]
 opentelemetry = ["opentelemetry-api>=1.0"]  # GenAI semantic conventions exporter
+mcp = ["mcp>=1.0,<2.0"]
 test = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
@@ -64,6 +65,7 @@ dev = [
 
 [project.scripts]
 vetch = "vetch.cli:main"
+vetch-mcp = "vetch.mcp.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vetch"]
