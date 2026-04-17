@@ -1,7 +1,7 @@
 # Vetch Methodology
 
 methodology_version: "1.1"
-sdk_version: "0.3.0"
+sdk_version: "0.3.1"
 
 ## Preamble
 Vetch exists because AI systems currently operate with no feedback on their energy consumption. Every inference draws power from infrastructure with real costs—financial, environmental, and systemic. None of this is visible to the developer making the API call.

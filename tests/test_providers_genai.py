@@ -4,6 +4,12 @@ from unittest.mock import Mock
 
 import pytest
 
+try:
+    import pytest_asyncio as _  # noqa: F401
+    _has_pytest_asyncio = True
+except ImportError:
+    _has_pytest_asyncio = False
+
 from vetch.providers.genai import (
     _normalize_model_name,
     extract_model,
@@ -330,6 +336,7 @@ class TestTrackGenaiContextManager:
         # Should be unpatched after exit
         assert not hasattr(client, "vetch_patched")
 
+    @pytest.mark.skipif(not _has_pytest_asyncio, reason="pytest-asyncio not installed")
     @pytest.mark.asyncio
     async def test_atrack_genai_patches_and_unpatches(self):
         """Test that atrack_genai async context manager works."""
