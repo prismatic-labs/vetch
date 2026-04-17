@@ -199,8 +199,10 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     # OpenAI includes these in completion_tokens_details
     reasoning_tokens = 0
     completion_details = getattr(usage, "completion_tokens_details", None)
-    if completion_details:
-        reasoning_tokens = getattr(completion_details, "reasoning_tokens", 0) or 0
+    if completion_details is not None:
+        raw_reasoning = getattr(completion_details, "reasoning_tokens", 0)
+        if isinstance(raw_reasoning, int):
+            reasoning_tokens = raw_reasoning
 
     # Build usage dict with text and optional image/reasoning
     # OpenAI's completion_tokens INCLUDES reasoning_tokens, so we subtract
