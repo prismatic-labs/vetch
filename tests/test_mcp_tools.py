@@ -17,6 +17,7 @@ from vetch.mcp.tools import (
     vetch_session_stats,
     vetch_status,
 )
+from vetch.stats import _reset_session_stats
 
 
 class TestVetchEstimate:
@@ -115,6 +116,12 @@ class TestVetchCompare:
 
 class TestVetchSessionStats:
     """Tests for vetch_session_stats tool."""
+
+    def setup_method(self) -> None:
+        _reset_session_stats()
+
+    def teardown_method(self) -> None:
+        _reset_session_stats()
 
     def test_returns_session_data(self) -> None:
         """Session stats returns totals, advisories, and training context."""

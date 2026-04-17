@@ -149,6 +149,12 @@ def get_session_stats() -> SessionStats:
     return _session_stats
 
 
+def _reset_session_stats() -> None:
+    """Reset the global singleton. Test-only."""
+    global _session_stats
+    _session_stats = SessionStats()
+
+
 def track_session_event(event: dict[str, Any]) -> None:
     """Update global session stats."""
     _session_stats.update(event)

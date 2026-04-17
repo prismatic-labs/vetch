@@ -197,17 +197,17 @@ TOOLS = [
 
 RESOURCES = [
     Resource(
-        uri="vetch://registry/models",  # type: ignore[arg-type]
+        uri="vetch://registry/models",
         name="Model list",
         description="All model names in the energy registry",
     ),
     Resource(
-        uri="vetch://config",  # type: ignore[arg-type]
+        uri="vetch://config",
         name="Configuration",
         description="Current Vetch configuration",
     ),
     Resource(
-        uri="vetch://version",  # type: ignore[arg-type]
+        uri="vetch://version",
         name="Version",
         description="Vetch version string",
     ),
@@ -228,7 +228,7 @@ _TOOL_HANDLERS: dict[str, Any] = {
 }
 
 
-@app.list_tools()  # type: ignore[no-untyped-call, untyped-decorator]
+@app.list_tools()  # type: ignore[untyped-decorator]
 async def handle_list_tools() -> list[Tool]:
     return TOOLS
 
@@ -270,12 +270,12 @@ def _error_result(message: str) -> CallToolResult:
     )
 
 
-@app.list_resources()  # type: ignore[no-untyped-call, untyped-decorator]
+@app.list_resources()  # type: ignore[untyped-decorator]
 async def handle_list_resources() -> list[Resource]:
     return RESOURCES
 
 
-@app.read_resource()  # type: ignore[no-untyped-call, untyped-decorator]
+@app.read_resource()  # type: ignore[untyped-decorator]
 async def handle_read_resource(uri: str) -> str:
     if uri == "vetch://registry/models":
         return json.dumps(list_models(), indent=2)
