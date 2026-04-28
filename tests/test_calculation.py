@@ -59,13 +59,13 @@ class TestEnergyCalculation:
         """Calculate energy for a known model (gpt-4o with prompt-length-aware coefficients)."""
         # gpt-4o now uses Tier 1 data from Jegham et al. (2025)
         # With 1500 total tokens (1000 in + 500 out), uses "medium" category
-        # Medium: 0.304 Wh/1k input, 0.911 Wh/1k output
-        # Energy = (1000 * 0.304 + 500 * 0.911) / 1000 = (304 + 455.5) / 1000 = 0.7595 Wh
+        # Medium: 0.271 Wh/1k input, 0.813 Wh/1k output (pre-PUE, ÷1.12 from Jegham)
+        # Energy = (1000 * 0.271 + 500 * 0.813) / 1000 = (271 + 406.5) / 1000 = 0.6775 Wh
         energy, tier, uncertainty_pct, source, basis, known = calculate_energy(
             1000, 500, "gpt-4o"
         )
 
-        assert energy == pytest.approx(0.7595)
+        assert energy == pytest.approx(0.6775)
         assert tier == 1
         assert uncertainty_pct == 50  # Tier 1 = ±50%
         assert source == "registry"
@@ -112,10 +112,10 @@ class TestPromptLengthFallback:
 
     def test_gpt4_long_prompt_falls_back_to_medium(self) -> None:
         """GPT-4 has no 'long' measurement — should fall back to medium."""
-        # GPT-4 medium: 1.628 Wh/1k input, 4.884 Wh/1k output
+        # GPT-4 medium: 1.454 Wh/1k input, 4.361 Wh/1k output (pre-PUE, ÷1.12 from Jegham)
         # 6000 input tokens → would be "long" but GPT-4 only has short/medium
         energy, tier, _, _, _, known = calculate_energy(6000, 500, "gpt-4")
-        expected = (6000 * 1.628 + 500 * 4.884) / 1000  # Uses medium coefficients
+        expected = (6000 * 1.454 + 500 * 4.361) / 1000  # Uses medium coefficients
         assert energy == pytest.approx(expected)
         assert tier == 1
         assert known is True

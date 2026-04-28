@@ -5,6 +5,125 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-27
+
+### Added — Uncertainty bounds (UACA Phase 1)
+
+`InferenceEvent` now carries explicit absolute lower/upper confidence
+bounds on energy and carbon, derived from the existing
+`energy_uncertainty_pct`. No new modelling — just exposes the uncertainty
+band so downstream tooling (dashboards, compliance reports, audits) can
+read absolute numbers without recomputing the math.
+
+- `energy_p5_wh` — lower bound (clamped at 0.0)
+- `energy_p95_wh` — upper bound
+- `carbon_p5_g` — lower bound (clamped at 0.0)
+- `carbon_p95_g` — upper bound
+
+Bands match the per-tier uncertainty already documented:
+
+- Tier 0 (hardware-measured): ±20%
+- Tier 1 (vendor-published): ±50%
+- Tier 2 (validated): ±100%
+- Tier 3 (estimated): ±1000%
+
+Deferred from the UACA proposal to a future release: the latency-based
+intensity heuristic (TTFT/TBT-derived energy scaling) and Time-of-Use
+carbon factors. Both would need calibration data we don't yet have.
+
+### Added — Circuit Breaker
+
+The headline feature of v0.4.0: STALL-001 detection now stops runaway agent
+loops before they burn more money. Configurable per-session, fail-open by
+design.
+
+- **`vetch.set_stall_action(action, fallback_model=None)`** — Configure how
+  Vetch responds when STALL-001 fires:
+  - `"log"` (default — backwards compatible): generate the advisory, take
+    no action.
+  - `"warn"`: log a stderr WARNING on the next call after detection.
+  - `"kill"`: raise `vetch.StallDetected` on the next call, stopping the
+    loop.
+  - `"reroute"`: transparently substitute the model with `fallback_model`
+    on the next call. If the substituted call rejects the parameters
+    (param mismatch, missing capability, etc.), Vetch falls back to the
+    original model — fail-open.
+- **`vetch.StallDetected`** exception. Inherits from a new
+  `vetch.VetchInterrupt(RuntimeError)` umbrella class — *not* from
+  `VetchError`/`ValueError`. Generic `except ValueError:` handlers in user
+  code will not swallow it.
+- **`session.clear_stall()`** — re-arms the breaker after a human-in-the-loop
+  fix (corrected prompt, fixed retriever, etc.). The next stall will trip
+  the breaker again.
+- **`Advisory.request_count`** — new field on the advisory namedtuple
+  carrying the number of stalled calls (used by the exception payload).
+- Lazy STALL-001 detection: the advisory cycle is skipped entirely until a
+  session has at least 10 calls. Eliminates per-call overhead in short
+  agent runs.
+
+### Changed
+
+- `pyproject.toml` description rewritten to reflect the resource-aware
+  framing of v0.4.0.
+- README hero rewritten: "The circuit breaker for runaway AI inference."
+- Energy and carbon metering remain core. They now travel with a sharper
+  cost-savings story.
+
+### Fixed
+
+- `tests/conftest.py` now resets the global `_session_stats` singleton
+  between tests, fixing pre-existing test-pollution where a previous test's
+  MagicMocks leaked into `vetch_session_stats` MCP tool output.
+- `__version__` in `vetch/__init__.py` was out of sync with `pyproject.toml`
+  (`0.3.0` vs `0.3.1`). Both now reflect `0.4.0`.
+
+### Provider coverage
+
+The circuit breaker is wired into every provider wrapper:
+
+- OpenAI (sync + async + streaming)
+- Anthropic (sync + async + streaming)
+- Azure OpenAI (auto — uses the OpenAI patches under the hood)
+- Vertex AI (sync + async). Reroute degrades to log-mode here because
+  Vertex binds the model to the `GenerativeModel` instance, not kwargs.
+  Kill / warn / log all work.
+- Google GenAI (sync + async). Reroute is applied to `generate_content*`
+  methods only; embedding methods are deliberately left untouched.
+
+### Notes
+
+- **Backwards compatible:** existing users see no behaviour change unless
+  they call `set_stall_action(...)`. Default remains `"log"`.
+- **In-flight calls are not interrupted.** Streaming calls complete
+  naturally; the circuit breaker only intercepts calls that *start* after
+  a stall is detected. With `asyncio.gather([...10 calls...])`, all 10
+  in-flight calls complete; the 11th onwards is intercepted.
+- **What STALL-001 actually detects:** short outputs *and* high input
+  similarity. A succinct classifier returning 1-token answers from varied
+  inputs is not a stall — input similarity is low. STALL-001 fires only
+  when the agent is producing little output AND repeating roughly the
+  same input pattern.
+
+### Example
+
+```python
+import vetch
+from openai import OpenAI
+
+vetch.instrument()
+vetch.set_stall_action("kill")
+
+client = OpenAI()
+try:
+    with vetch.Session() as session:
+        for step in agent.run():
+            client.chat.completions.create(...)
+except vetch.StallDetected as e:
+    print(f"Stopped: {e.request_count} calls, ~${e.wasted_cost_usd:.2f} wasted")
+```
+
+See `examples/circuit_breaker_demo.py` for a runnable end-to-end demo.
+
 ## [0.2.4] - 2026-03-22
 
 ### ⚠️ BREAKING BEHAVIOR (data changes — no API changes)

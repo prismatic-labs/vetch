@@ -19,6 +19,7 @@ class Advisory(NamedTuple):
     title: str
     description: str
     potential_savings_usd: float | None = None
+    request_count: int = 0
 
 
 def generate_advisories(stats: SessionStats) -> list[Advisory]:
@@ -90,6 +91,7 @@ def generate_advisories(stats: SessionStats) -> list[Advisory]:
                 f"Estimated wasted cost: ${stalled_cost:.2f}."
             ),
             potential_savings_usd=stalled_cost,
+            request_count=recent_low,
         ))
 
     return advisories

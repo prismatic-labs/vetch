@@ -6,13 +6,40 @@
 [![CI](https://github.com/prismatic-labs/vetch/actions/workflows/ci.yml/badge.svg)](https://github.com/prismatic-labs/vetch/actions/workflows/ci.yml)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/prismatic-labs/vetch/blob/main/demo.ipynb)
 
-Planet-aware observability for LLM inference.
+**Planet-aware LLM observability with circuit breakers for runaway cost, energy, and carbon.**
 
-Vetch is a Python SDK that wraps LLM API calls to log energy consumption, cost, and carbon per inference using live grid data. It never reads prompt or completion content—only metadata from the response usage.
+Vetch is a Python SDK that wraps LLM API calls to detect stalled agentic loops, RAG bloat, and zombie inference patterns before they burn through your budget. It also logs energy consumption, cost, and carbon per inference using live grid data — without ever reading your prompts or completions.
 
+- **[Live demo: stop a runaway agent](examples/circuit_breaker_demo.py)** — `vetch.set_stall_action("kill")` and watch
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
 - **[Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
 - **[Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across 48 models
+
+## Stop runaway AI loops (v0.4.0)
+
+```python
+import vetch
+
+vetch.instrument()
+vetch.set_stall_action("kill")  # or "warn", or "reroute"
+
+# Your agent loop here. Vetch detects stalls (low-output calls with
+# high input similarity — the "stuck in a loop" pattern) and raises
+# vetch.StallDetected before more money is wasted.
+```
+
+Three modes:
+
+| Mode | What happens |
+|------|--------------|
+| `"log"` (default) | Generate the advisory, take no action. Backwards compatible. |
+| `"warn"` | Log a stderr warning on the next call after a stall. |
+| `"kill"` | Raise `vetch.StallDetected` on the next call — the loop breaks, you catch the exception, money saved. |
+| `"reroute"` | Transparently substitute the model with `fallback_model`. If the substituted call rejects the parameters, Vetch fails open and uses the original. |
+
+`vetch.StallDetected` inherits from `RuntimeError` (not `ValueError`) so a generic `except ValueError:` handler in user code won't swallow it. Recover with `session.clear_stall()` after a human-in-the-loop fix.
+
+**What STALL-001 actually detects:** short outputs **and** high input similarity. A succinct classifier returning 1-token answers from varied inputs is not a stall. STALL-001 fires only when the agent is producing little output AND repeating roughly the same input pattern — the canonical "stuck in a loop" signature.
 
 ## Why Vetch?
 

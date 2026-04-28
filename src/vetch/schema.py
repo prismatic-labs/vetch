@@ -114,6 +114,15 @@ class InferenceEvent(TypedDict, total=False):
     signal_quality: Literal["live", "delayed", "blind", "unknown"]
     energy_tier: int  # 0=measured, 1=vendor, 2=validated, 3=estimated
     energy_uncertainty_pct: Union[int, None]  # Uncertainty %: 20/50/100/1000 for tier 0/1/2/3
+    # v0.4.0: Explicit confidence bounds. Both are derived from
+    # ``estimated_energy_wh`` and ``energy_uncertainty_pct`` — they don't
+    # introduce new modelling, just expose the existing uncertainty as
+    # absolute Wh / gCO2 numbers so downstream tooling doesn't have to
+    # repeat the math. ``p5_*`` is the lower bound, ``p95_*`` the upper.
+    energy_p5_wh: Union[float, None]
+    energy_p95_wh: Union[float, None]
+    carbon_p5_g: Union[float, None]
+    carbon_p95_g: Union[float, None]
     energy_source: str  # "registry", "override", "fallback", "calibrated"
     energy_override_source: Union[str, None]
     energy_basis: Union[str, None]

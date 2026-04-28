@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
     from vetch.wrapper import VetchContext
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = [
     "wrap",
     "awrap",
@@ -79,6 +79,11 @@ __all__ = [
     # v0.2.0: OpenTelemetry exporter
     "configure_otel_export",
     "export_event_as_span",
+    # v0.4.0: Stall circuit breaker
+    "set_stall_action",
+    "get_stall_action",
+    "StallDetected",
+    "VetchInterrupt",
 ]
 
 # Track instrumented state
@@ -615,4 +620,21 @@ def __getattr__(name: str) -> object:
         from vetch.exporters.opentelemetry import export_event_as_span
 
         return export_event_as_span
+    # v0.4.0: Stall circuit breaker
+    if name == "set_stall_action":
+        from vetch.config import set_stall_action
+
+        return set_stall_action
+    if name == "get_stall_action":
+        from vetch.config import get_stall_action
+
+        return get_stall_action
+    if name == "StallDetected":
+        from vetch.exceptions import StallDetected
+
+        return StallDetected
+    if name == "VetchInterrupt":
+        from vetch.exceptions import VetchInterrupt
+
+        return VetchInterrupt
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

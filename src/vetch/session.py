@@ -34,10 +34,16 @@ from typing import TYPE_CHECKING, Any, cast
 from vetch import __version__
 from vetch.emitter import emit_event
 from vetch.schema import SCHEMA_VERSION
-from vetch.stats import SessionStats
+from vetch.stats import _RECENT_WINDOW, SessionStats
 
 if TYPE_CHECKING:
+    from vetch.advisory import Advisory
     from vetch.schema import InferenceEvent
+
+# Lazy detection threshold: STALL-001 needs at least 10 calls to fire,
+# so we skip the advisory cycle entirely until we have enough history.
+# Half the rolling window is a safe lower bound for any future advisory too.
+_STALL_DETECTION_MIN_CALLS = _RECENT_WINDOW // 2  # = 10
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +137,12 @@ class Session:
         # Per-session stats for advisory analysis (stall detection, etc.)
         # Isolated from the global singleton — safe for multi-user contexts.
         self.stats = SessionStats()
+
+        # v0.4.0: Stall circuit breaker state. Set by register_event when
+        # STALL-001 fires; read by provider wrappers via _stall.apply_stall_action.
+        # Stays True for the rest of the session unless clear_stall() is called.
+        self.stall_triggered: bool = False
+        self.stall_advisory: Advisory | None = None
 
         # Accumulation state (thread-safe)
         self._lock = threading.Lock()
@@ -246,6 +258,26 @@ class Session:
             self._call_count += 1
             self.stats.update(event)
 
+            # v0.4.0: Lazy STALL-001 detection. STALL-001 needs at least 10
+            # calls to fire (see advisory.py), so we skip the advisory cycle
+            # entirely until we've accumulated enough history. Once tripped,
+            # the flag stays set until clear_stall() — no thrashing.
+            if (
+                not self.stall_triggered
+                and self.stats.total_requests >= _STALL_DETECTION_MIN_CALLS
+            ):
+                try:
+                    from vetch.advisory import generate_advisories
+
+                    for adv in generate_advisories(self.stats):
+                        if adv.code == "STALL-001":
+                            self.stall_triggered = True
+                            self.stall_advisory = adv
+                            break
+                except Exception as exc:
+                    # Fail-open: if detection itself errors, log and move on.
+                    logger.debug("STALL-001 detection failed: %s", exc)
+
             # Safety: stop accumulating after max_calls to prevent OOM
             if self._max_calls > 0 and self._call_count > self._max_calls:
                 if not self._saturated:
@@ -311,6 +343,31 @@ class Session:
             # Track errors
             if event.get("error"):
                 self._errors += 1
+
+    def clear_stall(self) -> None:
+        """Reset the stall circuit-breaker flag so it can re-arm.
+
+        Use after a human-in-the-loop fix (corrected prompt, fixed retriever,
+        updated agent instructions) to resume normal operation in the same
+        session. Subsequent calls behave as before — the next stall pattern
+        will trip the breaker again.
+
+        Thread-safe.
+
+        Example::
+
+            try:
+                with vetch.Session() as session:
+                    while True:
+                        agent.step()  # raises StallDetected
+            except vetch.StallDetected:
+                fix_the_prompt()
+                session.clear_stall()
+                # Loop can now resume; next stall will re-trigger.
+        """
+        with self._lock:
+            self.stall_triggered = False
+            self.stall_advisory = None
 
     def inject_headers(self, headers: dict[str, str]) -> dict[str, str]:
         """Inject session IDs into HTTP headers for distributed tracing.

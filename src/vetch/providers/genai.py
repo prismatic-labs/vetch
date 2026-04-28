@@ -24,6 +24,7 @@ from collections.abc import AsyncGenerator, Generator
 from typing import TYPE_CHECKING, Any
 from weakref import WeakKeyDictionary
 
+from vetch._stall import apply_stall_action, looks_like_param_mismatch
 from vetch.context import get_active_context
 from vetch.proxy import is_vetch_patched
 
@@ -72,11 +73,38 @@ class _WeakMethodWrapper:
 
         # Auto-create context if needed, or use existing manual wrap() context
         with auto_context_for_instrumented_call("google_genai"):
-            if isinstance(original, tuple):
-                orig_func, orig_self = original
-                response = orig_func(orig_self, *args, **kwargs)
-            else:
-                response = original(*args, **kwargs)
+            # v0.4.0: Stall circuit breaker. Only applied to generation
+            # methods — embeddings won't ever trigger STALL-001 and we
+            # don't want to substitute an embedding model.
+            rerouted = False
+            original_model: str | None = None
+            if "generate_content" in self._method_name:
+                rerouted, original_model = apply_stall_action(
+                    kwargs, get_active_context()
+                )
+
+            try:
+                if isinstance(original, tuple):
+                    orig_func, orig_self = original
+                    response = orig_func(orig_self, *args, **kwargs)
+                else:
+                    response = original(*args, **kwargs)
+            except Exception as e:
+                if rerouted and original_model and looks_like_param_mismatch(e):
+                    ctx = get_active_context()
+                    if ctx is not None:
+                        ctx.warnings.append(
+                            f"STALL-001 reroute failed ({type(e).__name__}); "
+                            f"falling back to original model {original_model}"
+                        )
+                    kwargs["model"] = original_model
+                    if isinstance(original, tuple):
+                        orig_func, orig_self = original
+                        response = orig_func(orig_self, *args, **kwargs)
+                    else:
+                        response = original(*args, **kwargs)
+                else:
+                    raise
 
             # Extract and capture metadata
             usage, cache_read, cache_create = extract_usage(response)
@@ -118,11 +146,36 @@ class _WeakAsyncMethodWrapper:
 
         # Auto-create context if needed, or use existing manual wrap() context
         async with async_auto_context_for_instrumented_call("google_genai"):
-            if isinstance(original, tuple):
-                orig_func, orig_self = original
-                response = await orig_func(orig_self, *args, **kwargs)
-            else:
-                response = await original(*args, **kwargs)
+            # v0.4.0: Stall circuit breaker. Generation methods only.
+            rerouted = False
+            original_model: str | None = None
+            if "generate_content" in self._method_name:
+                rerouted, original_model = apply_stall_action(
+                    kwargs, get_active_context()
+                )
+
+            try:
+                if isinstance(original, tuple):
+                    orig_func, orig_self = original
+                    response = await orig_func(orig_self, *args, **kwargs)
+                else:
+                    response = await original(*args, **kwargs)
+            except Exception as e:
+                if rerouted and original_model and looks_like_param_mismatch(e):
+                    ctx = get_active_context()
+                    if ctx is not None:
+                        ctx.warnings.append(
+                            f"STALL-001 reroute failed ({type(e).__name__}); "
+                            f"falling back to original model {original_model}"
+                        )
+                    kwargs["model"] = original_model
+                    if isinstance(original, tuple):
+                        orig_func, orig_self = original
+                        response = await orig_func(orig_self, *args, **kwargs)
+                    else:
+                        response = await original(*args, **kwargs)
+                else:
+                    raise
 
             # Extract and capture metadata
             usage, cache_read, cache_create = extract_usage(response)

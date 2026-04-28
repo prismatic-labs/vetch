@@ -15,6 +15,7 @@ Privacy guarantee: We only read model, usage, and timing metadata.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 import re
 import threading
@@ -22,6 +23,7 @@ import weakref
 from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakKeyDictionary
 
+from vetch._stall import apply_stall_action, looks_like_param_mismatch
 from vetch.context import get_active_context
 from vetch.proxy import is_vetch_patched
 
@@ -57,6 +59,11 @@ class _WeakChatWrapper:
             raise RuntimeError("Completions object was garbage collected")
 
         original = self._originals_dict[completions]
+
+        # v0.4.0: Stall circuit breaker. May raise StallDetected for "kill"
+        # action or mutate kwargs["model"] for "reroute" action.
+        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+
         is_stream = kwargs.get("stream", False)
 
         if is_stream:
@@ -73,6 +80,27 @@ class _WeakChatWrapper:
             return result
 
         except Exception as e:
+            # Fail-open reroute: if the substituted model rejected the call
+            # (e.g. parameter mismatch), retry with the original model so
+            # the user's app keeps working.
+            if rerouted and original_model and looks_like_param_mismatch(e):
+                ctx = get_active_context()
+                if ctx is not None:
+                    ctx.warnings.append(
+                        f"STALL-001 reroute failed ({type(e).__name__}); "
+                        f"falling back to original model {original_model}"
+                    )
+                kwargs["model"] = original_model
+                try:
+                    result = original(*args, **kwargs)
+                    if is_stream:
+                        model_hint = kwargs.get("model", "unknown")
+                        return StreamWrapper(result, model_hint=model_hint)
+                    _after_create(result, *args, **kwargs)
+                    return result
+                except Exception as fallback_err:
+                    _on_create_error(fallback_err)
+                    raise
             _on_create_error(e)
             raise
 
@@ -92,6 +120,10 @@ class _WeakAsyncChatWrapper:
             raise RuntimeError("Completions object was garbage collected")
 
         original = self._originals_dict[completions]
+
+        # v0.4.0: Stall circuit breaker.
+        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+
         is_stream = kwargs.get("stream", False)
 
         if is_stream:
@@ -108,6 +140,25 @@ class _WeakAsyncChatWrapper:
             return result
 
         except Exception as e:
+            # Fail-open reroute (see sync wrapper for rationale).
+            if rerouted and original_model and looks_like_param_mismatch(e):
+                ctx = get_active_context()
+                if ctx is not None:
+                    ctx.warnings.append(
+                        f"STALL-001 reroute failed ({type(e).__name__}); "
+                        f"falling back to original model {original_model}"
+                    )
+                kwargs["model"] = original_model
+                try:
+                    result = await original(*args, **kwargs)
+                    if is_stream:
+                        model_hint = kwargs.get("model", "unknown")
+                        return AsyncStreamWrapper(result, model_hint=model_hint)
+                    _after_create(result, *args, **kwargs)
+                    return result
+                except Exception as fallback_err:
+                    _on_create_error(fallback_err)
+                    raise
             _on_create_error(e)
             raise
 
@@ -418,6 +469,7 @@ class StreamWrapper:
         self._complete = False
         self._error = False
         self._error_type: str | None = None
+        self._captured = False
 
         # Tier 1: tiktoken buffered counting (~100-char buffer reduces encode() call frequency)
         from vetch.calculation import _get_tiktoken_encoding
@@ -513,6 +565,10 @@ class StreamWrapper:
 
     def _capture_to_context(self) -> None:
         """Capture final metadata to active context (or create auto-context)."""
+        if self._captured:
+            return
+        self._captured = True
+
         from vetch.calculation import _detect_content_type_hint
         from vetch.wrapper import auto_context_for_instrumented_call
 
@@ -586,8 +642,7 @@ class StreamWrapper:
         if exc_type is not None:
             self._error = True
             self._error_type = exc_type.__name__
-            self._capture_to_context()
-        # Close underlying stream if it supports it
+        self._capture_to_context()
         close = getattr(self._stream, "close", None)
         if close:
             close()
@@ -626,15 +681,10 @@ class AsyncStreamWrapper(StreamWrapper):
         if exc_type is not None:
             self._error = True
             self._error_type = exc_type.__name__
-            self._capture_to_context()
+        self._capture_to_context()
 
-        # Async close if available
         close = getattr(self._stream, "close", None)
         if close:
-            # Some async streams have sync close, some awaitable close
-            if  logging.getLogger("asyncio").name == "asyncio": # Basic check
-                 pass # Don't overengineer the close check for now
-            # Best effort
             try:
                 if hasattr(close, "__await__"):
                     await close()
@@ -653,8 +703,6 @@ def _wrapped_create(original: Any) -> Any:
     Returns:
         Wrapped method that captures metadata.
     """
-    import inspect
-
     # Handle async function
     if inspect.iscoroutinefunction(original):
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -713,8 +761,6 @@ def _wrapped_embeddings_create(original: Any) -> Any:
     Returns:
         Wrapped method that captures metadata.
     """
-    import inspect
-
     # Handle async function
     if inspect.iscoroutinefunction(original):
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -804,7 +850,6 @@ def patch_openai_client(client: Any) -> bool:
             )
 
             # Apply patch using weak reference wrapper to avoid GC cycles
-            import inspect
             wrapper: Any
             if inspect.iscoroutinefunction(create):
                 wrapper = _WeakAsyncChatWrapper(completions, _client_originals)
@@ -831,7 +876,6 @@ def patch_openai_client(client: Any) -> bool:
                         )
 
                         # Apply patch using weak reference wrapper to avoid GC cycles
-                        import inspect
                         emb_wrapper: Any
                         if inspect.iscoroutinefunction(embeddings_create):
                             emb_wrapper = _WeakAsyncEmbeddingsWrapper(embeddings, _client_originals)

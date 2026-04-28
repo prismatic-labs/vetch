@@ -14,6 +14,7 @@ import logging
 import os
 import time
 import uuid
+from collections import deque
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
@@ -270,7 +271,7 @@ class VetchContext:
         self._start_time: float | None = None
         self._event: InferenceEvent | None = None
         self._tracking_ctx: TrackingContext | None = None
-        self._warnings: list[str] = []  # Collect diagnostic warnings
+        self._warnings: deque[str] = deque(maxlen=50)
         self._patched_clients: list[tuple[str, Any]] = []  # Per-context patched clients
 
         # Validate energy override if provided
@@ -678,6 +679,24 @@ class VetchContext:
             if billing_tier and "batch" not in billing_tier.lower():
                 billing_tier = f"{billing_tier} (batch 50% discount)"
 
+        # v0.4.0: Derive explicit p5/p95 bounds from the existing uncertainty %.
+        # No new modelling — just expose the uncertainty band as absolute
+        # numbers so downstream tooling (dashboards, compliance reports)
+        # doesn't have to repeat the math. Caps the lower bound at 0 to
+        # avoid negative values when uncertainty is high.
+        energy_p5_wh: float | None = None
+        energy_p95_wh: float | None = None
+        carbon_p5_g: float | None = None
+        carbon_p95_g: float | None = None
+        if energy_wh is not None and energy_uncertainty_pct is not None:
+            band = energy_wh * (energy_uncertainty_pct / 100.0)
+            energy_p5_wh = max(energy_wh - band, 0.0)
+            energy_p95_wh = energy_wh + band
+        if carbon_g is not None and energy_uncertainty_pct is not None:
+            band = carbon_g * (energy_uncertainty_pct / 100.0)
+            carbon_p5_g = max(carbon_g - band, 0.0)
+            carbon_p95_g = carbon_g + band
+
         # Build event
         self._event = InferenceEvent(
             schema_version=SCHEMA_VERSION,
@@ -706,6 +725,10 @@ class VetchContext:
             signal_quality=signal_quality,
             energy_tier=energy_tier,
             energy_uncertainty_pct=energy_uncertainty_pct,
+            energy_p5_wh=energy_p5_wh,
+            energy_p95_wh=energy_p95_wh,
+            carbon_p5_g=carbon_p5_g,
+            carbon_p95_g=carbon_p95_g,
             energy_source=energy_source,
             energy_override_source=(
                 self._energy_override.get("source") if self._energy_override else None

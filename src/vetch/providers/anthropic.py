@@ -19,6 +19,7 @@ import weakref
 from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakKeyDictionary
 
+from vetch._stall import apply_stall_action, looks_like_param_mismatch
 from vetch.context import get_active_context
 from vetch.proxy import is_vetch_patched
 
@@ -53,6 +54,10 @@ class _WeakMessagesWrapper:
             raise RuntimeError("Messages object was garbage collected")
 
         original = self._originals_dict[messages]
+
+        # v0.4.0: Stall circuit breaker.
+        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+
         is_stream = kwargs.get("stream", False)
         thinking_param = kwargs.get("thinking", {})
         is_thinking = (
@@ -70,6 +75,27 @@ class _WeakMessagesWrapper:
             return result
 
         except Exception as e:
+            # Fail-open reroute: retry with original model on param mismatch.
+            if rerouted and original_model and looks_like_param_mismatch(e):
+                ctx = get_active_context()
+                if ctx is not None:
+                    ctx.warnings.append(
+                        f"STALL-001 reroute failed ({type(e).__name__}); "
+                        f"falling back to original model {original_model}"
+                    )
+                kwargs["model"] = original_model
+                try:
+                    result = original(*args, **kwargs)
+                    if is_stream:
+                        model_hint = kwargs.get("model", "unknown")
+                        return StreamWrapper(
+                            result, model_hint=model_hint, is_thinking=is_thinking
+                        )
+                    _after_create(result, *args, **kwargs)
+                    return result
+                except Exception as fallback_err:
+                    _on_create_error(fallback_err)
+                    raise
             _on_create_error(e)
             raise
 
@@ -89,6 +115,10 @@ class _WeakAsyncMessagesWrapper:
             raise RuntimeError("Messages object was garbage collected")
 
         original = self._originals_dict[messages]
+
+        # v0.4.0: Stall circuit breaker.
+        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+
         is_stream = kwargs.get("stream", False)
         thinking_param = kwargs.get("thinking", {})
         is_thinking = (
@@ -106,6 +136,27 @@ class _WeakAsyncMessagesWrapper:
             return result
 
         except Exception as e:
+            # Fail-open reroute: retry with original model on param mismatch.
+            if rerouted and original_model and looks_like_param_mismatch(e):
+                ctx = get_active_context()
+                if ctx is not None:
+                    ctx.warnings.append(
+                        f"STALL-001 reroute failed ({type(e).__name__}); "
+                        f"falling back to original model {original_model}"
+                    )
+                kwargs["model"] = original_model
+                try:
+                    result = await original(*args, **kwargs)
+                    if is_stream:
+                        model_hint = kwargs.get("model", "unknown")
+                        return AsyncStreamWrapper(
+                            result, model_hint=model_hint, is_thinking=is_thinking
+                        )
+                    _after_create(result, *args, **kwargs)
+                    return result
+                except Exception as fallback_err:
+                    _on_create_error(fallback_err)
+                    raise
             _on_create_error(e)
             raise
 
@@ -234,6 +285,7 @@ class StreamWrapper:
         self._complete = False
         self._error = False
         self._error_type: str | None = None
+        self._captured = False
 
         # Tier 1: tiktoken buffered counting (~100-char buffer reduces encode() call frequency)
         from vetch.calculation import _get_tiktoken_encoding
@@ -323,6 +375,10 @@ class StreamWrapper:
                 self._output_tokens += getattr(usage, "output_tokens", 0)
 
     def _capture_to_context(self) -> None:
+        if self._captured:
+            return
+        self._captured = True
+
         from vetch.calculation import _detect_content_type_hint
         from vetch.wrapper import auto_context_for_instrumented_call
 
@@ -399,7 +455,7 @@ class StreamWrapper:
         if exc_type is not None:
             self._error = True
             self._error_type = exc_type.__name__
-            self._capture_to_context()
+        self._capture_to_context()
         close = getattr(self._stream, "close", None)
         if close:
             close()
@@ -438,7 +494,7 @@ class AsyncStreamWrapper(StreamWrapper):
         if exc_type is not None:
             self._error = True
             self._error_type = exc_type.__name__
-            self._capture_to_context()
+        self._capture_to_context()
 
         close = getattr(self._stream, "close", None)
         if close:

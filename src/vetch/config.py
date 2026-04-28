@@ -56,6 +56,12 @@ _last_combination_warning: float = 0.0  # Rate limit warnings
 _cached_hmac_key: bytes | None = None
 _hmac_key_loaded: bool = False
 
+# v0.4.0: Stall circuit breaker action
+_stall_action: str = "log"
+_stall_fallback_model: str | None = None
+
+VALID_STALL_ACTIONS: frozenset[str] = frozenset({"log", "warn", "kill", "reroute"})
+
 
 def add_global_tags(tags: dict[str, str]) -> None:
     """Set tags that will be automatically added to every inference event.
@@ -607,6 +613,71 @@ def process_tags_single_pass(
     return processed, warnings, missing
 
 
+def set_stall_action(action: str, fallback_model: str | None = None) -> None:
+    """Configure how Vetch responds when STALL-001 fires.
+
+    STALL-001 detects agentic stalls (low-output calls with high input
+    similarity — the canonical "stuck in a loop" pattern). By default,
+    Vetch only logs an advisory. ``set_stall_action`` makes the detection
+    actionable.
+
+    Args:
+        action: One of:
+            - ``"log"`` (default): Generate the advisory, take no action.
+              Backwards compatible behaviour.
+            - ``"warn"``: Log a stderr WARNING on the next call after a stall
+              is detected.
+            - ``"kill"``: Raise :class:`vetch.StallDetected` on the next call,
+              stopping the loop. The exception inherits from
+              ``RuntimeError`` (not ``ValueError``) so generic
+              ``except ValueError:`` handlers will not swallow it.
+            - ``"reroute"``: Transparently substitute the model with
+              ``fallback_model`` on the next call. If the substituted call
+              fails with a parameter-mismatch error, Vetch falls back to
+              the original model (fail-open).
+        fallback_model: Model name to substitute when ``action="reroute"``.
+            Required for ``"reroute"``. Optional for ``"kill"`` (carried
+            as a hint in the raised exception).
+
+    Raises:
+        ConfigurationError: If ``action`` is invalid, or if
+            ``action="reroute"`` and ``fallback_model`` is None.
+
+    Example::
+
+        # Stop runaway agent loops
+        vetch.set_stall_action("kill")
+
+        # Transparently downgrade to a cheaper model after detection
+        vetch.set_stall_action("reroute", fallback_model="gpt-4o-mini")
+    """
+    from vetch.exceptions import ConfigurationError
+
+    global _stall_action, _stall_fallback_model
+    if action not in VALID_STALL_ACTIONS:
+        raise ConfigurationError(
+            f"Invalid stall_action: {action!r}. "
+            f"Must be one of {sorted(VALID_STALL_ACTIONS)}.",
+            field="action",
+        )
+    if action == "reroute" and not fallback_model:
+        raise ConfigurationError(
+            "fallback_model is required when stall_action='reroute'.",
+            field="fallback_model",
+        )
+    _stall_action = action
+    _stall_fallback_model = fallback_model
+
+
+def get_stall_action() -> tuple[str, str | None]:
+    """Return the currently configured stall action.
+
+    Returns:
+        Tuple of ``(action, fallback_model)``. Default is ``("log", None)``.
+    """
+    return _stall_action, _stall_fallback_model
+
+
 def _reset_config() -> None:
     """Reset global configuration. Primarily for testing."""
     global _required_tags, _global_tags, _tag_cardinality_limit
@@ -614,6 +685,7 @@ def _reset_config() -> None:
     global _tag_combinations_seen, _MAX_TAG_COMBINATIONS
     global _tag_combination_limit_exceeded, _last_combination_warning
     global _cached_hmac_key, _hmac_key_loaded
+    global _stall_action, _stall_fallback_model
     _required_tags = set()
     _global_tags = {}
     _tag_cardinality_limit = 1000
@@ -627,3 +699,5 @@ def _reset_config() -> None:
     _last_combination_warning = 0.0
     _cached_hmac_key = None
     _hmac_key_loaded = False
+    _stall_action = "log"
+    _stall_fallback_model = None
