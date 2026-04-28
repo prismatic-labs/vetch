@@ -136,6 +136,19 @@
   }
   footer a { color: var(--accent); text-decoration: none; }
   footer a:hover { text-decoration: underline; }
+  .methodology-note {
+    margin-top: 1.5rem; padding: 1.25rem 1.5rem;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); text-align: left;
+    max-width: 720px; margin-left: auto; margin-right: auto;
+    font-size: 0.78rem; line-height: 1.7;
+  }
+  .methodology-note h4 {
+    color: var(--text); font-size: 0.85rem; margin-bottom: 0.75rem;
+  }
+  .methodology-note p { margin-bottom: 0.6rem; color: var(--text-muted); }
+  .methodology-note p:last-child { margin-bottom: 0; }
+  .methodology-note strong { color: var(--text); }
 
   /* Hide compare by default */
   .result-card.compare.hidden { display: none; }
@@ -148,10 +161,9 @@
     <h1><span>prismatic labs</span> inference calculator</h1>
     <p>See the energy, carbon, water, and cost of every LLM call</p>
     <div class="badges">
-      <span class="badge">48 models</span>
-      <span class="badge">Tier 1 hardware measurements</span>
-      <span class="badge">Jegham et al. 2025</span>
-      <span class="badge">Apache 2.0</span>
+      <span class="badge">Open-weight models included</span>
+      <span class="badge">GPT · Claude · Gemini · Llama · DeepSeek</span>
+      <span class="badge">Open source · Apache 2.0</span>
     </div>
   </header>
 
@@ -196,8 +208,22 @@
   </p>
   <p style="margin-top:0.5rem">
     Tier 1 = hardware-measured (&plusmn;50%). Tier 3 = order-of-magnitude estimate (&plusmn;1000%).
-    Carbon assumes 440 gCO2e/kWh global average. Water assumes 1.7 L/kWh (OpenAI/Azure default).
+    Energy is facility-level (IT equipment &times; datacenter PUE).
+    Carbon assumes 440 gCO2e/kWh global average. Water assumes 1.7 L/kWh (cooling only).
   </p>
+
+  <div class="methodology-note">
+    <h4>Why might these numbers differ from EcoLogits or other tools?</h4>
+    <p><strong>Prompt-length sensitivity.</strong> Jegham et al. measured energy separately for short (&lt;1k tokens), medium (1k&ndash;5k), and long (&gt;5k) prompts. Short prompts cost more per token because fixed per-request overhead is spread across fewer tokens. Some tools use a single average value; this calculator uses the matching measured bucket.</p>
+    <p><strong>Provider-specific PUE.</strong> Datacenter overhead is applied using official sustainability reports: Azure&nbsp;1.12, AWS&nbsp;1.14, Google&nbsp;1.10. Tools that use a global average (typically 1.2&ndash;1.3) will diverge, particularly for Google and Anthropic models.</p>
+    <p><strong>Grid carbon intensity.</strong> This calculator uses 440&nbsp;gCO2e/kWh (IEA 2023 global average). Other tools use different defaults. Install the <a href="https://github.com/prismatic-labs/vetch" target="_blank">vetch SDK</a> with a region set for location-accurate carbon.</p>
+    <p><strong>Water scope.</strong> Water figures here reflect operational datacenter cooling only. Tools that include chip manufacturing and lifecycle water will show higher values.</p>
+    <p>
+      These numbers represent our best current understanding &mdash; they are not guaranteed to be correct.
+      Full methodology: <a href="https://github.com/prismatic-labs/vetch/blob/main/src/vetch/registry/PROVENANCE.md" target="_blank">PROVENANCE.md</a>.
+      Something look off? <a href="mailto:marco@prismaticlabs.ai">Email marco@prismaticlabs.ai</a> or <a href="https://github.com/prismatic-labs/vetch/issues" target="_blank">open an issue</a>.
+    </p>
+  </div>
 </footer>
 
 <script>
