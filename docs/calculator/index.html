@@ -246,15 +246,16 @@ function fmtUsd(n) {
 
 function renderCard(el, model, inTok, outTok, refEnergy, refCost) {
   const d = MODELS[model];
-  const energy = getEnergy(model, inTok, outTok);
+  const itEnergy = getEnergy(model, inTok, outTok);
+  const facilityEnergy = itEnergy * d.pue;
   const cost = getCost(model, inTok, outTok);
-  const carbon = (energy * d.pue * DEFAULT_GRID) / 1000;
-  const water = (energy * d.pue * DEFAULT_WUE) / 1000 * 1000; // ml
+  const carbon = (facilityEnergy * DEFAULT_GRID) / 1000;
+  const water = (facilityEnergy * DEFAULT_WUE) / 1000 * 1000; // ml
   const tier = d ? d.tier : 3;
 
   let deltaE = '', deltaC = '';
   if (refEnergy !== undefined && refEnergy > 0) {
-    const pctE = ((energy - refEnergy) / refEnergy * 100);
+    const pctE = ((facilityEnergy - refEnergy) / refEnergy * 100);
     const clsE = pctE <= 0 ? 'cheaper' : 'pricier';
     deltaE = `<span class="delta ${clsE}">${pctE <= 0 ? '' : '+'}${pctE.toFixed(0)}% energy</span>`;
   }
@@ -265,9 +266,8 @@ function renderCard(el, model, inTok, outTok, refEnergy, refCost) {
   }
 
   // Analogies
-  const ledMinutes = (energy / 10 * 60).toFixed(1);
-  const phones = (energy / 12).toFixed(2);
-  const co2Breaths = (carbon / 0.04).toFixed(0);
+  const ledMinutes = (facilityEnergy / 10 * 60).toFixed(1);
+  const phones = (facilityEnergy / 12).toFixed(2);
 
   el.innerHTML = `
     <div class="card-header">
@@ -280,7 +280,7 @@ function renderCard(el, model, inTok, outTok, refEnergy, refCost) {
         <div class="label">Cost</div>
       </div>
       <div class="metric energy">
-        <div class="value">${fmt(energy)} Wh</div>
+        <div class="value">${fmt(facilityEnergy)} Wh</div>
         <div class="label">Energy</div>
       </div>
       <div class="metric carbon">
@@ -300,7 +300,9 @@ function renderCard(el, model, inTok, outTok, refEnergy, refCost) {
 
 function renderLeaderboard(inTok, outTok, primary, compare) {
   const items = Object.keys(MODELS).map(m => ({
-    name: m, energy: getEnergy(m, inTok, outTok), tier: MODELS[m].tier
+    name: m,
+    energy: getEnergy(m, inTok, outTok) * MODELS[m].pue,
+    tier: MODELS[m].tier
   })).sort((a, b) => a.energy - b.energy);
 
   const max = items[items.length - 1].energy || 1;

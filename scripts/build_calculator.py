@@ -78,28 +78,14 @@ def build_models(energy: dict, pricing: dict) -> dict:
 def inject(html: str, models: dict) -> str:
     models_js = "const MODELS = " + json.dumps(models, separators=(",", ":")) + ";"
 
-    # Replace MODELS constant
-    html = re.sub(
+    # Replace MODELS constant — the only thing this script manages.
+    # JS formulas (facilityEnergy, carbon, water) are stable in the template.
+    return re.sub(
         r"const MODELS = \{.*?\};",
         models_js,
         html,
         flags=re.DOTALL,
     )
-
-    # Replace flat DEFAULT_PUE usages in calculations with per-model d.pue
-    # Only touch the two formula lines, not the const declaration itself
-    html = re.sub(
-        r"(const carbon = \(energy \* )DEFAULT_PUE( \* DEFAULT_GRID\) / 1000;)",
-        r"\1d.pue\2",
-        html,
-    )
-    html = re.sub(
-        r"(const water = \(energy \* )DEFAULT_PUE( \* DEFAULT_WUE\) / 1000 \* 1000;)",
-        r"\1d.pue\2",
-        html,
-    )
-
-    return html
 
 
 def main() -> None:
