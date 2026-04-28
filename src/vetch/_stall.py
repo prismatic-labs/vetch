@@ -156,6 +156,8 @@ def looks_like_param_mismatch(exc: Exception) -> bool:
         return True
     # Status-code attribute check (covers SDK-internal subclasses we don't know)
     status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-    if isinstance(status, int) and 400 <= status < 500 and status != 401 and status != 403 and status != 429:
-        return True
-    return False
+    return (
+        isinstance(status, int)
+        and 400 <= status < 500
+        and status not in (401, 403, 429)
+    )

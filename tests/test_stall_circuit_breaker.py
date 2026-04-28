@@ -21,7 +21,6 @@ import pytest
 
 import vetch
 from vetch._stall import apply_stall_action, looks_like_param_mismatch
-from vetch.advisory import Advisory
 from vetch.config import VALID_STALL_ACTIONS, get_stall_action, set_stall_action
 from vetch.context import TrackingContext
 from vetch.exceptions import ConfigurationError, StallDetected, VetchInterrupt
@@ -79,7 +78,7 @@ class TestStallActionConfig:
 
     def test_valid_actions_set_matches_docs(self) -> None:
         """The exported VALID_STALL_ACTIONS set matches the documented modes."""
-        assert VALID_STALL_ACTIONS == frozenset({"log", "warn", "kill", "reroute"})
+        assert frozenset({"log", "warn", "kill", "reroute"}) == VALID_STALL_ACTIONS
 
 
 # ---------------------------------------------------------------------------

@@ -612,7 +612,7 @@ class VetchContext:
             energy_override=cast("dict[str, Any]", self._energy_override),
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
-            existing_warnings=self._warnings,
+            existing_warnings=list(self._warnings),
             accumulated_tik_tokens=accumulated_tik_tokens,
             content_type_hint=content_type_hint,
         )
