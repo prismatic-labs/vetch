@@ -207,7 +207,7 @@
     <code>pip install vetch</code>
   </p>
   <p style="margin-top:0.5rem">
-    Tier 1 = hardware-measured (&plusmn;50%). Tier 3 = order-of-magnitude estimate (&plusmn;1000%).
+    Empirical (Tier 1) = API benchmark data from Jegham et al. 2025 (&plusmn;50%). Estimated (Tier 3) = order-of-magnitude (&plusmn;1000%).
     Energy is facility-level (IT equipment &times; datacenter PUE).
     Carbon assumes 440 gCO2e/kWh global average. Water assumes 1.7 L/kWh (cooling only).
   </p>
@@ -298,7 +298,7 @@ function renderCard(el, model, inTok, outTok, refEnergy, refCost) {
   el.innerHTML = `
     <div class="card-header">
       <h3>${model} ${deltaE}${deltaC}</h3>
-      <span class="tier-badge tier-${tier}">Tier ${tier}</span>
+      <span class="tier-badge tier-${tier}">${tier === 1 ? 'Empirical' : 'Estimated'}</span>
     </div>
     <div class="metrics">
       <div class="metric cost">
@@ -337,8 +337,9 @@ function renderLeaderboard(inTok, outTok, primary, compare) {
     const pct = Math.max(0.5, (it.energy / max) * 100);
     const active = (it.name === primary || it.name === compare) ? ' active' : '';
     const tierCls = it.tier === 1 ? 't1' : 't3';
+    const label = it.tier === 1 ? it.name : `${it.name} (est.)`;
     return `<div class="bar-row${active}">
-      <span class="bar-label">${it.name}</span>
+      <span class="bar-label">${label}</span>
       <div class="bar-track"><div class="bar-fill ${tierCls}" style="width:${pct}%"></div></div>
       <span class="bar-value">${fmt(it.energy)} Wh</span>
     </div>`;
@@ -378,32 +379,28 @@ function init() {
   const compareSel = document.getElementById('compare-model');
   const names = Object.keys(MODELS).sort();
 
-  // Popular first, then rest
-  const popular = POPULAR.filter(m => MODELS[m]);
-  const rest = names.filter(m => !popular.includes(m));
+  const measured  = names.filter(m => MODELS[m].tier === 1);
+  const estimated = names.filter(m => MODELS[m].tier !== 1);
 
-  const popGroup = document.createElement('optgroup');
-  popGroup.label = 'Popular';
-  popular.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; popGroup.appendChild(o); });
-  modelSel.appendChild(popGroup);
+  function addGroups(sel, includeNone) {
+    if (includeNone) {
+      const none = document.createElement('option');
+      none.value = ''; none.textContent = '-- none --';
+      sel.appendChild(none);
+    }
+    const g1 = document.createElement('optgroup');
+    g1.label = 'Empirical · Jegham et al. 2025';
+    measured.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; g1.appendChild(o); });
+    sel.appendChild(g1);
 
-  const allGroup = document.createElement('optgroup');
-  allGroup.label = 'All models';
-  rest.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; allGroup.appendChild(o); });
-  modelSel.appendChild(allGroup);
+    const g2 = document.createElement('optgroup');
+    g2.label = 'Estimated · ±1000%';
+    estimated.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; g2.appendChild(o); });
+    sel.appendChild(g2);
+  }
 
-  // Compare dropdown
-  const noneOpt = document.createElement('option');
-  noneOpt.value = ''; noneOpt.textContent = '-- none --';
-  compareSel.appendChild(noneOpt);
-  const popGroup2 = document.createElement('optgroup');
-  popGroup2.label = 'Popular';
-  popular.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; popGroup2.appendChild(o); });
-  compareSel.appendChild(popGroup2);
-  const allGroup2 = document.createElement('optgroup');
-  allGroup2.label = 'All models';
-  rest.forEach(m => { const o = document.createElement('option'); o.value = m; o.textContent = m; allGroup2.appendChild(o); });
-  compareSel.appendChild(allGroup2);
+  addGroups(modelSel, false);
+  addGroups(compareSel, true);
 
   // Default selections
   modelSel.value = 'gpt-4o';
