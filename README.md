@@ -10,6 +10,8 @@
 
 Vetch is a Python SDK that wraps LLM API calls to detect stalled agentic loops, RAG bloat, and zombie inference patterns before they burn through your budget. It also logs energy consumption, cost, and carbon per inference using live grid data — without ever reading your prompts or completions.
 
+Vetch uses a **top-down methodology**: for cloud inference, energy and carbon are estimated from the token counts returned by the API, multiplied by pre-measured energy intensities per model (sourced from hardware benchmarks). No access to the underlying hardware or datacenter is required. This contrasts with bottom-up approaches that measure GPU power draw directly — which Vetch also supports for local models via GPU calibration.
+
 - **[Live demo: stop a runaway agent](examples/circuit_breaker_demo.py)** — `vetch.set_stall_action("kill")` and watch
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
 - **[Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
