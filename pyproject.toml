@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "vetch"
 version = "0.4.0"
-description = "Planet-aware LLM observability with circuit breakers for runaway cost, energy, and carbon."
+description = "Inference waste control for production LLM systems. Detect stalled agents, RAG bloat, and runaway inference — then stop them automatically."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"

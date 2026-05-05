@@ -1,4 +1,4 @@
-# Vetch SDK
+# Vetch
 
 [![PyPI version](https://img.shields.io/pypi/v/vetch.svg)](https://pypi.org/project/vetch/)
 [![Python versions](https://img.shields.io/pypi/pyversions/vetch.svg)](https://pypi.org/project/vetch/)
@@ -6,18 +6,14 @@
 [![CI](https://github.com/prismatic-labs/vetch/actions/workflows/ci.yml/badge.svg)](https://github.com/prismatic-labs/vetch/actions/workflows/ci.yml)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/prismatic-labs/vetch/blob/main/demo.ipynb)
 
-**Planet-aware LLM observability with circuit breakers for runaway cost, energy, and carbon.**
+**Stop runaway inference.**
 
-Vetch is a Python SDK that wraps LLM API calls to detect stalled agentic loops, RAG bloat, and zombie inference patterns before they burn through your budget. It also logs energy consumption, cost, and carbon per inference using live grid data — without ever reading your prompts or completions.
+Vetch detects stalled agents, RAG bloat, zombie LLM calls, retry storms, and premium-model overuse — then warns, kills, reroutes, or throttles wasteful inference before it burns budget, latency, energy, and carbon.
 
-Vetch uses a **top-down methodology**: for cloud inference, energy and carbon are estimated from the token counts returned by the API, multiplied by pre-measured energy intensities per model (sourced from hardware benchmarks). No access to the underlying hardware or datacenter is required. This contrasts with bottom-up approaches that measure GPU power draw directly — which Vetch also supports for local models via GPU calibration.
-
-- **[Live demo: stop a runaway agent](examples/circuit_breaker_demo.py)** — `vetch.set_stall_action("kill")` and watch
+- **[Live demo: kill a runaway agent](examples/circuit_breaker_demo.py)** — `vetch.set_stall_action("kill")` and watch
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
 - **[Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
 - **[Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across 48 models
-
-## Stop runaway AI loops (v0.4.0)
 
 ```python
 import vetch
@@ -25,98 +21,168 @@ import vetch
 vetch.instrument()
 vetch.set_stall_action("kill")  # or "warn", or "reroute"
 
-# Your agent loop here. Vetch detects stalls (low-output calls with
-# high input similarity — the "stuck in a loop" pattern) and raises
+# Your agent loop here. Vetch detects stalls — short outputs with
+# high input similarity, the signature of a stuck loop — and raises
 # vetch.StallDetected before more money is wasted.
 ```
 
-Three modes:
+## The problem
 
-| Mode | What happens |
-|------|--------------|
-| `"log"` (default) | Generate the advisory, take no action. Backwards compatible. |
-| `"warn"` | Log a stderr warning on the next call after a stall. |
-| `"kill"` | Raise `vetch.StallDetected` on the next call — the loop breaks, you catch the exception, money saved. |
-| `"reroute"` | Transparently substitute the model with `fallback_model`. If the substituted call rejects the parameters, Vetch fails open and uses the original. |
+Old cloud waste was idle infrastructure: overprovisioned servers, forgotten instances, jobs that ran once and stayed scheduled. You could fix it by turning things off.
 
-`vetch.StallDetected` inherits from `RuntimeError` (not `ValueError`) so a generic `except ValueError:` handler in user code won't swallow it. Recover with `session.clear_stall()` after a human-in-the-loop fix.
+AI waste is different. It is active, accumulating, and invisible until the bill arrives. A stalled agent loop burns tokens on every iteration. A RAG pipeline retrieving irrelevant context bloats every prompt. A session that should have ended 40 calls ago is still running. Provider dashboards show total spend. They do not show which feature, customer, workflow, or agent session produced the waste — and they cannot stop the next occurrence automatically.
 
-**What STALL-001 actually detects:** short outputs **and** high input similarity. A succinct classifier returning 1-token answers from varied inputs is not a stall. STALL-001 fires only when the agent is producing little output AND repeating roughly the same input pattern — the canonical "stuck in a loop" signature.
+Every wasted inference call is wasted money, compute, energy, and carbon.
 
-## Why Vetch?
+## What counts as inference waste
 
-**Attributed Spend, Not Just Total Spend**
+| Pattern | What it looks like |
+|---------|-------------------|
+| **Stalled agent loop** | Agent iterating without meaningful output progress |
+| **RAG bloat** | Retrieval context overwhelming the prompt with low-signal content |
+| **Zombie inference** | Sessions or background tasks making LLM calls after they should have stopped |
+| **Retry storm** | Repeated identical or near-identical calls after failures |
+| **Premium model overuse** | High-capability model used where a cheaper one would suffice |
+| **Prompt cache misses** | Repeated prompt structures that could be cached but aren't |
+| **Unattributed spend** | Inference cost that cannot be tied to a feature, customer, or workflow |
 
-Provider dashboards (OpenAI Usage, Anthropic Console, Google Cloud Billing) show you *total* spend. Vetch shows you *attributed* spend. Using tags, you can track cost-per-feature, cost-per-user, or cost-per-environment in real-time—without building custom infrastructure.
+## What Vetch does
 
-**Sustainability Instrumentation**
+### Detect waste
 
-Begin tracking AI inference emissions for future CSRD (EU) and SEC (US) Scope 3 reporting. Vetch includes **Tier 1 (±50%)** hardware-measured energy data for popular models:
-- **GPT-4o, GPT-4o-mini, GPT-4.1 family, GPT-4.5, o1, o3, o4-mini** - Measured in Azure datacenters
-- **Claude-3.7 Sonnet** (standard + Extended Thinking) - Measured in AWS datacenters
-- **DeepSeek-R1, DeepSeek-V3** - Reasoning and MoE benchmarks
-- **Llama 3.1 (8B, 70B, 405B), Llama 3.3 70B** - Open-weight measurements
-- **GPT-5 family** (gpt-5, gpt-5-mini, gpt-5-nano, gpt-5.4 etc.) - Tier 3 estimates
-- **48 models** in the registry, with Tier 3 (order-of-magnitude) estimates for unmeasured models
+Vetch analyzes every inference call for behavioral patterns that indicate waste:
 
-Source: [Jegham et al. (2025)](https://arxiv.org/abs/2505.09598) - First large-scale LLM energy measurements in commercial datacenters.
+| Advisory | Pattern | Signal | Status |
+|----------|---------|--------|--------|
+| `STALL-001` | Stalled agent loop | ≥80% of last 20 calls produce short output with repeated input | ✅ Implemented |
+| `CACHE-001` | Prompt caching opportunity | >50% of calls share identical input token counts across ≥6 calls | ✅ Implemented |
+| `RAG-001` | RAG bloat | Average input:output ratio exceeds 50:1 | ✅ Implemented |
+| `SESSION-BUDGET-001` | Session over budget | Configured cost/energy/carbon threshold exceeded | ⚠️ Partial — alerts only, no advisory ID |
+| `ATTRIBUTION-001` | Unattributed spend | Required tags missing from calls | ⚠️ Partial — infrastructure only |
+| `RETRY-001` | Retry storm | Burst of repeated failed or near-identical calls | 🔜 Planned |
+| `PREMIUM-001` | Premium model overuse | Expensive model used for low-complexity tasks | 🔜 Planned |
+| `ZOMBIE-001` | Zombie inference | Active calls past expected session completion | 🔜 Planned |
 
-## Design Guarantees
+Full taxonomy with detection signals, false positives, and recommended actions: [docs/inference-waste-taxonomy.md](docs/inference-waste-taxonomy.md)
 
-### Fail-Open Architecture
+### Attribute waste
 
-Vetch is architected with a non-blocking, fail-open boundary. Every Vetch operation (patching, calculation, emission) is wrapped in isolated error handlers. If Vetch fails, your LLM call proceeds normally, and a `tracking_disabled: true` event is logged. Vetch will never cause an inference outage.
+Every inference call is tagged and attributed to a session. Sessions can carry any tags you define — `feature`, `customer`, `user`, `workflow`, `environment`, `team`. Cost, energy, and carbon accumulate per session and per tag combination.
 
-### Privacy & Data Perimeter
+```python
+with vetch.wrap(tags={"feature": "rag-search", "customer": "acme"}) as ctx:
+    response = client.chat.completions.create(...)
 
-Vetch never reads or stores prompt/completion content. It only extracts metadata (token counts, model names, timing) directly from SDK response objects. No PII or proprietary prompt data ever leaves your execution environment.
-
-### Thread Safety (v0.1.4+)
-
-Vetch is fully thread-safe and supports multi-client isolation. It uses `contextvars` for async safety and `WeakKeyDictionary` for client patching, ensuring that unpatching one client doesn't affect another in the same process.
-
-## Features
-
-- **Fail-Open**: LLM calls always proceed even if Vetch fails
-- **Privacy-First**: No prompt or completion data is ever read or buffered
-- **Multi-tier Caching**: Memory -> File -> API -> Regional averages for grid data
-- **Observability-Transparent**: Works seamlessly with Datadog, OpenTelemetry, and Sentry
-- **Low Overhead**: Under 5ms overhead for sync calls; zero TTFT latency for streaming
-- **MoE-Aware**: Energy estimates account for active parameters in Mixture-of-Experts models
-- **Session Aggregation**: Group multiple LLM calls into sessions for agentic AI tracking
-- **Cache-Aware Pricing**: Accurate cost calculation with prompt cache discounts
-
-## Supported Providers
-
-| Provider | Status | Instrumentation |
-|----------|--------|----------------|
-| OpenAI | Supported | `vetch.instrument()` or `vetch.wrap()` |
-| Azure OpenAI | Supported | `vetch.instrument()` (auto-detects `AzureOpenAI`) |
-| Anthropic | Supported | `vetch.instrument()` or `vetch.wrap()` |
-| Vertex AI (Gemini) | Supported | `vetch.instrument()` or `vetch.wrap()` |
-| OpenRouter | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
-| Together.ai | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
-| Anyscale | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
-| Ollama | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
-| vLLM / TGI | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
-
-**OpenAI-compatible endpoints** (OpenRouter, Together.ai, Ollama, vLLM, TGI) work automatically with `vetch.instrument()` since they use the `openai` Python SDK under the hood.
-
-**For local models (Ollama, vLLM, llama.cpp)**: See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md) for setup, GPU calibration, and TCO analysis.
-
-## Installation
-
-```bash
-pip install vetch
+print(f"Cost:   ${ctx.event['estimated_cost_usd']:.5f}")
+print(f"Energy: {ctx.event['estimated_energy_wh']:.4f} Wh")
+print(f"Carbon: {ctx.event['estimated_carbon_g']:.4f} gCO2e")
 ```
 
-## Quick Start
+### Stop waste automatically
 
-Vetch offers two instrumentation modes — choose the one that fits your use case:
+When a waste advisory fires, Vetch can intervene without manual intervention:
 
-### `instrument()` — Global, Zero-Touch
+| Action | What happens |
+|--------|-------------|
+| `"log"` (default) | Generate the advisory, take no action. Backwards compatible. |
+| `"warn"` | Log a stderr warning on the next call after a stall. |
+| `"kill"` | Raise `vetch.StallDetected` on the next call — the loop breaks. |
+| `"reroute"` | Transparently substitute the model with `fallback_model`. |
 
-One line at startup. Every LLM call across all providers is tracked automatically. Best for services, APIs, and production deployments where you want blanket coverage:
+`set_stall_action` is currently wired to `STALL-001`. Configurable policies per advisory, tag, and session are planned — see [ROADMAP.md](ROADMAP.md).
+
+`vetch.StallDetected` inherits from `RuntimeError` so a generic `except ValueError:` handler will not swallow it. Recover with `session.clear_stall()` after a human-in-the-loop fix.
+
+### Prove savings
+
+Run `vetch audit` to see which advisories fired and a summary of token usage patterns in the current session. Attribution reports by feature, customer, and workflow — with estimated avoided cost, energy, and carbon — are planned. See [docs/audit-report.md](docs/audit-report.md) for the target output format.
+
+## Why not just use your provider dashboard?
+
+- **No attribution.** Provider dashboards show cost by model and date. They do not show cost by agent session, customer, or feature flag. If one customer's workflow is burning 30% of your inference budget, the dashboard will not tell you which customer or why.
+- **Read-only.** Provider dashboards cannot fire a circuit breaker when a session exceeds a budget threshold or when an agent loop stalls.
+- **No pattern detection.** A dashboard cannot identify that 80% of your agent's outputs over the last ten calls were under 20 tokens — the signature of a stalled loop.
+- **No per-call energy or carbon data.** If you need to report or act on inference resource use, you need per-call instrumentation the provider does not expose.
+
+## 7-day Inference Waste Audit
+
+A concrete adoption motion. By day 7 you will have a clear picture of where inference spend is going and which patterns are causing it.
+
+**Day 1 — Instrument**
+
+One import, one line:
+
+```python
+import vetch
+vetch.instrument(region="us-east-1", tags={"service": "my-service"})
+```
+
+All LLM calls across all providers are now tracked. No other code changes required.
+
+**Days 1–7 — Tag and observe**
+
+Add tags to attribute spend by feature or workflow. Run in warn-only mode to observe advisories without intervention:
+
+```python
+vetch.set_stall_action("warn")
+
+with vetch.wrap(tags={"feature": "document-qa", "customer": "acme"}) as ctx:
+    response = client.chat.completions.create(...)
+```
+
+**Day 7 — Run the audit**
+
+```bash
+vetch audit
+```
+
+Current output: advisory list (STALL-001, CACHE-001, RAG-001 detections with session context) and session summary (total requests, total tokens, average input:output ratio).
+
+Full attribution reports by feature/customer/workflow with estimated avoided cost, energy, and carbon are planned — see [docs/audit-report.md](docs/audit-report.md) for the target format.
+
+**Next — Promote to kill or reroute**
+
+For advisories where you are confident, promote the action:
+
+```python
+vetch.set_stall_action("kill")  # or "reroute", fallback_model="gpt-4o-mini"
+```
+
+Runaway inference is now stopped automatically.
+
+## Energy and carbon
+
+Every wasteful call you prevent is money saved, tokens not burned, compute not consumed, and estimated emissions avoided. Vetch treats energy and carbon as first-class outputs alongside cost. The same stalled agent loop, bloated RAG context, or retry storm that burns budget also consumes unnecessary compute.
+
+Energy and carbon figures should be interpreted with explicit uncertainty. Tier 1 vendor-published estimates carry approximately ±20–50% uncertainty; Tier 3 estimates are order-of-magnitude directional figures. These numbers are useful for comparison, prioritization, and reduction decisions — not exact carbon certification.
+
+**Supported models with Tier 1 (±20–50%) data:**
+- **GPT-4o, GPT-4o-mini, GPT-4.1 family, GPT-4.5, o1, o3, o4-mini** — measured in Azure datacenters
+- **Claude 3.7 Sonnet** (standard + Extended Thinking) — measured in AWS datacenters
+- **DeepSeek-R1, DeepSeek-V3** — reasoning and MoE benchmarks
+- **Llama 3.1 (8B, 70B, 405B), Llama 3.3 70B** — open-weight measurements
+- **48 models** in total; unmeasured models use Tier 3 order-of-magnitude estimates
+
+Source: [Jegham et al. (2025)](https://arxiv.org/abs/2505.09598) — first large-scale LLM energy measurements in commercial datacenters.
+
+Begin tracking AI inference emissions for CSRD (EU) and SEC (US) Scope 3 reporting with `vetch methodology` for full methodology documentation.
+
+**Energy tiers:**
+
+| Tier | Name | Uncertainty | Source |
+|------|------|-------------|--------|
+| 0 | **Measured** | ±10–20% | Direct GPU measurement (pynvml) |
+| 1 | **Vendor-Published** | ±20–50% | Official provider benchmark data |
+| 2 | **Validated** | ±50–100% | Crowdsourced aggregates |
+| 3 | **Estimated** | Order of magnitude | Parameter-based calculation |
+
+## Quick start
+
+Two lines to start tracking inference waste in your existing LLM calls.
+
+### `instrument()` — Global, zero-touch
+
+One line at startup. Every LLM call across all providers is tracked automatically:
 
 ```python
 import vetch
@@ -124,18 +190,17 @@ import openai
 
 vetch.instrument(region="us-east-1", tags={"service": "chat-api"})
 
-# All LLM calls are now automatically tracked — nothing else to change
 client = openai.OpenAI()
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello world"}]
 )
-# Energy, cost, and carbon events emitted automatically
+# Cost, energy, carbon, and advisory events emitted automatically
 ```
 
-### `wrap()` — Per-Call, Explicit
+### `wrap()` — Per-call, explicit
 
-Context manager around individual calls. Best when you need per-call metrics, different tags per call, or want to avoid global patching:
+Context manager around individual calls. Best for per-call metrics, different tags per call, or avoiding global patching:
 
 ```python
 from vetch import wrap
@@ -146,7 +211,6 @@ with wrap(region="us-east-1", tags={"team": "ml", "env": "prod"}) as ctx:
         messages=[{"role": "user", "content": "Hello world"}]
     )
 
-# Access inference metadata directly
 print(f"Cost:   ${ctx.event['estimated_cost_usd']}")
 print(f"Energy: {ctx.event['estimated_energy_wh']} Wh")
 print(f"Carbon: {ctx.event['estimated_carbon_g']} gCO2e")
@@ -162,11 +226,11 @@ print(f"Carbon: {ctx.event['estimated_carbon_g']} gCO2e")
 | Metrics access | Via event callbacks | Via `ctx.event` dict |
 | Best for | Production services | Notebooks, experiments, per-feature attribution |
 
-Both are fail-open (never break your LLM calls) and add <5ms overhead.
+Both are fail-open and add <5ms overhead.
 
 **See [QUICKSTART.md](QUICKSTART.md) for a complete 60-second guide.**
 
-### Async Support
+### Async support
 
 ```python
 from openai import AsyncOpenAI
@@ -184,69 +248,40 @@ async with awrap(region="us-east-1") as ctx:
 await client.close()
 ```
 
-## Understanding Region Configuration
+## Understanding region configuration
 
 The `region` parameter determines which electricity grid is used for carbon intensity calculations. It should match the **Electricity Maps zone identifier** (which typically aligns with cloud provider region names: `us-east-1`, `eu-west-1`, `eastus`, etc.).
 
-Region availability varies by provider:
+### Providers with regional control
 
-### Providers with Regional Control
-
-For these providers, **you control where inference happens** and can specify the exact region:
-
-| Provider | How to Control Region | Example Region Format |
+| Provider | How to control region | Example region format |
 |----------|----------------------|----------------------|
-| **Azure OpenAI** | Region embedded in endpoint URL | `eastus`, `westeurope` (no hyphens) |
-| **Vertex AI (Google)** | Set via `vertexai.init()` | `us-central1`, `europe-west4` (hyphenated) |
-| **AWS Bedrock** | Standard AWS region parameter | `us-east-1`, `eu-west-1` (hyphenated) |
+| **Azure OpenAI** | Region embedded in endpoint URL | `eastus`, `westeurope` |
+| **Vertex AI (Google)** | Set via `vertexai.init()` | `us-central1`, `europe-west4` |
+| **AWS Bedrock** | Standard AWS region parameter | `us-east-1`, `eu-west-1` |
 
-**For these providers:** Specify the region you're actually using for accurate carbon calculations:
+### Providers without regional control
 
-```python
-# Azure OpenAI - use the region from your endpoint
-# Vetch attempts auto-detection from endpoint URL, but explicit config is more reliable
-vetch.instrument(region="eastus")  # Matches eastus.openai.azure.com
-
-# Vertex AI - match your vertexai.init() location
-vetch.instrument(region="us-central1")
-
-# AWS Bedrock - match your boto3 region
-vetch.instrument(region="us-east-1")
-```
-
-### Providers without Regional Control
-
-For these providers, **inference location is not exposed** — requests are routed across global infrastructure (Azure, AWS, GCP) and the physical location of a specific inference call is not available to the client:
-
-- **OpenAI** (standard API): Global routing across cloud providers
-- **Anthropic**: Global routing across cloud providers
-
-**For these providers:** Use your best estimate based on your location or expected data center:
+For **OpenAI** and **Anthropic**, inference is routed across global infrastructure and the physical location of a specific call is not exposed. Use your best estimate based on location or expected datacenter:
 
 ```python
-# OpenAI/Anthropic - specify your expected or preferred region
 vetch.instrument(region="us-east-1")  # Reasonable default for US users
 vetch.instrument(region="eu-west-1")  # Reasonable default for EU users
 ```
 
-### Region Fallback Behavior
+### Region fallback
 
-If you don't specify `region`, Vetch uses this fallback hierarchy:
+If `region` is not specified, Vetch uses this fallback hierarchy:
 
-1. **`VETCH_REGION` environment variable** (highest priority)
-2. **Cloud provider env vars** (`AWS_REGION`, `GOOGLE_CLOUD_REGION`, `AZURE_REGION`)
-3. **Timezone-based heuristic** (coarse approximation, often results in significant carbon calculation errors)
+1. `VETCH_REGION` environment variable
+2. Cloud provider env vars (`AWS_REGION`, `GOOGLE_CLOUD_REGION`, `AZURE_REGION`)
+3. Timezone-based heuristic (coarse approximation, often results in significant carbon calculation errors)
 
-**Best practice:** Always set `region` explicitly or via `VETCH_REGION` environment variable for accurate carbon calculations.
+**Best practice:** Always set `region` explicitly or via `VETCH_REGION` for accurate carbon calculations.
 
-```bash
-# Set globally via environment
-export VETCH_REGION=us-east-1
-```
+## Session aggregation and attribution
 
-## Session Aggregation (Agentic AI)
-
-Group multiple LLM calls into sessions for agentic frameworks like CrewAI, AutoGPT, or LangGraph:
+Sessions are the unit of attribution — every call within a session accumulates cost, energy, carbon, and advisory events that can be queried or exported together.
 
 ```python
 import vetch
@@ -255,12 +290,10 @@ with vetch.Session(tags={"agent": "researcher", "task": "summarize"}) as session
     with vetch.wrap() as ctx1:
         response1 = client.chat.completions.create(...)
 
-    # Nested sessions for sub-agents
     with vetch.Session(tags={"agent": "summarizer"}) as sub_session:
         with vetch.wrap() as ctx2:
             response2 = client.chat.completions.create(...)
 
-# Aggregate metrics across all calls
 print(f"Total energy: {session.total_energy_wh} Wh")
 print(f"Total cost: ${session.total_cost_usd}")
 print(f"Call count: {session.call_count}")
@@ -279,7 +312,7 @@ with vetch.Session.from_headers(task_headers) as worker_session:
         response = client.chat.completions.create(...)
 ```
 
-## Budget Alerts
+## Budget alerts
 
 Set spending thresholds with automatic alerting:
 
@@ -292,13 +325,14 @@ vetch.set_budget("hourly", cost_usd=10.0, energy_wh=50.0)
 def handle_alert(alert):
     print(f"Budget alert: {alert}")
 
-# Check budget status
 status = vetch.get_budget_status()
 ```
 
-## OTLP Export (Grafana, Datadog)
+Budget thresholds never block LLM calls — they trigger alerts only. Blocking policies are planned.
 
-Export metrics to any OpenTelemetry-compatible backend:
+## OTLP export (Grafana, Datadog)
+
+Export metrics to any OpenTelemetry-compatible backend. OTLP export is how Vetch evidence — waste advisories, per-call cost, energy, and carbon — reaches your existing observability stack:
 
 ```python
 import vetch
@@ -308,11 +342,11 @@ vetch.configure_otlp_export(
     service_name="my-llm-service"
 )
 
-# Export a pre-built Grafana dashboard
+# Export a pre-built Grafana dashboard focused on inference waste
 # vetch dashboard --export grafana --output grafana_vetch.json
 ```
 
-## MCP Server (AI Agent Integration)
+## MCP server (AI agent integration)
 
 Vetch ships an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server that gives AI agents real-time access to energy, cost, and carbon data. Agents can check budgets, compare models, and make sustainability-aware decisions mid-conversation.
 
@@ -337,7 +371,7 @@ Add to your MCP client configuration (e.g., Claude Desktop `claude_desktop_confi
 }
 ```
 
-### Available Tools
+### Available tools
 
 | Tool | Description |
 |------|-------------|
@@ -350,7 +384,7 @@ Add to your MCP client configuration (e.g., Claude Desktop `claude_desktop_confi
 | `vetch_cleanest_region` | Find the lowest-carbon region from a list |
 | `vetch_registry_lookup` | Raw energy/pricing data for a model |
 
-### Available Resources
+### Available resources
 
 | URI | Description |
 |-----|-------------|
@@ -358,9 +392,7 @@ Add to your MCP client configuration (e.g., Claude Desktop `claude_desktop_confi
 | `vetch://config` | Current Vetch configuration |
 | `vetch://version` | Vetch version string |
 
-The MCP server uses stdio transport and dispatches synchronous Vetch calls via `asyncio.to_thread` to avoid blocking the event loop.
-
-## CLI Usage
+## CLI usage
 
 ```bash
 # Check Vetch status and configuration
@@ -372,32 +404,30 @@ vetch estimate --model gpt-4o --input-tokens 1000 --output-tokens 500
 # Compare multiple models
 vetch compare --models gpt-4o,claude-3-opus,gemini-1.5-pro --tokens 1000
 
-# Analyze token usage patterns
+# Analyze token usage patterns and generate waste advisories
 vetch audit
+
+# Generate usage reports
+vetch report --days 7 --tags team=ml
 
 # Export Grafana dashboard
 vetch dashboard --export grafana --output dashboard.json
 
 # Freeze registry for CI/CD (eliminates cold-start latency)
 vetch registry freeze --output vetch_registry.json
-
-# Generate usage reports
-vetch report --days 7 --tags team=ml
 ```
 
-## Token Waste Audit
+## Token waste audit
 
-Vetch tracks token usage patterns across your session and provides actionable recommendations:
+Vetch tracks token usage patterns across your session and generates actionable advisories:
 
 ```python
 from vetch import wrap, get_session_stats, generate_advisories
 
-# Make multiple LLM calls
 for _ in range(10):
     with wrap() as ctx:
         response = client.chat.completions.create(...)
 
-# Analyze patterns
 stats = get_session_stats()
 advisories = generate_advisories(stats)
 
@@ -407,11 +437,11 @@ for a in advisories:
 ```
 
 **What it detects:**
-- **Static system prompts**: Repeated input token counts suggest cacheable prompts
-- **High input:output ratios**: Large inputs producing small outputs
-- **Expensive model usage**: Opportunities to use smaller, cheaper models
+- **Static system prompts** — repeated input token counts suggest cacheable prompts
+- **High input:output ratios** — large inputs producing small outputs
+- **Stalled loops** — short outputs with high input similarity across multiple calls
 
-## GPU Calibration (Local Inference)
+## GPU calibration (local inference)
 
 For local inference (Ollama, vLLM, llama.cpp), calibrate energy measurements using actual GPU power draw:
 
@@ -428,7 +458,7 @@ print(format_calibration_result(result))
 
 **Requirements:** NVIDIA GPU with `pynvml` (`pip install nvidia-ml-py3`)
 
-## Clean Test Isolation
+## Clean test isolation
 
 Remove instrumentation for clean test environments:
 
@@ -440,20 +470,7 @@ vetch.instrument()
 vetch.uninstrument()  # Restore original SDK methods
 ```
 
-## Energy Tiers
-
-Vetch uses a tiered system for energy estimate confidence:
-
-| Tier | Name | Uncertainty | Source |
-|------|------|-------------|--------|
-| 0 | **Measured** | +-10-20% | Direct GPU measurement (pynvml) |
-| 1 | **Vendor-Published** | +-20-50% | Official provider data |
-| 2 | **Validated** | +-50-100% | Crowdsourced aggregates |
-| 3 | **Estimated** | order of magnitude | Parameter-based calculation |
-
-Run `vetch methodology` to see full methodology documentation.
-
-## Environment Variables
+## Environment variables
 
 | Variable | Description |
 |----------|-------------|
@@ -467,15 +484,47 @@ Run `vetch methodology` to see full methodology documentation.
 | `ELECTRICITY_MAPS_API_KEY` | API key for live grid carbon intensity data |
 | `VETCH_CACHE_MODE` | Set to `memory-only` for serverless/Lambda environments |
 
-## Alpha Limitations
+## Supported providers
 
-This is an alpha release. Please be aware of:
+| Provider | Status | Instrumentation |
+|----------|--------|----------------|
+| OpenAI | Supported | `vetch.instrument()` or `vetch.wrap()` |
+| Azure OpenAI | Supported | `vetch.instrument()` (auto-detects `AzureOpenAI`) |
+| Anthropic | Supported | `vetch.instrument()` or `vetch.wrap()` |
+| Vertex AI (Gemini) | Supported | `vetch.instrument()` or `vetch.wrap()` |
+| OpenRouter | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| Together.ai | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| Anyscale | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| Ollama | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| vLLM / TGI | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
 
-1. **Energy estimates are uncertain**: Most models use Tier 3 estimates (order of magnitude uncertainty). See `vetch methodology` for details.
+**OpenAI-compatible endpoints** (OpenRouter, Together.ai, Ollama, vLLM, TGI) work automatically with `vetch.instrument()` since they use the `openai` Python SDK under the hood.
 
-2. **Region inference is a coarse heuristic**: Without explicit `VETCH_REGION`, timezone-based fallback often results in significant carbon calculation errors. Always set `region` parameter or `VETCH_REGION` environment variable for accurate carbon calculations. See [Understanding Region Configuration](#understanding-region-configuration) for details.
+**For local models (Ollama, vLLM, llama.cpp)**: See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md) for setup, GPU calibration, and TCO analysis.
 
-3. **Experimental modules**: `vetch.calibrate`, `vetch.storage`, and `vetch.ci` emit `FutureWarning` and may change in future versions.
+## Design guarantees
+
+### Fail-open architecture
+
+Every Vetch operation (patching, calculation, emission) is wrapped in isolated error handlers. If Vetch fails, your LLM call proceeds normally and a `tracking_disabled: true` event is logged. Vetch will never cause an inference outage.
+
+### Privacy and data perimeter
+
+Vetch never reads or stores prompt or completion content. It only extracts metadata (token counts, model names, timing) directly from SDK response objects. No PII or proprietary prompt data ever leaves your execution environment.
+
+### Thread safety (v0.1.4+)
+
+Vetch is fully thread-safe and supports multi-client isolation. It uses `contextvars` for async safety and `WeakKeyDictionary` for client patching, ensuring that unpatching one client does not affect another in the same process.
+
+## Current limitations
+
+1. **Energy estimates are uncertain.** Most models use Tier 3 estimates (order-of-magnitude uncertainty). See `vetch methodology` for details.
+
+2. **Region inference is a coarse heuristic.** Without explicit `VETCH_REGION`, timezone-based fallback often results in significant carbon calculation errors. Always set `region` or `VETCH_REGION` for accurate carbon calculations.
+
+3. **Automatic intervention is currently wired to STALL-001 only.** Configurable policies per advisory, tag, and session are planned.
+
+4. **Experimental modules.** `vetch.calibrate`, `vetch.storage`, and `vetch.ci` emit `FutureWarning` and may change in future versions.
 
 ## Troubleshooting
 
