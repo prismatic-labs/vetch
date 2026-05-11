@@ -229,8 +229,9 @@ class TestExportAdvisoryOtlp:
 
     def test_advisory_span_attributes_on_inference_event(self) -> None:
         """Advisory codes on an event are surfaced as span attributes."""
+        from unittest.mock import MagicMock, patch
+
         import vetch.otel as otel_mod
-        from unittest.mock import patch, MagicMock
 
         span = MagicMock()
         span_ctx = MagicMock()

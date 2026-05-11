@@ -577,7 +577,7 @@ def export_advisory_otlp(
         return False
 
     try:
-        attributes: dict[str, str | float] = {
+        attributes: dict[str, Any] = {
             "vetch.advisory.code": code,
             "vetch.advisory.severity": severity,
             "vetch.advisory.action": action,
