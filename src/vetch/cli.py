@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -67,6 +69,59 @@ def positive_float(value: str) -> float:
             f"'{value}' must be a positive number (got {fvalue})"
         )
     return fvalue
+
+
+_DURATION_PART_RE = re.compile(
+    r"\s*(?P<number>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>w|week|weeks|d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\s*",
+    re.IGNORECASE,
+)
+
+
+def parse_duration(value: str) -> timedelta:
+    """Parse a strict duration string such as ``6h``, ``7d``, or ``1h30m``."""
+    raw = value.strip()
+    if not raw:
+        raise argparse.ArgumentTypeError("duration cannot be empty")
+
+    position = 0
+    total_seconds = 0.0
+    matched = False
+    for match in _DURATION_PART_RE.finditer(raw):
+        if match.start() != position:
+            raise argparse.ArgumentTypeError(
+                f"invalid duration '{value}'. Use forms like 6h, 7d, or 1h30m"
+            )
+        matched = True
+        amount = float(match.group("number"))
+        unit = match.group("unit").lower()
+        if unit in {"w", "week", "weeks"}:
+            total_seconds += amount * 7 * 86400
+        elif unit in {"d", "day", "days"}:
+            total_seconds += amount * 86400
+        elif unit in {"h", "hr", "hrs", "hour", "hours"}:
+            total_seconds += amount * 3600
+        elif unit in {"m", "min", "mins", "minute", "minutes"}:
+            total_seconds += amount * 60
+        position = match.end()
+
+    if not matched or position != len(raw) or total_seconds <= 0:
+        raise argparse.ArgumentTypeError(
+            f"invalid duration '{value}'. Use forms like 6h, 7d, or 1h30m"
+        )
+
+    return timedelta(seconds=total_seconds)
+
+
+def _parse_tag_filter(raw: str | None) -> dict[str, str] | None:
+    if not raw:
+        return None
+    tags: dict[str, str] = {}
+    for tag_spec in raw.split(","):
+        if "=" in tag_spec:
+            key, value = tag_spec.split("=", 1)
+            tags[key.strip()] = value.strip()
+    return tags or None
 
 
 # Config file location
@@ -368,7 +423,30 @@ def clean(args: argparse.Namespace) -> None:
 
 
 def audit(args: argparse.Namespace) -> None:
-    """Analyze token usage patterns and generate advisories."""
+    """Generate a stored metadata audit, falling back to current-session advisories."""
+    from datetime import datetime, timezone
+
+    from vetch.audit_report import build_audit_report, format_audit_report
+
+    if not getattr(args, "session", False):
+        window = getattr(args, "window", timedelta(days=7))
+        end = datetime.now(timezone.utc)
+        start = end - window
+        report = build_audit_report(
+            start=start,
+            end=end,
+            model=getattr(args, "model", None),
+            tags=_parse_tag_filter(getattr(args, "tags", None)),
+        )
+        if report.total_requests > 0 or getattr(args, "stored", False):
+            print(format_audit_report(report, getattr(args, "format", "text")))
+            return
+
+    _audit_session(args)
+
+
+def _audit_session(args: argparse.Namespace) -> None:
+    """Analyze current in-memory token usage patterns and generate advisories."""
     from vetch.advisory import format_advisories, generate_advisories
     from vetch.stats import get_session_stats
 
@@ -656,13 +734,7 @@ def report(args: argparse.Namespace) -> None:
     start = end - timedelta(days=days)
 
     # Parse tags filter
-    tags = None
-    if args.tags:
-        tags = {}
-        for tag_spec in args.tags.split(","):
-            if "=" in tag_spec:
-                key, value = tag_spec.split("=", 1)
-                tags[key.strip()] = value.strip()
+    tags = _parse_tag_filter(args.tags)
 
     # Query usage
     summary = query_usage(start=start, end=end, model=args.model, tags=tags)
@@ -1014,9 +1086,32 @@ def main() -> None:
     subparsers.add_parser("clean", help="Clean up cache and lock files")
 
     # Audit
-    audit_parser = subparsers.add_parser("audit", help="Analyze token usage patterns")
+    audit_parser = subparsers.add_parser("audit", help="Generate inference waste audit")
     audit_parser.add_argument(
-        "--format", choices=["text", "json"], default="text", help="Output format"
+        "--window",
+        type=parse_duration,
+        default=timedelta(days=7),
+        help="Stored audit window, e.g. 6h, 7d, 1w, or 1h30m (default: 7d)",
+    )
+    audit_parser.add_argument("--model", help="Filter stored audit by model name")
+    audit_parser.add_argument(
+        "--tags", help="Filter stored audit by tags (e.g., 'team=ml,env=prod')"
+    )
+    audit_parser.add_argument(
+        "--stored",
+        action="store_true",
+        help="Force stored audit output even when no stored events are found",
+    )
+    audit_parser.add_argument(
+        "--session",
+        action="store_true",
+        help="Use current in-process session stats instead of stored metadata",
+    )
+    audit_parser.add_argument(
+        "--format",
+        choices=["text", "json", "markdown"],
+        default="text",
+        help="Output format",
     )
 
     # Calibrate

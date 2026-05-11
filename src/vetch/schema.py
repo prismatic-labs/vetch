@@ -10,9 +10,9 @@ Schema version 1 guarantees:
 - New fields may be added
 
 Schema version 2 changes:
-- Added ImageUsage and AudioUsage TypedDicts
+- Added ImageUsage, AudioUsage, and VideoUsage TypedDicts
 - Added multimodal flag to InferenceEvent
-- Updated Usage container to support image and audio modalities
+- Updated Usage container to support image, audio, and video modalities
 """
 
 from typing import Literal, TypedDict, Union
@@ -55,17 +55,32 @@ class AudioUsage(TypedDict, total=False):
     output_seconds: float  # Duration of output audio in seconds
 
 
+class VideoUsage(TypedDict, total=False):
+    """Token usage for video modality.
+
+    Providers usually report video as token-equivalent counts, sometimes with
+    a duration estimate. Energy modelling for video remains high-uncertainty.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    input_seconds: float
+    output_seconds: float
+
+
 class Usage(TypedDict, total=False):
     """Multi-modal usage container.
 
     The nested structure supports future extension without breaking schema.
-    Schema v2 adds image and audio support.
+    Schema v2 adds image, audio, and video support.
     Schema v2.1 adds reasoning (extended thinking) support.
     """
 
     text: Union[TextUsage, None]
     image: Union[ImageUsage, None]
     audio: Union[AudioUsage, None]
+    video: Union[VideoUsage, None]
     reasoning: Union[TextUsage, None]  # Extended thinking tokens (Gemini Flash Thinking, etc.)
 
 

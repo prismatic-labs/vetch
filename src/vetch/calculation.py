@@ -16,6 +16,8 @@ from typing import Any, Literal, cast
 
 logger = logging.getLogger(__name__)
 
+METHODOLOGY_VERSION = "1.2"
+
 # Registry paths
 _REGISTRY_DIR = Path(__file__).parent / "registry"
 _ENERGY_PATH = _REGISTRY_DIR / "energy.json"
@@ -215,6 +217,25 @@ def get_conservative_energy() -> dict[str, Any]:
     }
 
 
+def _is_reasoning_compute_model(model: str) -> bool:
+    """Return True when visible tokens may omit test-time compute."""
+    resolved_model, known = resolve_model(model)
+    if known:
+        _load_registry()
+        assert _ENERGY is not None
+        architecture = str(_ENERGY.get(resolved_model, {}).get("architecture", "")).lower()
+        if architecture == "reasoning":
+            return True
+
+    model_l = model.lower()
+    if any(hint in model_l for hint in ("thinking", "reasoning", "deepseek-r1")):
+        return True
+    return any(
+        model_l == prefix or model_l.startswith(f"{prefix}-")
+        for prefix in ("o1", "o3", "o4")
+    )
+
+
 # Uncertainty percentage by tier (upper bound of range)
 # Tier 0: ±10-20% (measured hardware)
 # Tier 1: ±20-50% (vendor-published)
@@ -238,6 +259,16 @@ def get_uncertainty_pct(tier: int) -> int:
         Uncertainty as percentage (e.g., 20 means ±20%).
     """
     return TIER_UNCERTAINTY_PCT.get(tier, 1000)
+
+
+def _int_or_zero(value: Any) -> int:
+    """Coerce provider token counts to an int without leaking TypeError paths."""
+    if value is None or value == "":
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 # Prompt-length bucket thresholds (input tokens).
@@ -1184,8 +1215,8 @@ def prepare_inference_metrics(
     if usage and usage.get("text"):
         text = usage["text"]
         if text:
-            in_tokens = text.get("input_tokens", 0)
-            out_tokens = text.get("output_tokens", 0)
+            in_tokens = _int_or_zero(text.get("input_tokens"))
+            out_tokens = _int_or_zero(text.get("output_tokens"))
 
             # Include reasoning tokens (o1/o3 thinking, Gemini thinking).
             # These are generated (decode), so they count as output for energy.
@@ -1193,10 +1224,20 @@ def prepare_inference_metrics(
             # to avoid double-counting (completion_tokens includes reasoning).
             # GenAI's candidates_token_count does NOT include thought tokens,
             # so they are additive here.
+            reasoning_output_tokens = 0
             if usage.get("reasoning"):
                 reasoning = usage["reasoning"]
                 if reasoning:
-                    out_tokens += reasoning.get("output_tokens", 0)
+                    reasoning_output_tokens = _int_or_zero(reasoning.get("output_tokens"))
+                    out_tokens += reasoning_output_tokens
+
+            if _is_reasoning_compute_model(model) and reasoning_output_tokens == 0:
+                metrics.warnings.append(
+                    "Reasoning-capable model did not expose reasoning/thinking "
+                    "tokens. Vetch records request latency, but energy remains "
+                    "visible-token based until a calibrated time-power profile is "
+                    "available."
+                )
 
             _cache_tokens = int(cache_read_tokens) if cache_read_tokens else 0
             (

@@ -637,6 +637,61 @@ class TestV024TokenizationFallback:
         assert metrics.energy_uncertainty_pct is not None
         assert metrics.energy_uncertainty_pct >= 50
 
+    def test_reasoning_model_without_reasoning_tokens_gets_warning(self) -> None:
+        """Reasoning models should not look precise when hidden compute is missing."""
+        from vetch.calculation import prepare_inference_metrics
+
+        metrics = prepare_inference_metrics(
+            model="o3-mini",
+            provider="openai",
+            usage={"text": {"input_tokens": 200, "output_tokens": 10, "total_tokens": 210}},
+            accumulated_chars=0,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+        )
+
+        assert any("did not expose reasoning/thinking tokens" in w for w in metrics.warnings)
+
+    def test_blank_reasoning_token_count_does_not_raise(self) -> None:
+        """Provider oddities like blank reasoning token fields should coerce to zero."""
+        from vetch.calculation import prepare_inference_metrics
+
+        metrics = prepare_inference_metrics(
+            model="gpt-4o",
+            provider="openai",
+            usage={
+                "text": {"input_tokens": 200, "output_tokens": 10, "total_tokens": 210},
+                "reasoning": {"input_tokens": 0, "output_tokens": "", "total_tokens": 0},
+            },
+            accumulated_chars=0,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=None,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+        )
+
+        assert metrics.energy_wh is not None
+
+    def test_gemini_20_flash_vendor_anchor_is_not_tier1(self) -> None:
+        """Google's median prompt anchor is not a per-token Gemini measurement."""
+        energy, tier, uncertainty_pct, _, basis, known = calculate_energy(
+            800,
+            800,
+            "gemini-2.0-flash",
+        )
+
+        assert energy is not None
+        assert known is True
+        assert tier == 3
+        assert uncertainty_pct == 1000
+        assert "median Gemini Apps text-prompt anchor" in basis
+
 
 class TestV024CacheEnergyDiscount:
     """Tests for v0.2.4 cache-hit energy discounting."""

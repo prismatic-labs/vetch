@@ -26,6 +26,7 @@ from weakref import WeakKeyDictionary
 
 from vetch._stall import apply_stall_action, looks_like_param_mismatch
 from vetch.context import get_active_context
+from vetch.providers._google_usage import build_google_usage
 from vetch.proxy import is_vetch_patched
 
 if TYPE_CHECKING:
@@ -42,6 +43,17 @@ _client_lock = threading.Lock()
 
 # Module-level storage for original Client.__init__ (strong reference)
 _module_original_init: Any = None
+
+
+def _record_reroute_fallback(exc: Exception, original_model: str) -> None:
+    message = (
+        f"STALL-001 reroute failed ({type(exc).__name__}); "
+        f"falling back to original model {original_model}"
+    )
+    logger.warning(message)
+    ctx = get_active_context()
+    if ctx is not None:
+        ctx.warnings.append(message)
 
 
 class _WeakMethodWrapper:
@@ -91,12 +103,7 @@ class _WeakMethodWrapper:
                     response = original(*args, **kwargs)
             except Exception as e:
                 if rerouted and original_model and looks_like_param_mismatch(e):
-                    ctx = get_active_context()
-                    if ctx is not None:
-                        ctx.warnings.append(
-                            f"STALL-001 reroute failed ({type(e).__name__}); "
-                            f"falling back to original model {original_model}"
-                        )
+                    _record_reroute_fallback(e, original_model)
                     kwargs["model"] = original_model
                     if isinstance(original, tuple):
                         orig_func, orig_self = original
@@ -162,12 +169,7 @@ class _WeakAsyncMethodWrapper:
                     response = await original(*args, **kwargs)
             except Exception as e:
                 if rerouted and original_model and looks_like_param_mismatch(e):
-                    ctx = get_active_context()
-                    if ctx is not None:
-                        ctx.warnings.append(
-                            f"STALL-001 reroute failed ({type(e).__name__}); "
-                            f"falling back to original model {original_model}"
-                        )
+                    _record_reroute_fallback(e, original_model)
                     kwargs["model"] = original_model
                     if isinstance(original, tuple):
                         orig_func, orig_self = original
@@ -266,29 +268,7 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     if usage_metadata is None:
         return None, None, None
 
-    # Extract token counts
-    input_tokens = getattr(usage_metadata, "prompt_token_count", 0)
-    output_tokens = getattr(usage_metadata, "candidates_token_count", 0)
-    total_tokens = getattr(usage_metadata, "total_token_count", 0)
-
-    # Build usage dict
-    usage_dict: Usage = {
-        "text": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-        }
-    }
-
-    # Extract reasoning tokens for extended thinking models (e.g., Gemini 2.0 Flash Thinking)
-    # These tokens represent internal chain-of-thought reasoning and can be 10x+ the visible output
-    reasoning_tokens = getattr(usage_metadata, "thought_token_count", 0)
-    if reasoning_tokens > 0:
-        usage_dict["reasoning"] = {
-            "input_tokens": 0,
-            "output_tokens": reasoning_tokens,  # Generated (decode), not prefill
-            "total_tokens": reasoning_tokens,
-        }
+    usage_dict = build_google_usage(usage_metadata)
 
     # Google GenAI doesn't currently expose cache tokens in the same way
     # as Vertex AI, so we return None for now

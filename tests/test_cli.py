@@ -9,11 +9,15 @@ These tests verify the CLI subcommands:
 
 from __future__ import annotations
 
+import argparse
 import json
 from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from vetch.cli import compare, estimate, methodology
+import pytest
+
+from vetch.cli import audit, compare, estimate, methodology, parse_duration
 
 
 class TestCLIEstimate:
@@ -132,6 +136,54 @@ class TestCLICheck:
         assert "Checking cache status" in captured.out
 
 
+class TestCLIAudit:
+    """Tests for stored audit CLI behavior."""
+
+    def test_parse_duration_combined_units(self) -> None:
+        """Duration parser accepts strict combined windows."""
+        assert parse_duration("1h30m") == timedelta(minutes=90)
+        assert parse_duration("24 h") == timedelta(hours=24)
+        assert parse_duration("1w") == timedelta(days=7)
+
+    def test_parse_duration_rejects_unknown_units(self) -> None:
+        """Duration parser rejects accidental prefix matches."""
+        with pytest.raises(argparse.ArgumentTypeError):
+            parse_duration("1moon")
+
+    def test_audit_uses_stored_metadata(self, capsys, tmp_path) -> None:
+        """Audit command can render the deterministic stored report."""
+        from vetch.storage import configure_storage, store_event
+
+        db_path = tmp_path / "usage.db"
+        configure_storage(enabled=True, path=db_path)
+        now = datetime.now(timezone.utc)
+        store_event({
+            "event_id": "audit-cli-1",
+            "timestamp": now.isoformat(),
+            "model": "gpt-4o",
+            "provider": "openai",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 25}},
+            "estimated_energy_wh": 0.01,
+            "estimated_carbon_g": 0.004,
+            "estimated_cost_usd": 0.02,
+            "tags": {"feature": "rag-search"},
+        })
+
+        audit(Namespace(
+            format="json",
+            window=timedelta(days=1),
+            model=None,
+            tags=None,
+            stored=True,
+            session=False,
+        ))
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["total_requests"] == 1
+        assert data["total_tokens"] == 125
+
+
 class TestCLIMain:
     """Tests for CLI main entry point."""
 
@@ -179,4 +231,3 @@ class TestCLIMain:
             captured = capsys.readouterr()
             # Depending on how subparsers are configured, it might show help
             pass
-

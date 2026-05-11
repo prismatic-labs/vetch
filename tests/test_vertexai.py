@@ -23,10 +23,17 @@ from vetch.providers.vertexai import (
 class MockUsageMetadata:
     """Mock Vertex AI usage metadata."""
 
-    def __init__(self, prompt: int, candidates: int, total: int) -> None:
+    def __init__(
+        self,
+        prompt: int,
+        candidates: int,
+        total: int,
+        thoughts: int = 0,
+    ) -> None:
         self.prompt_token_count = prompt
         self.candidates_token_count = candidates
         self.total_token_count = total
+        self.thoughts_token_count = thoughts
 
 
 class MockResponse:
@@ -94,6 +101,36 @@ class TestExtractUsage:
         assert usage["text"]["input_tokens"] == 100
         assert usage["text"]["output_tokens"] == 0
         assert usage["text"]["total_tokens"] == 0
+
+    def test_extract_usage_with_thinking_and_modalities(self) -> None:
+        """Extract thinking tokens and modality breakdowns from Vertex metadata."""
+
+        class Detail:
+            def __init__(self, modality: str, token_count: int) -> None:
+                self.modality = modality
+                self.token_count = token_count
+
+        usage_metadata = MockUsageMetadata(
+            prompt=800,
+            candidates=100,
+            total=1200,
+            thoughts=300,
+        )
+        usage_metadata.prompt_tokens_details = [
+            Detail("TEXT", 100),
+            Detail("IMAGE", 450),
+            Detail("AUDIO", 250),
+        ]
+        usage_metadata.candidates_tokens_details = [Detail("VIDEO", 40)]
+        response = MockResponse(usage=usage_metadata)
+
+        usage = extract_usage(response)
+
+        assert usage is not None
+        assert usage["reasoning"]["output_tokens"] == 300
+        assert usage["image"]["input_tokens"] == 450
+        assert usage["audio"]["input_tokens"] == 250
+        assert usage["video"]["output_tokens"] == 40
 
 
 class TestExtractModel:

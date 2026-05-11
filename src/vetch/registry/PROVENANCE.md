@@ -72,7 +72,7 @@ GPT-4 Turbo, GPT-4o, GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4.5, GPT-4o-mini\*
 Claude 3.5 Haiku — listed in Jegham infrastructure table but no energy figures published. Tier 3 entry used.
 
 **No Jegham coverage (Google models, Tier 3):**
-Jegham et al. (2025) does **not** cover any Google/Gemini models. Gemini 2.5 Flash and Pro use Tier 3 proxy estimates only.
+Jegham et al. (2025) does **not** cover any Google/Gemini models. Gemini 2.0 Flash is anchored to Google's published 0.24 Wh median Gemini Apps text prompt, but that source does not publish token counts, input/output split, or per-model coefficients, so it remains Tier 3. Gemini 2.5 Flash and Pro also use Tier 3 proxy estimates only.
 
 ### Methodology
 

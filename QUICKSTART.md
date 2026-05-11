@@ -1,6 +1,6 @@
 # Vetch Quickstart
 
-Get planet-aware LLM observability in 60 seconds.
+Stop runaway LLM inference. One import — all calls tracked, waste detected, spend attributed.
 
 ## Install
 
@@ -8,95 +8,128 @@ Get planet-aware LLM observability in 60 seconds.
 pip install vetch
 ```
 
-## Track All Calls (One Line)
+## Instrument (One Line)
 
 ```python
 import vetch
 
-# Best practice: Call instrument() at the very top of your entry point
-# Pro tip: Set VETCH_REGION=us-east-1 via environment to keep code region-agnostic
+# Call at the top of your entry point. Instruments all LLM clients automatically.
 vetch.instrument(region="us-east-1", tags={"service": "chat-api"})
 
-# Non-blocking and fail-open: if Vetch fails, your LLM calls still succeed
-# Overhead: <5ms per call. TTFT: Zero added latency for streaming.
-
-# Now use any LLM client normally (requires: pip install openai)
+# Now use any LLM client normally — no other changes needed.
 import openai
 client = openai.OpenAI()
 response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello"}]
 )
-# ✅ Energy, cost, and carbon tracked automatically
+# Every call is now tracked: cost, energy, carbon, and waste advisory signals.
 ```
 
-**Output example** (logged to stderr by default):
-```json
-{
-  "estimated_cost_usd": 0.0025,
-  "estimated_energy_wh": 0.0234,
-  "estimated_carbon_g": 1.87,
-  "model": "gpt-4o",
-  "tags": {"service": "chat-api"}
-}
-```
+Works with: **OpenAI**, **Anthropic**, **Azure OpenAI**, **Vertex AI**, and any OpenAI-compatible endpoint (Ollama, vLLM, OpenRouter).
 
-Works with: **OpenAI**, **Anthropic**, **Azure OpenAI**, **Vertex AI**, and OpenAI-compatible APIs (OpenRouter, Together.ai, Ollama, vLLM).
+Non-blocking and fail-open — if Vetch fails for any reason, your LLM calls continue normally.
 
-## Verify It's Working
+## Detect Waste
+
+After letting Vetch observe real traffic, run the audit:
 
 ```bash
-# Check Vetch status
-vetch status
+vetch audit              # last 7 days of stored metadata
+vetch audit --window 24h # shorter window
+vetch audit --format json
+```
 
-# See metrics in action (no API key needed)
+**Example output:**
+
+```
+[CRITICAL] STALL-001 — Stalled agent loop
+  Session: chat-api · prod
+  Calls in window: 20  |  Low-output calls: 17 (85%)  |  Input similarity: 70%
+  Est. cost of stalled calls: $8.20  →  set_stall_action("kill")
+
+[WARNING]  CACHE-001 — Prompt caching opportunity
+  Session: document-qa · prod
+  Calls with identical input tokens: 142 of 200 (71%)
+  Potential saving: up to 90% on input tokens  →  enable cache_control
+
+[INFO]     RAG-001 — RAG bloat
+  Session: enterprise-chat · prod
+  Avg input:output ratio: 82:1  →  tighten relevance threshold on retriever
+
+Session summary: 1,842 requests · 2,847,000 tokens
+```
+
+Vetch observes metadata only — model, token counts, latency, region, and tags. It never reads prompts or completions.
+
+## Stop Waste (Automatic Intervention)
+
+Once you've seen the advisories and validated them, promote to automatic action:
+
+```python
+import vetch
+
+vetch.instrument(region="us-east-1", tags={"service": "chat-api"})
+vetch.set_stall_action("kill")   # or "warn" or "reroute"
+
+# Your existing agent loop — unchanged.
+# Vetch raises StallDetected before the next wasted call.
+try:
+    response = client.chat.completions.create(...)
+except vetch.StallDetected:
+    session.clear_stall()        # human-in-the-loop, then resume
+```
+
+**Reroute to a cheaper model automatically:**
+
+```python
+vetch.set_stall_action("reroute", fallback_model="gpt-4o-mini")
+# On STALL-001, Vetch silently substitutes gpt-4o-mini for the stalled call.
+```
+
+## Attribute Spend
+
+Tag every call to know which feature, customer, or team is driving cost:
+
+```python
+with vetch.wrap(tags={"feature": "rag-search", "customer": "acme"}) as ctx:
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": query}]
+    )
+
+print(f"Cost:   ${ctx.event['estimated_cost_usd']:.5f}")
+print(f"Energy: {ctx.event['estimated_energy_wh']:.4f} Wh")
+print(f"Carbon: {ctx.event['estimated_carbon_g']:.4f} gCO2e")
+```
+
+Tags accumulate in stored metadata — `vetch audit --tags feature=rag-search` shows you only that feature's waste patterns.
+
+## Verify Setup
+
+```bash
+vetch status
 vetch estimate --model gpt-4o --input-tokens 1000 --output-tokens 500
 ```
 
 ## Region & Carbon Accuracy
 
-For accurate carbon calculations, specify your region (should match [Electricity Maps zone IDs](https://app.electricitymaps.com/map)):
+For accurate carbon estimates, specify the region where inference runs:
 
 ```python
-# For providers where you control region (Azure, Vertex, Bedrock):
-vetch.instrument(region="us-east-1")  # Match your actual deployment region
-
-# For providers with opaque routing (OpenAI, Anthropic):
-vetch.instrument(region="us-east-1")  # Your best estimate or data center preference
+vetch.instrument(region="us-east-1")   # AWS/Azure/Vertex regions work
+vetch.instrument(region="europe-west4") # Match your actual deployment
 ```
 
-**Which providers support region control?**
+Set via environment to keep code region-agnostic:
 
-| Provider | Can You Control Region? | Region Format |
-|----------|-------------------------|---------------|
-| **Azure OpenAI** | ✅ Yes | `eastus`, `westeurope` (from endpoint URL) |
-| **Vertex AI** | ✅ Yes | `us-central1`, `europe-west4` (from `vertexai.init()`) |
-| **AWS Bedrock** | ✅ Yes | `us-east-1`, `eu-west-1` (from `boto3.client()`) |
-| **OpenAI** | ❌ No | Global routing - specify preference |
-| **Anthropic** | ❌ No | Global routing - specify preference |
-
-**If you don't specify region:** Vetch falls back to environment variables (`VETCH_REGION`, `AWS_REGION`, etc.) or timezone-based heuristic (coarse approximation that often causes carbon calculation errors).
-
-## Per-Call Control (Granular Wrapper)
-
-For per-call control or when you prefer explicit wrappers over global patching:
-
-```python
-from vetch import wrap
-
-with wrap(region="us-east-1", tags={"team": "ml"}) as ctx:
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": "Hello"}]
-    )
-
-# Access metrics directly (cost shown first - the "money shot")
-print(f"Cost:   ${ctx.event['estimated_cost_usd']:.4f}")
-print(f"Energy: {ctx.event['estimated_energy_wh']:.4f} Wh")
-print(f"Carbon: {ctx.event['estimated_carbon_g']:.4f} gCO2e")
+```bash
+export VETCH_REGION=us-east-1
 ```
 
-**Async support** (full example):
+**If you don't specify region:** Vetch falls back to `AWS_REGION` and similar environment variables, then a timezone-based heuristic. Carbon estimates will be less accurate.
+
+## Async Support
 
 ```python
 from openai import AsyncOpenAI
@@ -104,55 +137,28 @@ from vetch import awrap
 
 client = AsyncOpenAI()
 
-async with awrap(region="us-east-1") as ctx:
+async with awrap(region="us-east-1", tags={"feature": "search"}) as ctx:
     response = await client.chat.completions.create(
         model="gpt-4o",
-        messages=[{"role": "user", "content": "Hello"}]
+        messages=[{"role": "user", "content": query}]
     )
-    print(f"Cost: ${ctx.event['estimated_cost_usd']}")
-
-# Properly close async client
-await client.close()
 ```
 
 ## Configure Output
 
-By default, events are logged to `stderr`. Configure with environment variables:
-
 ```bash
-export VETCH_OUTPUT=/tmp/vetch.jsonl  # Log to file
-export VETCH_OUTPUT=none               # Silence output
-```
-
-## Cost Attribution with Tags
-
-Tags appear in every event, enabling financial attribution (cost-per-feature, cost-per-team):
-
-```bash
-# Via environment (recommended for prod)
-export VETCH_REGION=us-east-1
-
-# Or in code
-vetch.instrument(tags={"team": "ml", "cost_center": "research"})
-```
-
-This creates a **financial ledger** you can query, not just a technical log.
-
-## Emergency Kill Switch
-
-```bash
-export VETCH_DISABLED=true  # Completely disable Vetch
+export VETCH_OUTPUT=/tmp/vetch.jsonl  # Log events to file
+export VETCH_OUTPUT=none              # Silence event output
+export VETCH_DISABLED=true           # Disable entirely
 ```
 
 ## Next Steps
 
-Now that you can **see** your spend, here's how to **control** it:
-
-1. **[Budget alerts](README.md#budget-alerts)** - Set spending guardrails (CFO-friendly)
-2. **[Session aggregation](README.md#session-aggregation-agentic-ai)** - Track agentic AI workflows (CrewAI, LangGraph)
-3. **[OTLP export](README.md#otlp-export)** - Send to Datadog/Grafana/Honeycomb
-4. **[CLI tools](README.md#cli-usage)** - Compare models, estimate costs before coding
-5. **[Energy methodology](src/vetch/METHODOLOGY.md)** - Understand estimate tiers and uncertainty
+1. **[Audit report](README.md#inference-waste-audit)** — full stored-event audit with filtering
+2. **[Budget alerts](README.md#budget-alerts)** — cost/energy/carbon thresholds per session
+3. **[Session aggregation](README.md#session-aggregation-agentic-ai)** — track agentic workflows end-to-end
+4. **[OTLP export](README.md#otlp-export)** — send to Datadog, Grafana, Honeycomb
+5. **[Energy methodology](src/vetch/METHODOLOGY.md)** — uncertainty tiers and provenance
 
 ---
 

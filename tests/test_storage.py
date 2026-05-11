@@ -16,9 +16,14 @@ import pytest
 
 from vetch.storage import (
     UsageSummary,
+    compact_storage,
     configure_storage,
+    flush_storage,
     get_db_path,
+    get_top_consumers,
     is_storage_enabled,
+    query_daily_usage,
+    query_events,
     query_usage,
     store_event,
 )
@@ -85,6 +90,7 @@ class TestEventStorage:
             }
 
             store_event(event)
+            flush_storage()
 
             # Database should now exist
             assert db_path.exists()
@@ -251,3 +257,59 @@ class TestQueryUsage:
 
             assert summary.total_requests == 1
             assert summary.total_cost_usd == 0.01
+
+    def test_query_daily_usage_survives_raw_compaction(self) -> None:
+        """Daily aggregates remain available after raw rows are compacted."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            configure_storage(enabled=True, path=db_path)
+
+            now = datetime.now(timezone.utc)
+            old = now - timedelta(days=2)
+            store_event({
+                "event_id": "old-1",
+                "timestamp": old.isoformat(),
+                "model": "gpt-4o",
+                "provider": "openai",
+                "usage": {"text": {"input_tokens": 120, "output_tokens": 30}},
+                "estimated_energy_wh": 0.25,
+                "estimated_carbon_g": 0.10,
+                "estimated_cost_usd": 0.04,
+                "tags": {"team": "ml", "feature": "rag"},
+            })
+
+            deleted = compact_storage(raw_retention_days=1)
+            assert deleted == 1
+
+            raw_events = query_events(start=old - timedelta(hours=1), end=now)
+            assert raw_events == []
+
+            summary = query_daily_usage(start=old - timedelta(hours=1), end=now)
+            assert summary.total_requests == 1
+            assert summary.total_input_tokens == 120
+            assert summary.total_output_tokens == 30
+            assert summary.total_energy_wh == pytest.approx(0.25)
+            assert summary.by_tag["team"]["ml"]["energy_wh"] == pytest.approx(0.25)
+
+    def test_top_consumers_includes_energy(self) -> None:
+        """Top consumer output includes real tag-level energy aggregation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            configure_storage(enabled=True, path=db_path)
+
+            now = datetime.now(timezone.utc)
+            store_event({
+                "event_id": "energy-1",
+                "timestamp": now.isoformat(),
+                "model": "gpt-4o",
+                "provider": "openai",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+                "estimated_energy_wh": 1.5,
+                "estimated_carbon_g": 0.5,
+                "estimated_cost_usd": 0.01,
+                "tags": {"team": "platform"},
+            })
+
+            consumers = get_top_consumers(metric="energy", tag_key="team", days=1)
+            assert consumers[0]["tag_value"] == "platform"
+            assert consumers[0]["energy"] == pytest.approx(1.5)

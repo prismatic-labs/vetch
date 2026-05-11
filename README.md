@@ -40,6 +40,7 @@ Every wasted inference call is wasted money, compute, energy, and carbon.
 |---------|-------------------|
 | **Stalled agent loop** | Agent iterating without meaningful output progress |
 | **RAG bloat** | Retrieval context overwhelming the prompt with low-signal content |
+| **Excessive generation** | Model producing unusually long outputs regardless of task complexity |
 | **Zombie inference** | Sessions or background tasks making LLM calls after they should have stopped |
 | **Retry storm** | Repeated identical or near-identical calls after failures |
 | **Premium model overuse** | High-capability model used where a cheaper one would suffice |
@@ -57,6 +58,7 @@ Vetch analyzes every inference call for behavioral patterns that indicate waste:
 | `STALL-001` | Stalled agent loop | ≥80% of last 20 calls produce short output with repeated input | ✅ Implemented |
 | `CACHE-001` | Prompt caching opportunity | >50% of calls share identical input token counts across ≥6 calls | ✅ Implemented |
 | `RAG-001` | RAG bloat | Average input:output ratio exceeds 50:1 | ✅ Implemented |
+| `BABBLE-001` | Excessive generation | Recent average output exceeds 1,500 tokens without long-form task signal | ✅ Implemented |
 | `SESSION-BUDGET-001` | Session over budget | Configured cost/energy/carbon threshold exceeded | ⚠️ Partial — alerts only, no advisory ID |
 | `ATTRIBUTION-001` | Unattributed spend | Required tags missing from calls | ⚠️ Partial — infrastructure only |
 | `RETRY-001` | Retry storm | Burst of repeated failed or near-identical calls | 🔜 Planned |
@@ -95,7 +97,15 @@ When a waste advisory fires, Vetch can intervene without manual intervention:
 
 ### Prove savings
 
-Run `vetch audit` to see which advisories fired and a summary of token usage patterns in the current session. Attribution reports by feature, customer, and workflow — with estimated avoided cost, energy, and carbon — are planned. See [docs/audit-report.md](docs/audit-report.md) for the target output format.
+Run `vetch audit` to generate a stored-event audit over the last 7 days (configurable with `--window`). The report shows which advisories fired, per-tag attribution breakdowns, observed avoidable cost, and a projected monthly avoidable cost estimate:
+
+```bash
+vetch audit                    # last 7 days
+vetch audit --window 24h       # shorter window
+vetch audit --tags team=ml     # filter by tag
+vetch audit --format json      # machine-readable
+vetch audit --format markdown  # for sharing
+```
 
 ## Why not just use your provider dashboard?
 
@@ -133,12 +143,12 @@ with vetch.wrap(tags={"feature": "document-qa", "customer": "acme"}) as ctx:
 **Day 7 — Run the audit**
 
 ```bash
-vetch audit
+vetch audit             # reads stored metadata from the last 7 days
+vetch audit --window 7d --tags feature=rag-search  # filter to one feature
+vetch audit --format json  # machine-readable output
 ```
 
-Current output: advisory list (STALL-001, CACHE-001, RAG-001 detections with session context) and session summary (total requests, total tokens, average input:output ratio).
-
-Full attribution reports by feature/customer/workflow with estimated avoided cost, energy, and carbon are planned — see [docs/audit-report.md](docs/audit-report.md) for the target format.
+Output includes: advisory findings (STALL-001, CACHE-001, RAG-001, BABBLE-001) with confidence ratings and recommended actions; per-tag attribution breakdowns; observed avoidable cost; projected monthly avoidable cost; and data quality indicators (tagged fraction, methodology versions used).
 
 **Next — Promote to kill or reroute**
 
@@ -404,8 +414,9 @@ vetch estimate --model gpt-4o --input-tokens 1000 --output-tokens 500
 # Compare multiple models
 vetch compare --models gpt-4o,claude-3-opus,gemini-1.5-pro --tokens 1000
 
-# Analyze token usage patterns and generate waste advisories
+# Stored-event audit — last 7 days by default
 vetch audit
+vetch audit --window 24h --tags team=ml --format json
 
 # Generate usage reports
 vetch report --days 7 --tags team=ml
@@ -417,29 +428,35 @@ vetch dashboard --export grafana --output dashboard.json
 vetch registry freeze --output vetch_registry.json
 ```
 
-## Token waste audit
+## Inference waste audit
 
-Vetch tracks token usage patterns across your session and generates actionable advisories:
+After instrumenting and letting Vetch observe real traffic, run the CLI audit:
 
-```python
-from vetch import wrap, get_session_stats, generate_advisories
-
-for _ in range(10):
-    with wrap() as ctx:
-        response = client.chat.completions.create(...)
-
-stats = get_session_stats()
-advisories = generate_advisories(stats)
-
-for a in advisories:
-    print(f"[{a.level.value}] {a.title}")
-    print(f"  {a.description}")
+```bash
+vetch audit                         # stored events, last 7 days
+vetch audit --window 30d            # longer window
+vetch audit --tags customer=acme    # filter by tag
+vetch audit --format markdown       # shareable report
 ```
 
+The audit reads locally stored metadata, runs advisory detection, computes per-tag attribution, and estimates observed and projected avoidable cost.
+
 **What it detects:**
-- **Static system prompts** — repeated input token counts suggest cacheable prompts
-- **High input:output ratios** — large inputs producing small outputs
-- **Stalled loops** — short outputs with high input similarity across multiple calls
+- **STALL-001** — short outputs with high input similarity across multiple calls (stalled agent loop)
+- **CACHE-001** — repeated identical input token counts (uncached prompt structure)
+- **RAG-001** — high input:output ratio (retrieval context overwhelming the prompt)
+- **BABBLE-001** — unusually high average output tokens (excessive generation)
+
+**Lower-level Python API** (for programmatic access or custom reporting):
+
+```python
+from vetch.audit_report import build_audit_report, format_audit_report
+from datetime import datetime, timedelta, timezone
+
+now = datetime.now(timezone.utc)
+report = build_audit_report(start=now - timedelta(days=7), end=now)
+print(format_audit_report(report, "markdown"))
+```
 
 ## GPU calibration (local inference)
 

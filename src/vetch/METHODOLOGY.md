@@ -73,7 +73,7 @@ This is our largest uncertainty.
 
 **Tier 0 (Measured)**: Available when users run local GPU inference (Ollama, vLLM, llama.cpp) and use hardware sensors to capture actual power draw. Limitations: Requires compatible GPU (NVIDIA via pynvml, AMD via rocm-smi), baseline subtraction introduces noise, short inferences are less accurate.
 
-**Tier 1 (Vendor-Published)**: The gold standard. Academic measurements on specific hardware with rigorous methodology qualify for Tier 1. As of v0.3.0, 22 models have Tier 1 data from Jegham et al. (2025).
+**Tier 1 (Vendor-Published)**: The gold standard. Academic measurements on specific hardware with rigorous methodology qualify for Tier 1. As of v0.3.0, 21 models have Tier 1 data from Jegham et al. (2025).
 
 **Tier 2 (Validated)**: Aggregated from multiple crowdsourced Tier 0 measurements or independent academic studies. Example: "Llama 3.1 8B averages 0.12 Wh/1k tokens across 47 user submissions (std dev 0.03)."
 
@@ -129,7 +129,7 @@ Tier 0 (measured: your specific setup)
 
 Vetch 0.3.0 incorporates the first large-scale, infrastructure-aware benchmarking of LLM energy consumption from **Jegham et al. (2025)** published in "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference" (arXiv:2505.09598).
 
-This research provided hardware measurements for 30 state-of-the-art models deployed in commercial datacenters. We have incorporated measurements for **22 models at Tier 1**, covering all major providers:
+This research provided hardware measurements for 30 state-of-the-art models deployed in commercial datacenters. We have incorporated measurements for **21 models at Tier 1**, covering most major providers:
 
 | Model | Energy (medium prompt) | Tier | Notes |
 |-------|----------------------|------|-------|
@@ -143,7 +143,6 @@ This research provided hardware measurements for 30 state-of-the-art models depl
 | GPT-4 | 6.512 Wh | 1 | Legacy MoE, significantly less efficient |
 | GPT-4 Turbo | 6.759 Wh | 1 | |
 | GPT-4.5 | 20.500 Wh | 1 | Comparable to o3 |
-| Gemini 2.0 Flash | 0.273 Wh | 1 | Calibrated from Google Environmental Report |
 | Llama 3.1 8B | 0.329 Wh | 1 | |
 | Llama 3.3 70B | 0.857 Wh | 1 | ~4x more efficient than Llama 3.1 70B |
 | Llama 3.1 70B | 3.559 Wh | 1 | |
@@ -155,6 +154,10 @@ This research provided hardware measurements for 30 state-of-the-art models depl
 | o3 | 21.414 Wh | 1 | Advanced reasoning |
 | DeepSeek-V3 | 9.129 Wh | 1 | |
 | DeepSeek-R1 | 29.000 Wh | 1 | Most energy-intensive in benchmark |
+
+### Gemini Calibration Caveat
+
+Google reports that a median Gemini Apps text prompt consumes **0.24 Wh** full-stack energy. That is useful methodology evidence, but it is not a per-token Gemini 2.0 Flash measurement: the prompt token count, input/output split, batching conditions, and exact model mix are not disclosed. Vetch therefore treats Gemini 2.0 Flash as **Tier 3** despite the official source. The registry keeps a provisional scalar so dashboards can still compare workloads, but audit reports should read its p5/p95 bounds and basis string rather than treating the point estimate as measured.
 
 **Key Findings:**
 - **Reasoning models consume 40-107x more energy** than efficient models like GPT-4.1 nano
@@ -203,7 +206,7 @@ else:
 
 ### References & Data Provenance
 
-**Primary Sources (Tier 1):**
+**Primary Sources and Methodology Anchors:**
 
 1. **Jegham, N., et al. (2025).** "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference."
    - Published: May 2025 (arXiv:2505.09598)
@@ -216,6 +219,7 @@ else:
    - Data: Median Gemini Apps text prompt consumes 0.24 Wh
    - Methodology: Full stack accounting (TPU, CPU, datacenter overhead)
    - PUE: 1.10 (2023 fleet average)
+   - Vetch tier: Tier 3 for Gemini per-token coefficients, because the token count and per-model decomposition are not published
    - URL: https://cloud.google.com/blog/products/infrastructure/measuring-the-environmental-impact-of-ai-inference
 
 3. **Epoch AI (2025).** "How Much Energy Does ChatGPT Use?"
@@ -272,6 +276,8 @@ Note: There is no Tier 0 or Tier 2 for PUE because:
 - `gpt-*`, `o1-*`, `o3-*`, `o4-*` → OpenAI (Azure-backed, PUE 1.12)
 - `claude-*` → Anthropic (AWS-backed, PUE 1.15)
 - `gemini-*`, `gemma-*` → Vertex AI (Google Cloud, PUE 1.10)
+
+Google's 1.10 PUE is a fleet-average value. Combining a regional grid intensity with a fleet-average PUE is intentionally transparent but mixed precision: it is better than a generic datacenter default, but it is not a facility-specific request measurement. If you know the deployment PUE, set `VETCH_DEFAULT_PUE` for the audit.
 
 ### PUE Limitations
 

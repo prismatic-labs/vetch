@@ -2,7 +2,7 @@
 
 **Version:** 1.0
 **Date:** March 2026
-**Status:** Tier 1 (Flash models - scenario-based ranges), Tier 3 (Pro models)
+**Status:** Tier 3 proxy estimates for all Gemini entries
 
 ---
 
@@ -13,9 +13,9 @@
 **Why ranges?** Google's 0.24 Wh measurement [1] does not specify token count. All per-token estimates scale linearly with assumed prompt length.
 
 **Recommended use:**
-- **Short prompts** (Q&A): Use conservative estimates (0.273 Wh/1k input)
-- **Long prompts** (code/docs): Use optimistic estimates (0.068 Wh/1k input)
-- **Mixed workloads**: Use moderate estimates with ±50% uncertainty
+- Treat all values as order-of-magnitude until Google or independent work publishes per-token Gemini measurements
+- Read the registry `basis` field and p5/p95 bounds before using Gemini energy figures in customer-facing audit reports
+- Prefer customer-local calibration for self-hosted Gemini-family or Gemma workloads
 
 ---
 
@@ -98,13 +98,13 @@ Using Google's efficiency claims [7][8]:
 
 | Model | Input (Wh/1k) | Output (Wh/1k) | Tier | Range (Conservative-Maximum) |
 |-------|---------------|----------------|------|------------------------------|
-| **gemini-2.0-flash** | **0.068** | **0.205** | **1** | 0.055 - 0.273 |
-| **gemini-1.5-flash** | **0.079** | **0.238** | **1** | 0.064 - 0.317 |
-| **gemini-2.5-flash** | **0.054** | **0.164** | **1** | 0.044 - 0.218 |
+| **gemini-2.0-flash** | **0.068** | **0.205** | **3** | 0.055 - 0.273 |
+| **gemini-1.5-flash** | **0.079** | **0.238** | **3** | 0.064 - 0.317 |
+| **gemini-2.5-flash** | **0.054** | **0.164** | **3** | 0.044 - 0.218 |
 | gemini-1.5-pro | 0.302 | 0.909 | 3 | 0.244 - 1.211 |
 | gemini-2.5-pro | 0.206 | 0.627 | 3 | 0.168 - 0.833 |
 
-**Flash models:** Tier 1 (derived from Google measurement with documented assumptions)
+**Flash models:** Tier 3 (anchored to a Google fleet median, but per-token decomposition depends on undocumented prompt length and workload mix)
 **Pro models:** Tier 3 (theoretical 3.82x scaling from Flash)
 
 ---
@@ -113,7 +113,7 @@ Using Google's efficiency claims [7][8]:
 
 | Assumption | Evidence | Uncertainty | Impact |
 |------------|----------|-------------|--------|
-| **Median prompt = 1,600 tokens** | Energy-weighted hypothesis | **±50%** | **Linear scaling** |
+| **Median prompt = 1,600 tokens** | Energy-weighted hypothesis | **Order-of-magnitude** | **Linear scaling** |
 | Output/input ≈ 3:1 | Autoregressive heuristic [6] | ±25% | Input/output split |
 | Anchor = Flash-class model | Timeline | Medium | Could be 1.5 or 2.0 |
 | PUE = 1.10 | Google fleet average [1] | ±5% | 1.05-1.15 range |
@@ -199,7 +199,7 @@ https://arxiv.org/abs/2508.15734
 - Initial calibration from Google's 0.24 Wh
 - Four-scenario analysis (400, 800, 1,600, 2,000 tokens)
 - Selected optimistic scenario (1,600 tokens) for vetch registry
-- Flash models: Tier 1 with documented uncertainty
+- Flash models: Tier 3 with documented assumptions
 - Pro models: Tier 3 (theoretical)
 
 ---

@@ -19,11 +19,12 @@ import logging
 import re
 import threading
 import weakref
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple
 from weakref import WeakKeyDictionary
 
 from vetch._stall import apply_stall_action, looks_like_param_mismatch
 from vetch.context import get_active_context
+from vetch.providers._google_usage import build_google_usage
 from vetch.proxy import is_vetch_patched
 
 if TYPE_CHECKING:
@@ -42,6 +43,17 @@ class _ModelOriginals(NamedTuple):
 # Thread-safe per-model storage for original methods
 _model_originals: WeakKeyDictionary[Any, _ModelOriginals] = WeakKeyDictionary()
 _model_lock = threading.Lock()
+
+
+def _record_reroute_fallback(exc: Exception, original_model: str) -> None:
+    message = (
+        f"STALL-001 reroute failed ({type(exc).__name__}); "
+        f"falling back to original model {original_model}"
+    )
+    logger.warning(message)
+    ctx = get_active_context()
+    if ctx is not None:
+        ctx.warnings.append(message)
 
 
 class _WeakGenerateWrapper:
@@ -86,12 +98,7 @@ class _WeakGenerateWrapper:
 
         except Exception as e:
             if rerouted and original_model and looks_like_param_mismatch(e):
-                ctx = get_active_context()
-                if ctx is not None:
-                    ctx.warnings.append(
-                        f"STALL-001 reroute failed ({type(e).__name__}); "
-                        f"falling back to original model {original_model}"
-                    )
+                _record_reroute_fallback(e, original_model)
                 kwargs["model"] = original_model
                 try:
                     result = original(*args, **kwargs)
@@ -140,12 +147,7 @@ class _WeakGenerateAsyncWrapper:
 
         except Exception as e:
             if rerouted and original_model and looks_like_param_mismatch(e):
-                ctx = get_active_context()
-                if ctx is not None:
-                    ctx.warnings.append(
-                        f"STALL-001 reroute failed ({type(e).__name__}); "
-                        f"falling back to original model {original_model}"
-                    )
+                _record_reroute_fallback(e, original_model)
                 kwargs["model"] = original_model
                 try:
                     result = await original(*args, **kwargs)
@@ -174,16 +176,7 @@ def extract_usage(response: Any) -> Usage | None:
     if usage_metadata is None:
         return None
 
-    return cast(
-        "Usage",
-        {
-            "text": {
-                "input_tokens": getattr(usage_metadata, "prompt_token_count", 0),
-                "output_tokens": getattr(usage_metadata, "candidates_token_count", 0),
-                "total_tokens": getattr(usage_metadata, "total_token_count", 0),
-            }
-        },
-    )
+    return build_google_usage(usage_metadata)
 
 
 def extract_model(model_obj: Any) -> str:
@@ -367,16 +360,7 @@ class StreamWrapper:
         # Check for usage in chunk
         usage_metadata = getattr(chunk, "usage_metadata", None)
         if usage_metadata:
-            self._final_usage = cast(
-                "Usage",
-                {
-                    "text": {
-                        "input_tokens": getattr(usage_metadata, "prompt_token_count", 0),
-                        "output_tokens": getattr(usage_metadata, "candidates_token_count", 0),
-                        "total_tokens": getattr(usage_metadata, "total_token_count", 0),
-                    }
-                },
-            )
+            self._final_usage = build_google_usage(usage_metadata)
 
     def _capture_to_context(self) -> None:
         """Capture final metadata to active context (or create auto-context)."""

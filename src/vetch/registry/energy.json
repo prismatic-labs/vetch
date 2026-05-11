@@ -414,7 +414,7 @@
     "basis": "Smaller MoE, optimized for throughput."
   },
   "gemini-2.0-flash": {
-    "tier": 1,
+    "tier": 3,
     "prompt_length": {
       "short":  { "wh_per_1k_input": 0.068, "wh_per_1k_output": 0.205 },
       "medium": { "wh_per_1k_input": 0.068, "wh_per_1k_output": 0.205 },
@@ -424,7 +424,7 @@
     "total_params_b": 100,
     "active_params_b": 25,
     "quantization": "bf16",
-    "basis": "Tier 1 - Google Environmental Report (Aug 2025): 0.24 Wh per median Gemini Apps prompt. Reverse-engineered assuming 1600 token median (800 in, 800 out), PUE 1.10, 3:1 output/input ratio. CRITICAL ASSUMPTION: If median prompt is actually shorter (e.g., 400 tokens), these values could be 4x higher. Cloud-optimized (hyperscale batching). Long context (>128k): +40% due to KV-cache memory pressure. See GEMINI_CALIBRATION.md. Source: https://cloud.google.com/blog/products/infrastructure/measuring-the-environmental-impact-of-ai-inference/"
+    "basis": "Tier 3 - Google Environmental Report (Aug 2025) gives a full-stack median Gemini Apps text-prompt anchor of 0.24 Wh, not per-token coefficients. Values here are a provisional reverse-engineering assuming 1600 token median (800 in, 800 out), PUE 1.10, and 3:1 output/input ratio. If the median prompt is shorter (e.g., 400 tokens), coefficients could be ~4x higher. Cloud-optimized hyperscale batching; long context (>128k): +40% due to KV-cache memory pressure. Treat as order-of-magnitude until Google or independent work publishes per-token Gemini measurements. Source: https://cloud.google.com/blog/products/infrastructure/measuring-the-environmental-impact-of-ai-inference/"
   },
   "gemini-2.5-flash": {
     "wh_per_1k_input": 0.068,

@@ -65,6 +65,20 @@ class TestExtractUsage:
         assert usage["reasoning"]["output_tokens"] == 8200
         assert usage["reasoning"]["total_tokens"] == 8200
 
+    def test_extracts_plural_thoughts_tokens_for_current_sdk(self):
+        """Test extracting reasoning tokens from Google's plural field name."""
+        response = Mock()
+        response.usage_metadata = Mock()
+        response.usage_metadata.prompt_token_count = 100
+        response.usage_metadata.candidates_token_count = 50
+        response.usage_metadata.total_token_count = 1050
+        response.usage_metadata.thoughts_token_count = 900
+
+        usage, _, _ = extract_usage(response)
+
+        assert usage is not None
+        assert usage["reasoning"]["output_tokens"] == 900
+
     def test_returns_none_when_no_usage_metadata(self):
         """Test returns None when response has no usage_metadata."""
         response = Mock()
@@ -87,6 +101,34 @@ class TestExtractUsage:
         assert usage["text"]["input_tokens"] == 0
         assert usage["text"]["output_tokens"] == 0
         assert usage["text"]["total_tokens"] == 0
+
+    def test_extracts_modality_token_details(self):
+        """Preserve Google modality breakdowns when SDK exposes them."""
+
+        class Detail:
+            def __init__(self, modality: str, token_count: int) -> None:
+                self.modality = modality
+                self.token_count = token_count
+
+        response = Mock()
+        response.usage_metadata = Mock()
+        response.usage_metadata.prompt_token_count = 1000
+        response.usage_metadata.candidates_token_count = 100
+        response.usage_metadata.total_token_count = 1100
+        response.usage_metadata.thought_token_count = 0
+        response.usage_metadata.prompt_tokens_details = [
+            Detail("TEXT", 100),
+            Detail("IMAGE", 650),
+            Detail("VIDEO", 250),
+        ]
+        response.usage_metadata.candidates_tokens_details = [Detail("AUDIO", 80)]
+
+        usage, _, _ = extract_usage(response)
+
+        assert usage is not None
+        assert usage["image"]["input_tokens"] == 650
+        assert usage["video"]["input_tokens"] == 250
+        assert usage["audio"]["output_tokens"] == 80
 
 
 class TestExtractModel:
@@ -351,5 +393,4 @@ class TestTrackGenaiContextManager:
 
         # Should be unpatched after exit
         assert not hasattr(client, "vetch_patched")
-
 

@@ -8,7 +8,7 @@ These tests verify:
 
 from __future__ import annotations
 
-from vetch.advisory import Advisory, format_advisories, generate_advisories
+from vetch.advisory import Advisory, format_advisories, generate_advisories, get_advisory_spec
 from vetch.stats import SessionStats
 
 
@@ -84,6 +84,21 @@ class TestGenerateAdvisories:
         # Should detect the repeated pattern
         assert len(advisories) >= 1
         assert any("CACHE" in a.code for a in advisories)
+
+    def test_detect_babbling_uses_matching_confidence_threshold(self) -> None:
+        """BABBLE-001 confidence should be medium when the advisory first fires."""
+        stats = SessionStats()
+        for _ in range(10):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 1500}},
+            })
+
+        advisories = generate_advisories(stats)
+        babble = [advisory for advisory in advisories if advisory.code == "BABBLE-001"]
+
+        assert len(babble) == 1
+        assert get_advisory_spec("BABBLE-001").confidence(stats) == "medium"
 
 
 class TestFormatAdvisories:
