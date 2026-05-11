@@ -183,6 +183,22 @@ class TestCLIAudit:
         assert data["total_requests"] == 1
         assert data["total_tokens"] == 125
 
+    def test_audit_empty_session_honors_json_format(self, capsys) -> None:
+        """Empty session fallback still returns JSON when requested."""
+        audit(Namespace(
+            format="json",
+            window=timedelta(days=1),
+            model=None,
+            tags=None,
+            stored=False,
+            session=True,
+        ))
+
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["total_requests"] == 0
+        assert data["advisories"] == []
+
 
 class TestCLIMain:
     """Tests for CLI main entry point."""

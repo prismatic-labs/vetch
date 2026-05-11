@@ -97,10 +97,12 @@ def build_audit_report(
 ) -> AuditReport:
     """Build an audit report from locally stored events."""
     events = query_events(start=start, end=end, model=model, tags=tags)
-    aggregate_summary = (
-        query_daily_usage(start=start, end=end, dimensions=tag_keys)
-        if model is None and tags is None
-        else UsageSummary(start, end)
+    aggregate_summary = query_daily_usage(
+        start=start,
+        end=end,
+        dimensions=tag_keys,
+        model=model,
+        tag_filter=tags,
     )
     use_aggregates = (
         aggregate_summary.total_requests > 0
@@ -108,6 +110,9 @@ def build_audit_report(
     )
     window_seconds = max((end - start).total_seconds(), 1.0)
     window_days = window_seconds / 86400
+    # Floor at 1 day for the projection denominator — sub-day windows produce
+    # astronomical monthly projections that are not actionable.
+    projection_days = max(window_days, 1.0)
 
     totals = (
         _summarize_usage_summary(aggregate_summary)
@@ -139,7 +144,7 @@ def build_audit_report(
         for finding in observed_basis
     )
     projected_monthly = (
-        (observed_avoidable / window_days) * MONTHLY_PROJECTION_DAYS
+        (observed_avoidable / projection_days) * MONTHLY_PROJECTION_DAYS
         if observed_avoidable
         else 0.0
     )

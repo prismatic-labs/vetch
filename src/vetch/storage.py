@@ -71,6 +71,8 @@ def _get_connection() -> sqlite3.Connection:
             # Lazy init database if needed
             if not DB_PATH.exists():
                 _init_db()
+            else:
+                _migrate_db()
             _connection_pool = sqlite3.connect(DB_PATH, check_same_thread=False)
             _configure_connection(_connection_pool)
             _connection_pool.row_factory = sqlite3.Row
@@ -208,6 +210,38 @@ def _init_db() -> None:
         conn.close()
 
 
+def _migrate_db() -> None:
+    """Add tables introduced after v0.4.0 to an existing database."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        _configure_connection(conn)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_usage (
+                day TEXT NOT NULL,
+                dimension TEXT NOT NULL,
+                value TEXT NOT NULL,
+                requests INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                energy_wh REAL NOT NULL DEFAULT 0.0,
+                carbon_g REAL NOT NULL DEFAULT 0.0,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                PRIMARY KEY (day, dimension, value)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_usage_day ON daily_usage(day)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_usage_dimension "
+            "ON daily_usage(dimension, value, day)"
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.debug("Vetch DB migration skipped: %s", exc)
+
+
 def store_event(event: InferenceEvent) -> None:
     """Store an event in the local database without blocking the caller on disk I/O."""
     if not _STORAGE_ENABLED:
@@ -275,6 +309,8 @@ def _ensure_writer_running() -> queue.Queue[_StoredEvent | object]:
         if _writer_thread is None or not _writer_thread.is_alive():
             if not DB_PATH.exists():
                 _init_db()
+            else:
+                _migrate_db()
             _register_atexit()
             _writer_thread = threading.Thread(
                 target=_writer_loop,
@@ -341,6 +377,10 @@ def _prepare_stored_event(event: InferenceEvent) -> _StoredEvent:
     tags = event.get("tags") if isinstance(event.get("tags"), dict) else {}
     tags_dict = cast(dict[str, Any], tags or {})
     timestamp = str(event.get("timestamp") or datetime.now(timezone.utc).isoformat())
+    # Normalise to Z suffix so SQLite BETWEEN string comparisons are consistent.
+    # Z (ASCII 90) > + (ASCII 43), so mixing formats causes boundary-second misses.
+    if timestamp.endswith("+00:00"):
+        timestamp = timestamp[:-6] + "Z"
     day = _day_from_timestamp(timestamp)
     model = str(event.get("model") or "unknown")
     provider = str(event.get("provider") or "unknown")
@@ -633,7 +673,15 @@ def query_usage(
 
         summary.by_tag = tag_stats
 
-        return summary
+    # If raw events returned nothing (likely compacted) but daily_usage has data,
+    # fall back to daily aggregates. This must run outside _connection_lock
+    # because query_daily_usage() also acquires it.
+    if summary.total_requests == 0:
+        daily = query_daily_usage(start=start, end=end, model=model, tag_filter=tags)
+        if daily.total_requests > 0:
+            return daily
+
+    return summary
 
 
 def query_events(
@@ -656,7 +704,12 @@ def query_events(
     with _connection_lock:
         cursor = conn.cursor()
         query = "SELECT raw_json FROM events WHERE timestamp BETWEEN ? AND ?"
-        params: list[Any] = [start.isoformat(), end.isoformat()]
+        # Normalise to Z so queries match both Z and +00:00-stored timestamps
+        # (Z > + lexicographically, so mixing formats causes boundary misses).
+        params: list[Any] = [
+            start.isoformat().replace("+00:00", "Z"),
+            end.isoformat().replace("+00:00", "Z"),
+        ]
 
         if model:
             query += " AND model = ?"
@@ -690,12 +743,20 @@ def query_daily_usage(
     start: datetime,
     end: datetime,
     dimensions: tuple[str, ...] | None = None,
+    model: str | None = None,
+    tag_filter: dict[str, str] | None = None,
 ) -> UsageSummary:
     """Query durable daily aggregates for a time period.
 
     Daily aggregates are less precise than raw events for sub-day windows, but
     they remain available after raw event compaction and are suitable for
     executive totals over longer audit windows.
+
+    ``model`` filtering and single-key ``tag_filter`` values are supported.
+    Cross-dimension intersections, such as model+tag or multi-key tags, are
+    not available from daily aggregates because joint distributions are not
+    stored. Unsupported filters return an empty summary instead of unfiltered
+    totals.
     """
     flush_storage()
     summary = UsageSummary(start, end)
@@ -706,26 +767,65 @@ def query_daily_usage(
     day_end = end.date().isoformat()
     dimension_filter = dimensions or ()
 
+    # Resolve whether we can do a filter on daily_usage. Only one stored
+    # dimension can be filtered safely; cross-dimension intersections are not
+    # stored as joint distributions.
+    filter_dim: str | None = None
+    filter_val: str | None = None
+    unsupported_filter = False
+    if model and tag_filter:
+        unsupported_filter = True
+    elif model:
+        filter_dim = "model"
+        filter_val = model
+    elif tag_filter:
+        if len(tag_filter) == 1:
+            filter_dim, filter_val = next(iter(tag_filter.items()))
+        else:
+            unsupported_filter = True
+
+    if unsupported_filter:
+        return summary
+
     conn = _get_connection()
     with _connection_lock:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
-            SELECT
-                COALESCE(SUM(requests), 0) as total_requests,
-                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
-                COALESCE(SUM(output_tokens), 0) as total_output_tokens,
-                COALESCE(SUM(energy_wh), 0.0) as total_energy_wh,
-                COALESCE(SUM(carbon_g), 0.0) as total_carbon_g,
-                COALESCE(SUM(cost_usd), 0.0) as total_cost_usd
-            FROM daily_usage
-            WHERE day BETWEEN ? AND ?
-              AND dimension = 'all'
-              AND value = 'all'
-            """,
-            (day_start, day_end),
-        )
+        if filter_dim is not None:
+            # Derive totals from the matching dimension-value row rather than 'all'.
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(requests), 0) as total_requests,
+                    COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                    COALESCE(SUM(energy_wh), 0.0) as total_energy_wh,
+                    COALESCE(SUM(carbon_g), 0.0) as total_carbon_g,
+                    COALESCE(SUM(cost_usd), 0.0) as total_cost_usd
+                FROM daily_usage
+                WHERE day BETWEEN ? AND ?
+                  AND dimension = ?
+                  AND value = ?
+                """,
+                (day_start, day_end, filter_dim, filter_val),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(requests), 0) as total_requests,
+                    COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                    COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                    COALESCE(SUM(energy_wh), 0.0) as total_energy_wh,
+                    COALESCE(SUM(carbon_g), 0.0) as total_carbon_g,
+                    COALESCE(SUM(cost_usd), 0.0) as total_cost_usd
+                FROM daily_usage
+                WHERE day BETWEEN ? AND ?
+                  AND dimension = 'all'
+                  AND value = 'all'
+                """,
+                (day_start, day_end),
+            )
         totals_row = cursor.fetchone()
         if totals_row:
             summary.total_requests = int(totals_row["total_requests"])
@@ -735,32 +835,59 @@ def query_daily_usage(
             summary.total_carbon_g = float(totals_row["total_carbon_g"])
             summary.total_cost_usd = float(totals_row["total_cost_usd"])
 
-        cursor.execute(
-            """
-            SELECT
-                value as model,
-                COALESCE(SUM(requests), 0) as requests,
-                COALESCE(SUM(input_tokens), 0) as input_tokens,
-                COALESCE(SUM(output_tokens), 0) as output_tokens,
-                COALESCE(SUM(cost_usd), 0.0) as cost_usd,
-                COALESCE(SUM(energy_wh), 0.0) as energy_wh,
-                COALESCE(SUM(carbon_g), 0.0) as carbon_g
-            FROM daily_usage
-            WHERE day BETWEEN ? AND ?
-              AND dimension = 'model'
-            GROUP BY value
-            """,
-            (day_start, day_end),
-        )
-        for row in cursor:
-            summary.by_model[row["model"]] = {
-                "requests": int(row["requests"]),
-                "input_tokens": int(row["input_tokens"]),
-                "output_tokens": int(row["output_tokens"]),
-                "cost_usd": float(row["cost_usd"]),
-                "energy_wh": float(row["energy_wh"]),
-                "carbon_g": float(row["carbon_g"]),
+        if filter_dim == "model" and filter_val is not None:
+            summary.by_model[filter_val] = {
+                "requests": summary.total_requests,
+                "input_tokens": summary.total_input_tokens,
+                "output_tokens": summary.total_output_tokens,
+                "cost_usd": summary.total_cost_usd,
+                "energy_wh": summary.total_energy_wh,
+                "carbon_g": summary.total_carbon_g,
             }
+        elif filter_dim is None:
+            cursor.execute(
+                """
+                SELECT
+                    value as model,
+                    COALESCE(SUM(requests), 0) as requests,
+                    COALESCE(SUM(input_tokens), 0) as input_tokens,
+                    COALESCE(SUM(output_tokens), 0) as output_tokens,
+                    COALESCE(SUM(cost_usd), 0.0) as cost_usd,
+                    COALESCE(SUM(energy_wh), 0.0) as energy_wh,
+                    COALESCE(SUM(carbon_g), 0.0) as carbon_g
+                FROM daily_usage
+                WHERE day BETWEEN ? AND ?
+                  AND dimension = 'model'
+                GROUP BY value
+                """,
+                (day_start, day_end),
+            )
+            for row in cursor:
+                summary.by_model[row["model"]] = {
+                    "requests": int(row["requests"]),
+                    "input_tokens": int(row["input_tokens"]),
+                    "output_tokens": int(row["output_tokens"]),
+                    "cost_usd": float(row["cost_usd"]),
+                    "energy_wh": float(row["energy_wh"]),
+                    "carbon_g": float(row["carbon_g"]),
+                }
+
+        if filter_dim is not None:
+            if (
+                filter_dim not in {"all", "model", "provider"}
+                and filter_val is not None
+                and summary.total_requests > 0
+                and (not dimension_filter or filter_dim in dimension_filter)
+            ):
+                summary.by_tag.setdefault(filter_dim, {})[filter_val] = {
+                    "requests": summary.total_requests,
+                    "input_tokens": summary.total_input_tokens,
+                    "output_tokens": summary.total_output_tokens,
+                    "cost_usd": summary.total_cost_usd,
+                    "energy_wh": summary.total_energy_wh,
+                    "carbon_g": summary.total_carbon_g,
+                }
+            return summary
 
         tag_query = """
             SELECT

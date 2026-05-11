@@ -453,6 +453,13 @@ def _audit_session(args: argparse.Namespace) -> None:
     stats = get_session_stats()
 
     if stats.total_requests == 0:
+        if getattr(args, "format", "text") == "json":
+            print(json.dumps({
+                "total_requests": 0,
+                "advisories": [],
+                "message": "No requests recorded in this session.",
+            }, indent=2))
+            return
         print("No requests recorded in this session.")
         print("\nTo use the audit feature:")
         print("  1. Use vetch.wrap() around your LLM calls")

@@ -8,6 +8,7 @@ These tests verify:
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -155,6 +156,44 @@ class TestQueryUsage:
 
             assert summary.total_requests == 0
 
+    def test_existing_database_migrates_before_daily_query(self) -> None:
+        """Existing v0.4-style databases should not break daily usage reads."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "legacy.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("""
+                CREATE TABLE events (
+                    event_id TEXT PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    model TEXT,
+                    provider TEXT,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    energy_wh REAL,
+                    carbon_g REAL,
+                    cost_usd REAL,
+                    tags_json TEXT,
+                    raw_json TEXT
+                )
+            """)
+            conn.commit()
+            conn.close()
+
+            configure_storage(enabled=True, path=db_path)
+            now = datetime.now(timezone.utc)
+
+            summary = query_daily_usage(
+                start=now - timedelta(days=1),
+                end=now,
+            )
+
+            assert summary.total_requests == 0
+            check = sqlite3.connect(db_path)
+            try:
+                check.execute("SELECT 1 FROM daily_usage LIMIT 1")
+            finally:
+                check.close()
+
     def test_query_with_stored_events(self) -> None:
         """Query aggregates stored events."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -290,6 +329,125 @@ class TestQueryUsage:
             assert summary.total_output_tokens == 30
             assert summary.total_energy_wh == pytest.approx(0.25)
             assert summary.by_tag["team"]["ml"]["energy_wh"] == pytest.approx(0.25)
+
+    def test_query_usage_model_filter_uses_daily_aggregates_after_compaction(self) -> None:
+        """Model-filtered usage should still work after raw rows are compacted."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            configure_storage(enabled=True, path=db_path)
+
+            now = datetime.now(timezone.utc)
+            old = now - timedelta(days=2)
+            store_event({
+                "event_id": "gpt-old",
+                "timestamp": old.isoformat(),
+                "model": "gpt-4o",
+                "provider": "openai",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 25}},
+                "estimated_cost_usd": 0.04,
+                "tags": {"team": "ml"},
+            })
+            store_event({
+                "event_id": "claude-old",
+                "timestamp": old.isoformat(),
+                "model": "claude-3-opus",
+                "provider": "anthropic",
+                "usage": {"text": {"input_tokens": 200, "output_tokens": 50}},
+                "estimated_cost_usd": 0.08,
+                "tags": {"team": "ml"},
+            })
+
+            compact_storage(raw_retention_days=1)
+
+            summary = query_usage(
+                start=old - timedelta(hours=1),
+                end=now,
+                model="gpt-4o",
+            )
+
+            assert summary.total_requests == 1
+            assert summary.total_input_tokens == 100
+            assert summary.total_output_tokens == 25
+            assert set(summary.by_model) == {"gpt-4o"}
+
+    def test_query_usage_multi_tag_filter_does_not_use_unfiltered_daily_totals(self) -> None:
+        """Unsupported compacted multi-tag filters should not return all usage."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            configure_storage(enabled=True, path=db_path)
+
+            now = datetime.now(timezone.utc)
+            old = now - timedelta(days=2)
+            store_event({
+                "event_id": "acme-rag",
+                "timestamp": old.isoformat(),
+                "model": "gpt-4o",
+                "provider": "openai",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 25}},
+                "estimated_cost_usd": 0.04,
+                "tags": {"customer": "acme", "feature": "rag"},
+            })
+            store_event({
+                "event_id": "beta-support",
+                "timestamp": old.isoformat(),
+                "model": "gpt-4o",
+                "provider": "openai",
+                "usage": {"text": {"input_tokens": 200, "output_tokens": 50}},
+                "estimated_cost_usd": 0.08,
+                "tags": {"customer": "beta", "feature": "support"},
+            })
+
+            compact_storage(raw_retention_days=1)
+
+            summary = query_usage(
+                start=old - timedelta(hours=1),
+                end=now,
+                tags={"customer": "acme", "feature": "support"},
+            )
+
+            assert summary.total_requests == 0
+
+    def test_daily_usage_single_tag_filter_hides_unfiltered_breakdowns(self) -> None:
+        """Tag-filtered daily summaries should not expose unrelated dimensions."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            configure_storage(enabled=True, path=db_path)
+
+            now = datetime.now(timezone.utc)
+            old = now - timedelta(days=2)
+            store_event({
+                "event_id": "acme-platform",
+                "timestamp": old.isoformat(),
+                "model": "gpt-4o",
+                "provider": "openai",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 25}},
+                "estimated_cost_usd": 0.04,
+                "tags": {"customer": "acme", "team": "platform"},
+            })
+            store_event({
+                "event_id": "beta-growth",
+                "timestamp": old.isoformat(),
+                "model": "claude-3-opus",
+                "provider": "anthropic",
+                "usage": {"text": {"input_tokens": 200, "output_tokens": 50}},
+                "estimated_cost_usd": 0.08,
+                "tags": {"customer": "beta", "team": "growth"},
+            })
+
+            compact_storage(raw_retention_days=1)
+
+            summary = query_daily_usage(
+                start=old - timedelta(hours=1),
+                end=now,
+                dimensions=("customer", "team"),
+                tag_filter={"customer": "acme"},
+            )
+
+            assert summary.total_requests == 1
+            assert summary.by_model == {}
+            assert summary.by_tag["customer"]["acme"]["requests"] == 1
+            assert "beta" not in summary.by_tag.get("customer", {})
+            assert "team" not in summary.by_tag
 
     def test_top_consumers_includes_energy(self) -> None:
         """Top consumer output includes real tag-level energy aggregation."""
