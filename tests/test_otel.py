@@ -160,3 +160,106 @@ class TestOtelFailSafe:
         for _ in range(10):
             result = attach_to_otel_span(event)
             assert result is False
+
+
+class TestExportAdvisoryOtlp:
+    """Tests for advisory OTLP export."""
+
+    def test_returns_false_when_not_configured(self) -> None:
+        from vetch.otel import export_advisory_otlp, is_otlp_configured
+        assert not is_otlp_configured()
+        result = export_advisory_otlp("STALL-001", "CRITICAL", "kill",
+                                      estimated_waste_usd=4.20)
+        assert result is False
+
+    def test_never_raises(self) -> None:
+        from vetch.otel import export_advisory_otlp
+        # Should not raise regardless of args
+        for code in ("STALL-001", "RAG-001", "CACHE-001", "BABBLE-001", "UNKNOWN"):
+            result = export_advisory_otlp(code, "WARNING", "warn")
+            assert isinstance(result, bool)
+
+    def test_with_mocked_meter_and_tracer(self) -> None:
+        """When OTLP is configured, advisory counter and histogram are incremented."""
+        import vetch.otel as otel_mod
+
+        counter = MagicMock()
+        histogram = MagicMock()
+        tracer = MagicMock()
+        # Simulate a span context manager
+        span_ctx = MagicMock()
+        span_ctx.__enter__ = MagicMock(return_value=MagicMock())
+        span_ctx.__exit__ = MagicMock(return_value=False)
+        tracer.start_as_current_span.return_value = span_ctx
+
+        old_configured = otel_mod._otlp_configured
+        old_counter = otel_mod._advisory_counter
+        old_histogram = otel_mod._advisory_waste_histogram
+        old_tracer = otel_mod._tracer
+        try:
+            otel_mod._otlp_configured = True
+            otel_mod._advisory_counter = counter
+            otel_mod._advisory_waste_histogram = histogram
+            otel_mod._tracer = tracer
+
+            result = otel_mod.export_advisory_otlp(
+                "STALL-001", "CRITICAL", "kill",
+                session_id="sess-abc",
+                model="gpt-4o",
+                estimated_waste_usd=8.50,
+                tags={"feature": "agent", "customer": "acme"},
+            )
+
+            assert result is True
+            counter.add.assert_called_once()
+            call_attrs = counter.add.call_args[0][1]
+            assert call_attrs["vetch.advisory.code"] == "STALL-001"
+            assert call_attrs["vetch.advisory.action"] == "kill"
+            assert call_attrs["vetch.tag.feature"] == "agent"
+
+            histogram.record.assert_called_once()
+            waste_call = histogram.record.call_args[0]
+            assert waste_call[0] == 8.50
+
+        finally:
+            otel_mod._otlp_configured = old_configured
+            otel_mod._advisory_counter = old_counter
+            otel_mod._advisory_waste_histogram = old_histogram
+            otel_mod._tracer = old_tracer
+
+    def test_advisory_span_attributes_on_inference_event(self) -> None:
+        """Advisory codes on an event are surfaced as span attributes."""
+        import vetch.otel as otel_mod
+        from unittest.mock import patch, MagicMock
+
+        span = MagicMock()
+        span_ctx = MagicMock()
+        span_ctx.__enter__ = MagicMock(return_value=span)
+        span_ctx.__exit__ = MagicMock(return_value=False)
+        tracer = MagicMock()
+        tracer.start_as_current_span.return_value = span_ctx
+
+        event = {
+            "model": "gpt-4o", "provider": "openai",
+            "estimated_energy_wh": 0.01, "estimated_carbon_g": 0.004,
+            "estimated_cost_usd": 0.01,
+            "advisories": [{"code": "STALL-001", "severity": "CRITICAL"}],
+        }
+
+        old_configured = otel_mod._otlp_configured
+        old_tracer = otel_mod._tracer
+        try:
+            otel_mod._otlp_configured = True
+            otel_mod._tracer = tracer
+            # Suppress OTel import errors
+            with patch.dict("sys.modules", {"opentelemetry": MagicMock(),
+                                            "opentelemetry.trace": MagicMock()}):
+                otel_mod._export_event_sync(event)
+
+            set_calls = {c[0][0]: c[0][1]
+                         for c in span.set_attribute.call_args_list
+                         if len(c[0]) == 2}
+            assert set_calls.get("vetch.advisory_codes") == "STALL-001"
+        finally:
+            otel_mod._otlp_configured = old_configured
+            otel_mod._tracer = old_tracer

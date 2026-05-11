@@ -41,6 +41,8 @@ _energy_histogram: Any = None
 _carbon_histogram: Any = None
 _cost_histogram: Any = None
 _request_counter: Any = None
+_advisory_counter: Any = None        # vetch.advisories_fired{code, severity, action}
+_advisory_waste_histogram: Any = None  # vetch.advisory.waste_usd{code}
 
 # Background export queue (non-blocking export)
 # Configurable via VETCH_EXPORT_QUEUE_SIZE (default: 1000)
@@ -166,6 +168,7 @@ def configure_otlp_export(
     """
     global _otlp_configured, _tracer, _meter
     global _energy_histogram, _carbon_histogram, _cost_histogram, _request_counter
+    global _advisory_counter, _advisory_waste_histogram
 
     try:
         # Try importing OTel SDK components
@@ -265,6 +268,16 @@ def configure_otlp_export(
             description="Total inference requests",
             unit="1",
         )
+        _advisory_counter = _meter.create_counter(
+            "vetch.advisories_fired_total",
+            description="Waste advisories fired (code, severity, action)",
+            unit="1",
+        )
+        _advisory_waste_histogram = _meter.create_histogram(
+            "vetch.advisory_waste_usd",
+            description="Estimated waste cost when an advisory fires (USD)",
+            unit="USD",
+        )
 
         _otlp_configured = True
 
@@ -355,6 +368,18 @@ def _export_event_sync(event: InferenceEvent) -> bool:
             if tags:
                 for k, v in tags.items():
                     span.set_attribute(f"vetch.tag.{k}", v)
+
+            # Advisory signals — surface active waste advisories on the span
+            # so traces show waste context without a separate advisory lookup.
+            advisories = event.get("advisories")
+            if advisories and isinstance(advisories, list):
+                codes = [a["code"] for a in advisories if isinstance(a, dict) and "code" in a]
+                if codes:
+                    span.set_attribute("vetch.advisory_codes", ",".join(codes))
+                    span.add_event(
+                        "vetch.advisories_active",
+                        {"codes": ",".join(codes)},
+                    )
 
         # Record metrics
         model = event.get("model", "unknown")
@@ -517,6 +542,82 @@ def export_event_otlp(event: InferenceEvent) -> bool:
                 f"OTLP export queue full, dropping event ({_dropped_events_count} total dropped)"
             )
 
+        return False
+
+
+def export_advisory_otlp(
+    code: str,
+    severity: str,
+    action: str,
+    *,
+    session_id: str | None = None,
+    model: str | None = None,
+    estimated_waste_usd: float = 0.0,
+    tags: dict[str, str] | None = None,
+) -> bool:
+    """Export a waste advisory event via OTLP.
+
+    Call this whenever an advisory fires in real time (e.g. STALL-001 warn/kill/reroute).
+    Creates a ``vetch.advisory`` span and increments the advisory counter metric so
+    dashboards can alert on waste patterns without polling the CLI.
+
+    Args:
+        code: Advisory code, e.g. ``"STALL-001"``.
+        severity: ``"WARNING"`` or ``"CRITICAL"``.
+        action: The action taken — ``"warn"``, ``"kill"``, ``"reroute"``, or ``"log"``.
+        session_id: Active session ID for correlation with inference spans.
+        model: Model name for filtering in dashboards.
+        estimated_waste_usd: Estimated cost of the wasteful calls detected.
+        tags: User-defined attribution tags (feature, customer, etc.).
+
+    Returns:
+        True if the advisory was exported, False if OTLP is not configured.
+    """
+    if not _otlp_configured:
+        return False
+
+    try:
+        attributes: dict[str, str | float] = {
+            "vetch.advisory.code": code,
+            "vetch.advisory.severity": severity,
+            "vetch.advisory.action": action,
+        }
+        if model:
+            attributes["vetch.model"] = model
+        if session_id:
+            attributes["vetch.session_id"] = session_id
+        if tags:
+            for k, v in tags.items():
+                attributes[f"vetch.tag.{k}"] = v
+
+        # Counter metric — lets dashboards alert on advisory rate
+        if _advisory_counter:
+            _advisory_counter.add(1, attributes)
+
+        # Waste histogram — lets dashboards sum avoided cost over time
+        if _advisory_waste_histogram and estimated_waste_usd > 0:
+            _advisory_waste_histogram.record(estimated_waste_usd, attributes)
+
+        # Span — gives the advisory a home in distributed traces
+        if _tracer is not None:
+            from opentelemetry import trace
+            with _tracer.start_as_current_span(
+                "vetch.advisory",
+                kind=trace.SpanKind.INTERNAL,
+            ) as span:
+                for k, v in attributes.items():
+                    span.set_attribute(k, v)
+                if estimated_waste_usd > 0:
+                    span.set_attribute("vetch.advisory.waste_usd", estimated_waste_usd)
+                if severity == "CRITICAL":
+                    span.set_status(
+                        trace.Status(trace.StatusCode.ERROR, f"{code} detected")
+                    )
+
+        return True
+
+    except Exception as exc:
+        logger.debug("Failed to export advisory via OTLP: %s", exc)
         return False
 
 

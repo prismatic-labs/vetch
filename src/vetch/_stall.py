@@ -70,6 +70,24 @@ def apply_stall_action(
         wasted = advisory.potential_savings_usd if advisory else 0.0
         count = advisory.request_count if advisory else 0
 
+        # Export to OTLP if configured — fail-open, never blocks the call
+        try:
+            from vetch.otel import export_advisory_otlp, is_otlp_configured
+            if is_otlp_configured():
+                model_name = kwargs.get("model") or (advisory.code if advisory else None)
+                tags = dict(ctx.tags) if ctx and ctx.tags else None
+                export_advisory_otlp(
+                    code="STALL-001",
+                    severity=advisory.severity if advisory else "WARNING",
+                    action=action or "log",
+                    session_id=getattr(session, "session_id", None),
+                    model=str(model_name) if model_name else None,
+                    estimated_waste_usd=float(wasted or 0.0),
+                    tags=tags,
+                )
+        except Exception:
+            pass  # OTLP export never blocks inference
+
         if action == "kill":
             raise StallDetected(
                 f"Agentic stall detected. {count} of recent calls produced "

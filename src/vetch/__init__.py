@@ -70,6 +70,7 @@ __all__ = [
     "get_budget_status",
     # v0.1.5: OTLP export
     "configure_otlp_export",
+    "export_advisory_otlp",
     # v0.2.3: HTTP endpoint output
     "configure_http_endpoint",
     # v0.1.5: Green signal API
@@ -601,6 +602,10 @@ def __getattr__(name: str) -> object:
         from vetch.otel import configure_otlp_export
 
         return configure_otlp_export
+    if name == "export_advisory_otlp":
+        from vetch.otel import export_advisory_otlp
+
+        return export_advisory_otlp
     # v0.2.3: HTTP endpoint output
     if name == "configure_http_endpoint":
         from vetch.emitter import configure_http_endpoint
