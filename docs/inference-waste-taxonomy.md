@@ -2,6 +2,8 @@
 
 This document defines the advisory IDs used by Vetch to identify inference waste patterns. Each advisory has a stable ID, defined detection signal, and recommended action.
 
+For a full explanation of how calls are intercepted and how detection signals are derived from token-count metadata, see [how-detection-works.md](how-detection-works.md).
+
 **Status key:**
 - ✅ **Implemented** — fires automatically when the signal threshold is met
 - ⚠️ **Partial** — infrastructure exists but advisory does not fire
@@ -100,6 +102,38 @@ vetch.set_stall_action("reroute", fallback_model="gpt-4o-mini")
 - Reduce the number of retrieved chunks
 - Use a smaller, cheaper model for the initial retrieval / reading step
 - Consider a map-reduce pattern to avoid single large-context calls
+
+---
+
+## BABBLE-001 — Excessive generation
+
+**Status:** ✅ Implemented
+
+**Definition:** Recent calls are producing unusually long outputs, suggesting the model is generating without effective length constraints or stop conditions.
+
+**Signal:**
+- Rolling window of the last 20 calls
+- Average `output_tokens` across the window exceeds 1,500 tokens
+- Advisory only fires after ≥10 total calls
+
+**Severity:** `WARNING`
+
+**Why it matters:** Unconstrained generation is the output-side equivalent of RAG bloat. Long outputs increase latency, cost, and energy consumption on every call. If the workflow does not require long-form generation — summarization, extraction, classification, tool use — excessive output length suggests missing `max_tokens`, absent stop conditions, or a response format that allows the model to pad its answer.
+
+**Example:** A structured data extraction pipeline that does not set `max_tokens` or `response_format`. The model returns the extracted fields plus an explanation, an apology, and a restatement of the task on every call.
+
+**Possible false positives:**
+- Code generation (expected to be long)
+- Long-form writing or analysis tasks
+- Document summarization where the source is long
+
+**Recommended actions:**
+- Set `max_tokens` to a value appropriate for the expected output length
+- Use `response_format={"type": "json_object"}` or a JSON schema to constrain structure
+- Add explicit stop conditions if the model should halt after a known delimiter
+- If long outputs are legitimately required, this advisory can be ignored for that workflow
+
+**Note:** BABBLE-001 is warn-only. There is no automatic kill or reroute action because shortening generation without quality verification would produce truncated or wrong answers. Review is always required before tightening length constraints.
 
 ---
 
