@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.5.0"
+version = "0.5.1"
 description = "Inference waste control for production LLM systems. Detect stalled agents, RAG bloat, and runaway inference — then stop them automatically."
 readme = "README.md"
 license = "Apache-2.0"

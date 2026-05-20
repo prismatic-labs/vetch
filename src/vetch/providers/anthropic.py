@@ -55,6 +55,10 @@ class _WeakMessagesWrapper:
 
         original = self._originals_dict[messages]
 
+        # original is stored as create.__func__ (unbound) to avoid GC cycles.
+        # Pass the messages instance explicitly when original has no __self__.
+        bound_args = args if hasattr(original, "__self__") else (messages, *args)
+
         # v0.4.0: Stall circuit breaker.
         rerouted, original_model = apply_stall_action(kwargs, get_active_context())
 
@@ -65,13 +69,13 @@ class _WeakMessagesWrapper:
         )
 
         try:
-            result = original(*args, **kwargs)
+            result = original(*bound_args, **kwargs)
 
             if is_stream:
                 model_hint = kwargs.get("model", "unknown")
                 return StreamWrapper(result, model_hint=model_hint, is_thinking=is_thinking)
 
-            _after_create(result, *args, **kwargs)
+            _after_create(result, *bound_args, **kwargs)
             return result
 
         except Exception as e:
@@ -85,13 +89,13 @@ class _WeakMessagesWrapper:
                     )
                 kwargs["model"] = original_model
                 try:
-                    result = original(*args, **kwargs)
+                    result = original(*bound_args, **kwargs)
                     if is_stream:
                         model_hint = kwargs.get("model", "unknown")
                         return StreamWrapper(
                             result, model_hint=model_hint, is_thinking=is_thinking
                         )
-                    _after_create(result, *args, **kwargs)
+                    _after_create(result, *bound_args, **kwargs)
                     return result
                 except Exception as fallback_err:
                     _on_create_error(fallback_err)
@@ -115,6 +119,7 @@ class _WeakAsyncMessagesWrapper:
             raise RuntimeError("Messages object was garbage collected")
 
         original = self._originals_dict[messages]
+        bound_args = args if hasattr(original, "__self__") else (messages, *args)
 
         # v0.4.0: Stall circuit breaker.
         rerouted, original_model = apply_stall_action(kwargs, get_active_context())
@@ -126,7 +131,7 @@ class _WeakAsyncMessagesWrapper:
         )
 
         try:
-            result = await original(*args, **kwargs)
+            result = await original(*bound_args, **kwargs)
 
             if is_stream:
                 model_hint = kwargs.get("model", "unknown")
@@ -146,13 +151,13 @@ class _WeakAsyncMessagesWrapper:
                     )
                 kwargs["model"] = original_model
                 try:
-                    result = await original(*args, **kwargs)
+                    result = await original(*bound_args, **kwargs)
                     if is_stream:
                         model_hint = kwargs.get("model", "unknown")
                         return AsyncStreamWrapper(
                             result, model_hint=model_hint, is_thinking=is_thinking
                         )
-                    _after_create(result, *args, **kwargs)
+                    _after_create(result, *bound_args, **kwargs)
                     return result
                 except Exception as fallback_err:
                     _on_create_error(fallback_err)

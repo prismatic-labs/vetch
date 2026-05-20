@@ -123,6 +123,11 @@ class TestAutoContextCreation:
             mock_response.usage.total_tokens = 40
             mock_response.usage.prompt_tokens_details = None
             mock_response.usage.completion_tokens_details = None
+            mock_choice = Mock()
+            mock_choice.finish_reason = "stop"
+            mock_choice.message = Mock()
+            mock_choice.message.content = "test response"
+            mock_response.choices = [mock_choice]
 
             # Create mock completions object
             mock_completions = Mock()

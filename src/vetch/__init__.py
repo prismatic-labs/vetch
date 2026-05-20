@@ -37,6 +37,7 @@ _enabled_env = os.environ.get("VETCH_ENABLED", "true").lower() not in ("false", 
 _DISABLED = _disabled_env or not _enabled_env
 _default_region: str | None = None  # Default region set via instrument()
 _default_tags: dict[str, str] | None = None  # Default tags set via instrument()
+_default_energy_override: dict[str, object] | None = None  # Default calibration override
 # Only print kill-switch message if VETCH_VERBOSE=true (opt-in for debugging)
 if _DISABLED and os.environ.get("VETCH_VERBOSE", "").lower() in ("true", "1", "yes"):
     reason = "VETCH_DISABLED=true" if _disabled_env else "VETCH_ENABLED=false"
@@ -47,7 +48,7 @@ if TYPE_CHECKING:
 
     from vetch.wrapper import VetchContext
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 __all__ = [
     "wrap",
     "awrap",
@@ -195,9 +196,20 @@ def get_default_tags() -> dict[str, str] | None:
     return _default_tags
 
 
+def get_default_energy_override() -> dict[str, object] | None:
+    """Get the default energy override set by ``instrument()``.
+
+    Returns:
+        Energy override values or None if not set.
+    """
+    global _default_energy_override
+    return _default_energy_override
+
+
 def instrument(
     region: str | None = None,
     tags: dict[str, str] | None = None,
+    energy_override: dict[str, object] | None = None,
 ) -> bool:
     """Auto-instrument all detected LLM SDK clients.
 
@@ -210,6 +222,7 @@ def instrument(
     Args:
         region: Default grid region for carbon calculation.
         tags: Default tags to add to all events.
+        energy_override: Default energy values for auto-instrumented calls.
 
     Returns:
         True if any clients were instrumented, False otherwise.
@@ -233,23 +246,25 @@ def instrument(
         - Thread-safe for concurrent initialization
         - Set VETCH_DISABLED=true or VETCH_ENABLED=false to disable
     """
-    global _instrumented, _default_region, _default_tags
+    global _instrumented, _default_region, _default_tags, _default_energy_override
 
     if _DISABLED:
         return False
 
     # Thread-safe instrumentation
     with _instrument_lock:
-        if _instrumented:
-            return True
-
-        # Store default config for auto-instrumentation in module state
-        # IMPORTANT: Do NOT mutate os.environ (affects child processes and other libraries)
+        # Store default config even if instrumentation is already active. This lets
+        # callers update attribution/calibration between isolated sandbox runs.
         if region:
             _default_region = region
         if tags:
             _default_tags = tags
             add_global_tags(tags)
+        if energy_override is not None:
+            _default_energy_override = energy_override
+
+        if _instrumented:
+            return True
 
         instrumented_any = False
 
