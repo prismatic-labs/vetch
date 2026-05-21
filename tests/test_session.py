@@ -109,7 +109,7 @@ class TestSessionAccumulation:
         assert session.call_count == 1
 
     def test_register_event_accumulates_metrics(self) -> None:
-        """register_event accumulates energy, carbon, cost."""
+        """register_event accumulates energy, carbon, water, and cost."""
         import vetch
 
         session = vetch.Session(emit=False)
@@ -174,6 +174,40 @@ class TestSessionAccumulation:
         session.register_event({"model": "gpt-4o", "error": True})  # type: ignore[arg-type]
 
         assert session._errors == 2
+
+    def test_advisory_thresholds_scope_stall_detection(self) -> None:
+        """Per-session advisory thresholds do not affect default sessions."""
+        import vetch
+
+        scoped = vetch.Session(
+            emit=False,
+            advisory_thresholds={"STALL-001": {"low_output_threshold": 1}},
+        )
+        default = vetch.Session(emit=False)
+        event = {
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 500, "output_tokens": 3}},
+            "estimated_cost_usd": 0.10,
+        }
+
+        for _ in range(15):
+            scoped.register_event(event)  # type: ignore[arg-type]
+            default.register_event(event)  # type: ignore[arg-type]
+
+        assert scoped.stall_triggered is False
+        assert default.stall_triggered is True
+
+    def test_from_headers_accepts_advisory_thresholds(self) -> None:
+        """Distributed child sessions can carry route-specific thresholds."""
+        import vetch
+
+        child = vetch.Session.from_headers(
+            {"X-Vetch-Session-Id": "parent-123"},
+            emit=False,
+            advisory_thresholds={"STALL-001": {"low_output_threshold": 1}},
+        )
+
+        assert child.stats.summary()["recent_low_output_threshold"] == 1
 
 
 class TestSessionHeaders:

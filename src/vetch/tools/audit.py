@@ -30,6 +30,7 @@ def audit_registry() -> bool:
     print("=== Vetch Registry Audit ===")
 
     issues = []
+    warnings = []
 
     try:
         with open(_ENERGY_PATH) as f:
@@ -79,14 +80,16 @@ def audit_registry() -> bool:
 
         if wh_in > 0 and usd_in > 0:
             ratio = usd_in / wh_in
-            # Frontier models (GPT-4, Claude 3 Opus) tend to have ratio > 0.05
-            # Cheap models (Mini, Haiku) tend to have ratio < 0.01
-            # If a model has Frontier-level energy but Mini-level price, it's a huge red flag
+            # This is a heuristic smoke alarm, not a hard correctness check.
+            # Modern pricing no longer tracks energy closely: measured reasoning
+            # models can be cheap per token while still energy-heavy. Keep this
+            # as a warning so structural registry problems fail the audit, while
+            # economics-vs-energy surprises stay visible for human review.
             if wh_in > 0.5 and ratio < 0.005:
-                issues.append(
+                warnings.append(
                     f"Anomaly in '{model}': High energy ({wh_in} Wh/1k) but ultra-low price "
                     f"(${usd_in}/1k). Ratio {ratio:.6f} suggests this might be "
-                    f"a mis-aliased 'mini' model."
+                    f"a mis-aliased model or a genuine price/energy divergence."
                 )
 
     # 4. Naming Consistency
@@ -104,19 +107,24 @@ def audit_registry() -> bool:
 
             # If a "mini" model has > 1.0 Wh/1k, it's probably wrong (unless it's an old frontier)
             if wh_in > 1.0:
-                issues.append(
+                warnings.append(
                     f"Warning: '{model}' contains low-cost keyword but has "
                     f"high energy ({wh_in} Wh/1k)"
                 )
 
     # Report results
+    if warnings:
+        print(f"\nAudit WARNED with {len(warnings)} heuristic notes:")
+        for warning in warnings:
+            print(f"  - {warning}")
+
     if issues:
         print(f"\nAudit FAILED with {len(issues)} issues:")
         for issue in issues:
             print(f"  - {issue}")
         return False
     else:
-        print("\nAudit PASSED. Registry is consistent.")
+        print("\nAudit PASSED. Registry is structurally consistent.")
         return True
 
 

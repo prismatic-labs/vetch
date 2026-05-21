@@ -116,6 +116,7 @@ class Session:
         tags: dict[str, str] | None = None,
         emit: bool = True,
         max_calls: int = DEFAULT_MAX_CALLS,
+        advisory_thresholds: dict[str, dict[str, float]] | None = None,
     ) -> None:
         """Initialize a session.
 
@@ -127,6 +128,9 @@ class Session:
             max_calls: Maximum number of calls to track before stopping
                 accumulation. Prevents OOM in long-running agentic loops.
                 Set to 0 for unlimited (not recommended).
+            advisory_thresholds: Optional per-session advisory threshold
+                overrides. Use this to scope detectors by route, workflow, or
+                tenant without changing process-wide defaults.
         """
         self.session_id = session_id or str(uuid.uuid4())
         self.parent_session_id = parent_session_id
@@ -136,7 +140,12 @@ class Session:
 
         # Per-session stats for advisory analysis (stall detection, etc.)
         # Isolated from the global singleton — safe for multi-user contexts.
-        self.stats = SessionStats()
+        self.advisory_thresholds = (
+            {code: dict(values) for code, values in advisory_thresholds.items()}
+            if advisory_thresholds
+            else None
+        )
+        self.stats = SessionStats(advisory_thresholds=self.advisory_thresholds)
 
         # v0.4.0: Stall circuit breaker state. Set by register_event when
         # STALL-001 fires; read by provider wrappers via _stall.apply_stall_action.
@@ -252,8 +261,8 @@ class Session:
         Args:
             event: The inference event to register.
         """
-        # Per-session stats (always updated, outside the lock since
-        # SessionStats.update is not thread-safe — we protect it here)
+        # Per-session stats are always updated. SessionStats has its own lock,
+        # and the session lock keeps circuit-breaker state in step with counts.
         with self._lock:
             self._call_count += 1
             self.stats.update(event)
@@ -398,6 +407,7 @@ class Session:
         tags: dict[str, str] | None = None,
         emit: bool = True,
         resume: bool = False,
+        advisory_thresholds: dict[str, dict[str, float]] | None = None,
     ) -> Session:
         """Create a session from HTTP headers for distributed tracing.
 
@@ -411,6 +421,8 @@ class Session:
             resume: If True, use the same session_id from headers (for
                 aggregating into a single session). If False (default),
                 create a new child session linked to the parent.
+            advisory_thresholds: Optional per-session advisory threshold
+                overrides for this worker/request segment.
 
         Returns:
             Session instance (resumed or new child).
@@ -442,6 +454,7 @@ class Session:
                 parent_session_id=parent_id,
                 tags=tags,
                 emit=emit,
+                advisory_thresholds=advisory_thresholds,
             )
         else:
             # Create new child session linked to parent
@@ -450,6 +463,7 @@ class Session:
                 parent_session_id=session_id_from_header,
                 tags=tags,
                 emit=emit,
+                advisory_thresholds=advisory_thresholds,
             )
 
     def __enter__(self) -> Session:

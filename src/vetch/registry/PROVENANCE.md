@@ -59,17 +59,17 @@ These values are intended for **relative comparison** and **trend analysis**, no
 
 As of v0.2.4, most major commercial models are upgraded to **Tier 1** using empirical measurements from:
 
-> Jegham, N. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598
+> Jegham, N. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598 (current: v6, revised 2025-11-24)
 
 ### Coverage (v0.2.4)
 
 **Jegham-measured (Tier 1, prompt-length-aware):**
-GPT-4 Turbo, GPT-4o, GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4.5, GPT-4o-mini\*, o1, o3, o3-mini, o4-mini, DeepSeek-R1, DeepSeek-V3, LLaMA 3.1 8B/70B/405B, LLaMA 3.3 70B, Claude 3.7 Sonnet, Claude 3.7 Sonnet (Extended Thinking)
+GPT-4 Turbo, GPT-4o, GPT-4o-mini, GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4.5, o1, o3, o3-mini, o4-mini, DeepSeek-R1, DeepSeek-V3, LLaMA 3.1 8B/70B/405B, LLaMA 3.3 70B, Claude 3.7 Sonnet, Claude 3.7 Sonnet (Extended Thinking)
 
-\* gpt-4o-mini has no Jegham figures; uses Tier 3 estimate. Prior versions incorrectly aliased it to gpt-4o.
+**Jegham v6 — figures reported, registry upgrade pending verification:**
+Claude 3.5 Haiku, Claude 3.5 Sonnet — appear in Jegham et al. v6 (arXiv:2505.09598v6, revised 2025-11-24) with measured energy figures. Both remain Tier 3 in Vetch pending confirmation of per-scenario (short/medium/long) values and correct PUE adjustment. See Known Registry Gaps.
 
-**Jegham-listed but not measured:**
-Claude 3.5 Haiku — listed in Jegham infrastructure table but no energy figures published. Tier 3 entry used.
+**Note on source version:** Existing Tier 1 `basis` strings cite `arXiv:2505.09598` without a version pin. The paper is now at v6. Existing coefficients have not been reconciled against v6 figures; any differences are expected to fall within measurement uncertainty (±20–50%) but should be confirmed before audit-grade use. New entries added from v6 onward should include the version string in their `basis`.
 
 **No Jegham coverage (Google models, Tier 3):**
 Jegham et al. (2025) does **not** cover any Google/Gemini models. Gemini 2.0 Flash is anchored to Google's published 0.24 Wh median Gemini Apps text prompt, but that source does not publish token counts, input/output split, or per-model coefficients, so it remains Tier 3. Gemini 2.5 Flash and Pro also use Tier 3 proxy estimates only.
@@ -87,6 +87,8 @@ wh_in  = E_wh × 1000 / (in_tokens + 3 × out_tokens)
 wh_out = 3 × wh_in
 ```
 
+**Limitation:** The 3:1 ratio is an architectural assumption from Pope et al. (2022), not a direct per-phase measurement from Jegham's data. Jegham reports per-query totals only; the input/output split is inferred. Phase-aligned benchmarks (e.g. TokenPowerBench, arXiv:2512.03024) provide prefill/decode attribution directly. Future registry entries may adopt per-phase fields (`prefill_wh_per_1k`, `decode_wh_per_1k`) once phase-level measurements are validated against the same infrastructure scope. Existing entries use the 3:1 heuristic for compatibility and should not be compared directly to phase-aligned figures without accounting for this difference.
+
 ### PUE Handling (Critical)
 
 Jegham measures energy at the API layer (server IT equipment draw) **before** datacenter PUE overhead. Registry values are therefore **IT-equipment-only (pre-PUE)**. Vetch applies PUE once in `calculate_carbon()` via `VETCH_DEFAULT_PUE` (default 1.2×). Never apply PUE to registry values directly — that was the v0.1.6 double-counting bug. Every Jegham-derived `basis` string explicitly states: "IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon()."
@@ -99,9 +101,31 @@ When `thinking={"type": "enabled"}` is passed to `anthropic.messages.create()`, 
 
 ### Known Registry Gaps
 
-**claude-3.5-sonnet** — The most widely deployed Anthropic model remains Tier 3 (±1000%). No Jegham figures published. Highest-priority gap for v0.2.5.
+**claude-3.5-sonnet** — Currently Tier 3 (±1000%). Jegham et al. v6 (arXiv:2505.09598v6) reports measured figures. Registry upgrade pending verification of per-scenario (short/medium/long) values and correct PUE divisor (AWS 1.14).
+
+**claude-3.5-haiku** — Currently Tier 3. Previously noted as "listed but not measured" in the version of Jegham consulted during v0.2.4. Jegham v6 appears to include measured figures. Same verification requirements as claude-3.5-sonnet. Note: Jegham's data shows smaller or less-efficient models sometimes use more energy than larger ones at medium prompt length (batching overhead dominates); verify figures before adding a basis note on this.
 
 **Indic scripts** — Devanagari, Bengali, Tamil, and similar scripts tokenize poorly in all current models (3–8 Unicode code points per token). The char-count fallback will underestimate token counts for Indic text.
+
+## Measurement Kind Taxonomy
+
+Each registry source can be classified by how its energy data was obtained. This is prose-only for now; it is not yet a JSON field in `energy.json`. The taxonomy is intended to guide future provenance documentation and to clarify which sources can support Tier promotion.
+
+| Kind | Definition | Tier eligibility |
+|---|---|---|
+| `api_observed` | Measured at the provider API boundary in commercial infrastructure | Tier 1 eligible with publication and clear methodology |
+| `provider_disclosure` | Vendor-published aggregate or product-level figure; no per-model or per-token breakdown | Sanity anchor only; not Tier 1 |
+| `local_measurement` | User-calibrated via GPU sensors (pynvml, rocm-smi) on owned hardware | Tier 0 (user-calibrated) or Tier 2 (crowdsourced via `vetch calibrate --submit`) |
+| `proxy` | Derived from parameter counts, architecture class, or similar-model analogy | Always Tier 3 |
+
+**Key distinctions:**
+
+- `api_observed` is the only kind eligible for automatic Tier 1 promotion. It requires a peer-reviewed publication or official provider disclosure with a stated measurement methodology and scope.
+- `provider_disclosure` data (Google's 0.24 Wh median Gemini Apps prompt; OpenAI's 0.34 Wh average ChatGPT query) gives a useful sanity anchor against aggregate product behaviour but cannot substitute for per-model, per-token coefficients. These sources stay at Tier 3.
+- `local_measurement` via TokenPowerBench (arXiv:2512.03024) or `vetch calibrate` reaches Tier 0 on the user's own hardware. Submitted aggregates reach Tier 2 once sample size and methodology quality thresholds are met.
+- `proxy` is always Tier 3 regardless of how carefully the scaling model is constructed.
+
+The existing Jegham-derived entries are `api_observed`. The GPT-5 family entries are `proxy`. All Gemini entries are currently `proxy` with a `provider_disclosure` sanity check noted in GEMINI_CALIBRATION.md.
 
 ## Research Context: Cost of Reasoning Strategies
 
@@ -119,6 +143,6 @@ From Aglin et al. (2026), arXiv:2603.20224 — "Beyond Test-Time Compute Strateg
 
 *   Pope, R. et al. (2022). "Efficiently Scaling Transformer Inference." MLSys 2023. arXiv:2211.05102
 *   Luccioni, A.S. et al. (2023). "Power Hungry Processing: Watts Driving the Cost of AI Deployment?" FAccT 2024. arXiv:2311.16863
-*   Jegham, N. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598
+*   Jegham, N. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598 (current: v6, revised 2025-11-24)
 *   Uptime Institute (2023). Global Data Center Survey.
 *   Aglin, G. et al. (2026). "Beyond Test-Time Compute Strategies: Advocating Energy-per-Token in LLM Inference." arXiv:2603.20224

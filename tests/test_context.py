@@ -101,6 +101,22 @@ class TestCapturedCall:
         assert call.is_stream is True
         assert call.accumulated_chars == 5000
 
+    def test_capture_output_diagnostics(self) -> None:
+        """CapturedCall can store privacy-safe output diagnostics."""
+        with TrackingContext() as ctx:
+            ctx.capture(
+                model="gpt-4o",
+                provider="openai",
+                visible_output_chars=0,
+                finish_reason="length",
+                requested_max_tokens=160,
+            )
+
+            assert ctx.captured_call is not None
+            assert ctx.captured_call.visible_output_chars == 0
+            assert ctx.captured_call.finish_reason == "length"
+            assert ctx.captured_call.requested_max_tokens == 160
+
     def test_capture_error_metadata(self) -> None:
         """CapturedCall can store error metadata."""
         call = CapturedCall(

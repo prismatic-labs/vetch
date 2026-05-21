@@ -2,7 +2,7 @@
 
 This module provides the VetchContext class that:
 - Patches LLM SDK methods to capture usage metadata
-- Calculates energy, carbon, and cost estimates
+- Calculates energy, carbon, water, and cost estimates
 - Emits structured JSON events
 - Maintains fail-open behavior (never blocks LLM calls)
 """
@@ -136,7 +136,7 @@ def auto_context_for_instrumented_call(
     """
     # Import here to avoid circular dependency (vetch/__init__.py imports from this module)
     # These imports are cached by Python so the overhead is minimal
-    from vetch import get_default_region, get_default_tags
+    from vetch import get_default_energy_override, get_default_region, get_default_tags
 
     # Check if manual wrap() context is already active
     ctx = get_active_context()
@@ -149,6 +149,7 @@ def auto_context_for_instrumented_call(
     auto_ctx = VetchContext(
         region=get_default_region(),
         tags=get_default_tags(),
+        energy_override=get_default_energy_override(),
         emit=True,
     )
 
@@ -185,7 +186,7 @@ async def async_auto_context_for_instrumented_call(
     """
     # Import here to avoid circular dependency (vetch/__init__.py imports from this module)
     # These imports are cached by Python so the overhead is minimal
-    from vetch import get_default_region, get_default_tags
+    from vetch import get_default_energy_override, get_default_region, get_default_tags
 
     # Check if manual wrap() context is already active
     ctx = get_active_context()
@@ -198,6 +199,7 @@ async def async_auto_context_for_instrumented_call(
     auto_ctx = VetchContext(
         region=get_default_region(),
         tags=get_default_tags(),
+        energy_override=get_default_energy_override(),
         emit=True,
     )
 
@@ -581,6 +583,9 @@ class VetchContext:
         # Cache tokens
         cache_read_tokens: int | None = None
         cache_creation_tokens: int | None = None
+        visible_output_chars: int | None = None
+        finish_reason: str | None = None
+        requested_max_tokens: int | None = None
 
         if captured is not None:
             model = captured.model
@@ -595,6 +600,9 @@ class VetchContext:
             cache_read_tokens = raw_crt if isinstance(raw_crt, int) else None
             raw_cct = captured.cache_creation_tokens
             cache_creation_tokens = raw_cct if isinstance(raw_cct, int) else None
+            visible_output_chars = captured.visible_output_chars
+            finish_reason = captured.finish_reason
+            requested_max_tokens = captured.requested_max_tokens
 
             # Override error info from captured call if present
             if captured.error:
@@ -747,6 +755,9 @@ class VetchContext:
             is_embedding=is_embedding if captured else False,
             complete=not error and (captured.complete if captured else True),
             latency_ms=latency_ms,
+            visible_output_chars=visible_output_chars,
+            finish_reason=finish_reason,
+            requested_max_tokens=requested_max_tokens,
             tags=self.tags,
             error=error,
             error_type=error_type,

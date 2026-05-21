@@ -60,7 +60,7 @@ def test_no_api_waste_scan_from_wrap_to_stored_audit(
 
                     assert ctx.event is not None
                     assert ctx.event["session_id"] == "e2e-agent-loop"
-                    assert ctx.event["vetch_version"] == "0.5.1"
+                    assert ctx.event["vetch_version"] == "0.6.0"
                     assert ctx.event["tracking_disabled"] is False
 
                 assert session.call_count == 15

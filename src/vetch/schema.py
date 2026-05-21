@@ -160,6 +160,9 @@ class InferenceEvent(TypedDict, total=False):
     is_embedding: bool  # True if embedding generation (different energy profile)
     complete: bool
     latency_ms: Union[float, None]
+    visible_output_chars: Union[int, None]  # Output character count; no text stored
+    finish_reason: Union[str, None]  # Provider finish status, e.g. stop/length
+    requested_max_tokens: Union[int, None]  # Caller-requested output cap if available
 
     # Attribution
     tags: Union[dict[str, str], None]
@@ -217,6 +220,7 @@ class EnergyOverride(TypedDict, total=False):
     wh_per_1k_output: float
     tier: int  # 0, 1, 2, or 3
     source: str  # Free-text provenance
+    basis: str  # Methodology/provenance detail
 
 
 class ValidationResult:
@@ -283,6 +287,11 @@ def validate_energy_override(
     source = override.get("source")
     if source is not None and isinstance(source, str):
         result["source"] = source
+
+    # Optional basis/methodology description
+    basis = override.get("basis")
+    if basis is not None and isinstance(basis, str):
+        result["basis"] = basis
 
     return result, warnings
 

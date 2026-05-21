@@ -8,7 +8,13 @@ These tests verify:
 
 from __future__ import annotations
 
-from vetch.advisory import Advisory, format_advisories, generate_advisories, get_advisory_spec
+from vetch.advisory import (
+    Advisory,
+    format_advisories,
+    generate_advisories,
+    get_advisory_spec,
+)
+from vetch.config import _reset_config, get_advisory_threshold, set_advisory_thresholds
 from vetch.stats import SessionStats
 
 
@@ -160,6 +166,24 @@ class TestFormatAdvisories:
         result = format_advisories(advisories, "text")
         assert "$25.50" in result
 
+    def test_format_security_refs(self) -> None:
+        """Format security-relevant advisories with badge and references."""
+        advisories = [
+            Advisory(
+                code="STALL-001",
+                severity="WARNING",
+                title="Agentic Stall Detected",
+                description="Repeated low-output loop.",
+                security_signal=True,
+                security_refs=("OWASP-LLM01", "OWASP-LLM10"),
+            )
+        ]
+
+        result = format_advisories(advisories, "text")
+
+        assert "[STALL-001] 🔒 Agentic Stall Detected" in result
+        assert "Security refs: OWASP-LLM01, OWASP-LLM10" in result
+
 
 class TestStallDetection:
     """Tests for STALL-001 agentic stall advisory.
@@ -202,6 +226,8 @@ class TestStallDetection:
         assert len(stall) == 1
         assert stall[0].severity in ("WARNING", "CRITICAL")
         assert "stalled" in stall[0].description.lower()
+        assert stall[0].security_signal is True
+        assert stall[0].security_refs == ("OWASP-LLM01", "OWASP-LLM10")
 
     def test_stall_triggers_low_output(self) -> None:
         """STALL-001 fires when output tokens are consistently < 5."""
@@ -210,6 +236,56 @@ class TestStallDetection:
 
         stall = [a for a in advisories if a.code == "STALL-001"]
         assert len(stall) == 1
+
+    def test_stall_threshold_global_override_changes_detection(self) -> None:
+        """Global STALL-001 threshold overrides affect summary and detection."""
+        _reset_config()
+        set_advisory_thresholds({"STALL-001": {"low_output_threshold": 1}})
+        try:
+            stats = self._make_stalled_stats(num_calls=15, output_tokens=3)
+            advisories = generate_advisories(stats)
+
+            stall = [a for a in advisories if a.code == "STALL-001"]
+            assert stall == []
+            assert stats.summary()["recent_low_output_threshold"] == 1
+        finally:
+            _reset_config()
+
+    def test_stall_threshold_session_override_does_not_leak(self) -> None:
+        """SessionStats-scoped thresholds isolate route/workflow tuning."""
+        scoped = SessionStats(
+            advisory_thresholds={"STALL-001": {"low_output_threshold": 1}}
+        )
+        default = SessionStats()
+
+        for _ in range(15):
+            event = {
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 500, "output_tokens": 3}},
+                "estimated_cost_usd": 0.10,
+            }
+            scoped.update(event)
+            default.update(event)
+
+        scoped_codes = {a.code for a in generate_advisories(scoped)}
+        default_codes = {a.code for a in generate_advisories(default)}
+
+        assert "STALL-001" not in scoped_codes
+        assert "STALL-001" in default_codes
+
+    def test_reset_config_clears_threshold_overrides(self) -> None:
+        """_reset_config clears process-wide advisory threshold overrides."""
+        set_advisory_thresholds({"BABBLE-001": {"min_avg_output_tokens": 9999}})
+        _reset_config()
+
+        assert (
+            get_advisory_threshold(
+                "BABBLE-001",
+                "min_avg_output_tokens",
+                1500,
+            )
+            == 1500
+        )
 
     def test_stall_does_not_trigger_normal_output(self) -> None:
         """STALL-001 does NOT fire with normal output (200+ tokens)."""
@@ -290,3 +366,157 @@ class TestStallDetection:
         stall = [a for a in advisories if a.code == "STALL-001"]
         assert len(stall) == 1
         assert "similarity" in stall[0].description.lower()
+
+
+class TestZombieDetection:
+    """Tests for ZOMBIE-001 post-completion drift advisory."""
+
+    @staticmethod
+    def _make_zombie_stats(
+        output_tokens: list[int] | None = None,
+        input_tokens: list[int] | None = None,
+    ) -> SessionStats:
+        stats = SessionStats()
+        outputs = output_tokens or [100, 102, 99, 101, 100, 98]
+        inputs = input_tokens or [500] * len(outputs)
+        for in_tok, out_tok in zip(inputs, outputs):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {
+                    "text": {"input_tokens": in_tok, "output_tokens": out_tok}
+                },
+                "estimated_cost_usd": 0.05,
+            })
+        return stats
+
+    def test_zombie_triggers_on_repetitive_normal_length_outputs(self) -> None:
+        stats = self._make_zombie_stats()
+        advisories = generate_advisories(stats)
+
+        zombie = [a for a in advisories if a.code == "ZOMBIE-001"]
+        stall = [a for a in advisories if a.code == "STALL-001"]
+        assert len(zombie) == 1
+        assert len(stall) == 0
+        assert zombie[0].title == "Post-completion drift detected"
+        assert "normal-length outputs" in zombie[0].description
+        assert zombie[0].request_count == 6
+
+    def test_zombie_does_not_trigger_on_varied_output_lengths(self) -> None:
+        stats = self._make_zombie_stats(output_tokens=[50, 150, 260, 40, 350, 90])
+        advisories = generate_advisories(stats)
+
+        assert not any(a.code == "ZOMBIE-001" for a in advisories)
+
+    def test_zombie_does_not_trigger_on_low_output_stall(self) -> None:
+        stats = self._make_zombie_stats(output_tokens=[1, 1, 1, 1, 1, 1])
+        advisories = generate_advisories(stats)
+
+        assert not any(a.code == "ZOMBIE-001" for a in advisories)
+
+    def test_zombie_does_not_trigger_on_diverse_inputs(self) -> None:
+        stats = self._make_zombie_stats(input_tokens=[500, 600, 700, 800, 900, 1000])
+        advisories = generate_advisories(stats)
+
+        assert not any(a.code == "ZOMBIE-001" for a in advisories)
+        assert get_advisory_spec("ZOMBIE-001").confidence(stats) == "low"
+
+
+class TestContextSnowballDetection:
+    """Tests for CTX-001 context snowball advisory."""
+
+    def test_context_snowball_triggers_on_growing_prompt(self) -> None:
+        stats = SessionStats()
+        for input_tokens in [150, 400, 650, 900, 1200, 1500, 1900, 2300]:
+            stats.update({
+                "model": "phi4-mini",
+                "usage": {
+                    "text": {"input_tokens": input_tokens, "output_tokens": 200}
+                },
+                "estimated_cost_usd": 0.05,
+            })
+
+        advisories = generate_advisories(stats)
+        ctx = [a for a in advisories if a.code == "CTX-001"]
+
+        assert len(ctx) == 1
+        assert ctx[0].title == "Context snowball detected"
+        assert "input tokens grew" in ctx[0].description
+        assert get_advisory_spec("CTX-001").confidence(stats) == "medium"
+
+    def test_context_snowball_does_not_trigger_on_stable_context(self) -> None:
+        stats = SessionStats()
+        for _ in range(10):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 800, "output_tokens": 200}},
+            })
+
+        advisories = generate_advisories(stats)
+
+        assert not any(a.code == "CTX-001" for a in advisories)
+
+
+class TestEmptyVisibleOutputDetection:
+    """Tests for EMPTY-001 invisible output burn advisory."""
+
+    def test_empty_visible_output_triggers(self) -> None:
+        stats = SessionStats()
+        for _ in range(8):
+            stats.update({
+                "model": "qwen3:8b",
+                "usage": {"text": {"input_tokens": 400, "output_tokens": 160}},
+                "visible_output_chars": 0,
+            })
+
+        advisories = generate_advisories(stats)
+        empty = [a for a in advisories if a.code == "EMPTY-001"]
+
+        assert len(empty) == 1
+        assert empty[0].title == "Invisible output burn detected"
+        assert "almost no visible text" in empty[0].description
+        assert empty[0].request_count == 8
+
+    def test_empty_visible_output_cap_hits_raise_confidence(self) -> None:
+        stats = SessionStats()
+        for _ in range(8):
+            stats.update({
+                "model": "deepseek-r1:8b",
+                "usage": {"text": {"input_tokens": 250, "output_tokens": 90}},
+                "visible_output_chars": 0,
+                "requested_max_tokens": 90,
+            })
+
+        advisories = generate_advisories(stats)
+        empty = [a for a in advisories if a.code == "EMPTY-001"]
+
+        assert len(empty) == 1
+        assert "hit the requested output cap" in empty[0].description
+        spec = get_advisory_spec("EMPTY-001")
+        assert spec.confidence(stats) == "high"
+        assert spec.evidence(stats)["recent_output_cap_hit_count"] == 8
+
+    def test_empty_visible_output_requires_visible_counts(self) -> None:
+        stats = SessionStats()
+        for _ in range(8):
+            stats.update({
+                "model": "qwen3:8b",
+                "usage": {"text": {"input_tokens": 400, "output_tokens": 160}},
+            })
+
+        advisories = generate_advisories(stats)
+
+        assert not any(a.code == "EMPTY-001" for a in advisories)
+
+    def test_empty_visible_output_ignores_tool_call_finish_reason(self) -> None:
+        stats = SessionStats()
+        for _ in range(8):
+            stats.update({
+                "model": "gpt-4o",
+                "usage": {"text": {"input_tokens": 400, "output_tokens": 160}},
+                "visible_output_chars": 0,
+                "finish_reason": "tool_calls",
+            })
+
+        advisories = generate_advisories(stats)
+
+        assert not any(a.code == "EMPTY-001" for a in advisories)

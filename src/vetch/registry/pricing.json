@@ -174,6 +174,12 @@
     "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25
   },
+  "claude-haiku-4-5": {
+    "usd_per_1k_input": 0.001,
+    "usd_per_1k_output": 0.005,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25
+  },
   "claude-sonnet-4": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,

@@ -68,12 +68,14 @@ def vetch_estimate(
         model=model,
     )
 
-    # Water
-    water_ml = calculate_water(
+    # Water. The core calculator returns liters; MCP exposes milliliters for
+    # readable per-call values while retaining liters for unit clarity.
+    water_l = calculate_water(
         energy_wh=energy_wh,
         model=model,
         region=region,
     )
+    water_ml = water_l * 1000
 
     # Cost
     total_cost, input_cost, output_cost, cache_write, cache_read, billing_tier = (
@@ -93,6 +95,7 @@ def vetch_estimate(
         "output_tokens": output_tokens,
         "energy_wh": round(energy_wh, 6),
         "carbon_g": round(carbon_g, 6),
+        "water_l": round(water_l, 8),
         "water_ml": round(water_ml, 4),
         "cost_usd": round(total_cost, 6),
         "cost_breakdown": {

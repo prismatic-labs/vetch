@@ -68,7 +68,12 @@ def apply_stall_action(
         action, fallback_model = get_stall_action()
         advisory = session.stall_advisory
         wasted = advisory.potential_savings_usd if advisory else 0.0
-        count = advisory.request_count if advisory else 0
+        count = int(advisory.request_count or 0) if advisory else 0
+        if count <= 0:
+            try:
+                count = int(session.stats.summary().get("recent_window_size") or 0)
+            except Exception:
+                count = 0
 
         # Export to OTLP if configured — fail-open, never blocks the call
         try:
@@ -126,6 +131,13 @@ def apply_stall_action(
                     f"STALL-001 reroute: {original_model} -> {fallback_model}"
                 )
             return (True, original_model)
+
+        if action == "reroute" and not fallback_model:
+            logger.warning(
+                "STALL-001: reroute configured but no fallback_model set - "
+                "falling back to warn."
+            )
+            return (False, None)
 
         # action == "log" or unrecognised — current behaviour, no action.
         return (False, None)

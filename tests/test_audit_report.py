@@ -48,6 +48,9 @@ def test_build_audit_report_from_storage(tmp_path) -> None:
     assert report.data_quality.tagged_fraction == 1.0
     assert report.data_quality.methodology_versions == [METHODOLOGY_VERSION]
     assert any(finding.code == "STALL-001" for finding in report.findings)
+    stall = next(finding for finding in report.findings if finding.code == "STALL-001")
+    assert stall.security_signal is True
+    assert stall.security_refs == ("OWASP-LLM01", "OWASP-LLM10")
     assert report.observed_avoidable_cost_usd > 0
     assert report.projected_monthly_avoidable_cost_usd > 0
     assert any(row.dimension == "feature" and row.value == "rag-search"
@@ -69,6 +72,25 @@ def test_format_audit_report_json_and_markdown(tmp_path) -> None:
     markdown_output = format_audit_report(report, "markdown")
     assert "# Vetch Inference Waste Audit" in markdown_output
     assert "## Data Quality" in markdown_output
+
+
+def test_audit_report_formats_security_refs(tmp_path) -> None:
+    db_path = tmp_path / "usage.db"
+    configure_storage(enabled=True, path=db_path)
+    now = datetime.now(timezone.utc)
+
+    for index in range(15):
+        store_event(_event(f"security-event-{index}", now - timedelta(minutes=index)))
+
+    report = build_audit_report(start=now - timedelta(hours=1), end=now + timedelta(hours=1))
+
+    text_output = format_audit_report(report, "text")
+    assert "[security signal]" in text_output
+    assert "Security refs: OWASP-LLM01, OWASP-LLM10" in text_output
+
+    markdown_output = format_audit_report(report, "markdown")
+    assert "### STALL-001 🔒: Agentic Stall Detected" in markdown_output
+    assert "- Security refs: OWASP-LLM01, OWASP-LLM10" in markdown_output
 
 
 def test_audit_report_uses_daily_aggregates_after_compaction(tmp_path) -> None:

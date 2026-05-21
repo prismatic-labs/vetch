@@ -370,6 +370,16 @@
     "quantization": "bf16",
     "basis": "Jegham et al. (2025). Jegham-reported medium: 2.781 Wh/1k (post-PUE ×1.14, AWS). Ranked highest in eco-efficiency among large models. Registry values divided by 1.14 to store IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
   },
+  "claude-haiku-4-5": {
+    "wh_per_1k_input": 0.035,
+    "wh_per_1k_output": 0.105,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 20,
+    "active_params_b": 20,
+    "quantization": "bf16",
+    "basis": "Estimated. Claude Haiku 4.5 (claude-haiku-4-5-20251001). No Jegham measurement. Proxied from claude-3.5-haiku energy values as the nearest lightweight Anthropic class. Tier 3 ±1000%."
+  },
   "claude-sonnet-4": {
     "wh_per_1k_input": 0.11,
     "wh_per_1k_output": 0.33,

@@ -48,7 +48,12 @@ if TYPE_CHECKING:
 
     from vetch.wrapper import VetchContext
 
-__version__ = "0.5.1"
+try:
+    from importlib.metadata import PackageNotFoundError as _PNFError
+    from importlib.metadata import version as _pkg_version
+    __version__ = _pkg_version("vetch")
+except _PNFError:
+    __version__ = "0.6.0"  # fallback when running from source without install
 __all__ = [
     "wrap",
     "awrap",
@@ -86,6 +91,9 @@ __all__ = [
     "get_stall_action",
     "StallDetected",
     "VetchInterrupt",
+    # v0.6.0: Configurable advisory thresholds + push callbacks
+    "set_advisory_thresholds",
+    "on_advisory",
 ]
 
 # Track instrumented state
@@ -657,4 +665,12 @@ def __getattr__(name: str) -> object:
         from vetch.exceptions import VetchInterrupt
 
         return VetchInterrupt
+    if name == "set_advisory_thresholds":
+        from vetch.config import set_advisory_thresholds
+
+        return set_advisory_thresholds
+    if name == "on_advisory":
+        from vetch.stats import on_advisory
+
+        return on_advisory
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

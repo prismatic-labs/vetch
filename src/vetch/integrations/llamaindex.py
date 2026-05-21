@@ -1,7 +1,7 @@
 """LlamaIndex integration for Vetch tracking.
 
 This module provides a native LlamaIndex callback handler that automatically
-tracks energy, carbon, and cost for all LLM calls in LlamaIndex pipelines.
+tracks energy, carbon, water, and cost for all LLM calls in LlamaIndex pipelines.
 
 Usage::
 

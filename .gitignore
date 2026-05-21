@@ -89,3 +89,9 @@ dmypy.json
 # Vetch cache files (for testing)
 vetch_grid_cache.json
 vetch_grid_cache.json.tmp
+
+# Chaos sandbox run artefacts
+kudzu/reports/*.json
+kudzu/reports/*.db
+kudzu/reports/*.db-shm
+kudzu/reports/*.db-wal

@@ -59,12 +59,15 @@ class AuditFinding:
     title: str
     scope: str
     description: str
+    request_count: int
     evidence: dict[str, Any]
     confidence: str
     observed_avoidable_cost_usd: float | None
     projected_monthly_avoidable_cost_usd: float | None
     recommended_action: str
     automation_guidance: str
+    security_signal: bool
+    security_refs: tuple[str, ...]
 
 
 @dataclass
@@ -233,7 +236,21 @@ def _build_findings(
         ),
         reverse=True,
     )
-    return findings[:MAX_FINDINGS]
+
+    # Post-sort dedup: when multiple scopes produce the same advisory with
+    # the same request count (e.g. scope="all" and scope="session:X" in a
+    # single-session audit), keep only the most specific scope.
+    # In multi-session audits, different session-scoped findings for the same
+    # code will have different request counts and are preserved.
+    seen_code_counts: set[tuple[str, int]] = set()
+    deduped: list[AuditFinding] = []
+    for f in findings:
+        dedup_key = (f.code, f.request_count or 0)
+        if dedup_key not in seen_code_counts:
+            seen_code_counts.add(dedup_key)
+            deduped.append(f)
+
+    return deduped[:MAX_FINDINGS]
 
 
 def _finding_from_advisory(
@@ -256,12 +273,15 @@ def _finding_from_advisory(
         title=advisory.title,
         scope=scope,
         description=advisory.description,
+        request_count=advisory.request_count,
         evidence=spec.evidence(stats),
         confidence=spec.confidence(stats),
         observed_avoidable_cost_usd=round(observed, 6) if observed else None,
         projected_monthly_avoidable_cost_usd=round(projected, 6) if projected else None,
         recommended_action=spec.recommended_action,
         automation_guidance=spec.automation_guidance,
+        security_signal=advisory.security_signal,
+        security_refs=advisory.security_refs,
     )
 
 
@@ -480,8 +500,9 @@ def _format_text(report: AuditReport) -> str:
     if not report.findings:
         lines.append("No waste advisories found for this window.")
     for finding in report.findings:
+        security_suffix = " [security signal]" if finding.security_signal else ""
         lines.extend([
-            f"[{finding.severity}] {finding.code} - {finding.title}",
+            f"[{finding.severity}] {finding.code}{security_suffix} - {finding.title}",
             f"Scope: {finding.scope}",
             f"Confidence: {finding.confidence}",
             f"Observed avoidable cost: "
@@ -490,8 +511,10 @@ def _format_text(report: AuditReport) -> str:
             f"{_format_money(finding.projected_monthly_avoidable_cost_usd)}",
             f"Action: {finding.recommended_action}",
             f"Automation: {finding.automation_guidance}",
-            "",
         ])
+        if finding.security_refs:
+            lines.append(f"Security refs: {', '.join(finding.security_refs)}")
+        lines.append("")
 
     if report.breakdowns:
         lines.extend(["Top breakdowns", "-" * 30])
@@ -544,8 +567,9 @@ def _format_markdown(report: AuditReport) -> str:
         lines.append("No waste advisories found for this window.")
     else:
         for finding in report.findings:
+            title_suffix = " 🔒" if finding.security_signal else ""
             lines.extend([
-                f"### {finding.code}: {finding.title}",
+                f"### {finding.code}{title_suffix}: {finding.title}",
                 "",
                 f"- Severity: **{finding.severity}**",
                 f"- Scope: `{finding.scope}`",
@@ -556,6 +580,10 @@ def _format_markdown(report: AuditReport) -> str:
                 f"**{_format_money(finding.projected_monthly_avoidable_cost_usd)}**",
                 f"- Recommended action: {finding.recommended_action}",
                 f"- Automation guidance: {finding.automation_guidance}",
+            ])
+            if finding.security_refs:
+                lines.append(f"- Security refs: {', '.join(finding.security_refs)}")
+            lines.extend([
                 "",
                 "<details><summary>Evidence</summary>",
                 "",

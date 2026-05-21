@@ -2,7 +2,9 @@
 
 This document defines the Inference Waste Audit — a concrete adoption motion that produces a structured picture of where inference spend is going and what is wasting it.
 
-**Current state of `vetch audit`:** The CLI command produces an advisory list (STALL-001, CACHE-001, RAG-001 firings with session context) and a session summary (total requests, total tokens, average input:output ratio). The full report format described below is planned. Sections marked `[PLANNED]` are not yet produced by the current CLI.
+**Current state of `vetch audit`:** The CLI command produces an advisory list with session context and a session summary (total requests, total tokens, average input:output ratio). Implemented advisories include STALL-001, CACHE-001, RAG-001, BABBLE-001, ZOMBIE-001, CTX-001, EMPTY-001, and TRUNC-001. The full report format described below is planned. Sections marked `[PLANNED]` are not yet produced by the current CLI.
+
+Audit advisories are deterministic signals from metadata, not proof of waste. Confidence labels indicate signal strength and review priority, not statistical certainty. Automatic kill and reroute are currently scoped to confirmed STALL-001 patterns; other advisories should feed a review and remediation queue.
 
 ---
 
@@ -41,11 +43,13 @@ vetch audit
 
 ### Step 4 — Act on the findings
 
-Promote advisories from warn to kill or reroute where you are confident:
+Promote confirmed `STALL-001` findings from warn to kill or reroute after you have checked the workflow:
 
 ```python
 vetch.set_stall_action("kill")
 ```
+
+For non-stall advisories, fix the underlying workflow first: cache setup, retriever limits, response caps, context trimming, or attribution gaps.
 
 ---
 
@@ -72,7 +76,7 @@ Top waste sources:
   3. RAG-001     enterprise-chat feature    $120/mo estimated avoidable
 ```
 
-All figures are estimates with uncertainty. Energy and carbon estimates use Tier 1 or Tier 3 data depending on model — see methodology note at end of report.
+All figures are estimates with uncertainty. Energy, carbon, and water estimates use registry data at different confidence tiers depending on model and region. See the methodology note at the end of the report.
 
 ---
 
@@ -149,17 +153,17 @@ Total                        21          $1,050
 ```
 Based on advisory events, the following policies are recommended:
 
-1. STALL-001 on rag-search (HIGH confidence)
+1. STALL-001 on rag-search (HIGH signal)
    Action: set_stall_action("kill")
    Rationale: 12 stall events over 7 days, avg cost per stall $8.20
    Expected monthly saving: $620
 
-2. CACHE-001 on document-qa (MEDIUM confidence)
+2. CACHE-001 on document-qa (MEDIUM signal)
    Action: Enable Anthropic prompt caching on system prompt
    Rationale: 71% of calls share identical input token counts
    Expected monthly saving: up to $310
 
-3. RAG-001 on enterprise-chat (LOW confidence)
+3. RAG-001 on enterprise-chat (LOW signal)
    Action: Investigate retriever — consider relevance threshold of 0.7+
    Rationale: 82:1 average input:output ratio; verify this is not a
    legitimate summarization workload before acting
@@ -193,13 +197,15 @@ All avoided estimates are directional — they assume the waste pattern continue
 
 ```
 Cost figures: calculated from provider pricing tables in Vetch model registry.
+Advisory confidence: signal strength from metadata thresholds, not statistical certainty.
 Energy figures: Tier 1 (±20–50%) for measured models; Tier 3 (order-of-magnitude)
   for unmeasured models. See vetch methodology for full tier definitions.
 Carbon figures: derived from energy × PUE × grid intensity.
   Grid intensity: static regional annual averages (last updated Jan 2024).
   These are indicative, not certified. Provider renewable energy commitments
   may reduce effective intensity below regional average.
-Water figures: global default 1.7 L/kWh; regional WUE in SDK only.
+Water figures: directional operational cooling estimates. Global default 1.7 L/kWh;
+  regional WUE in SDK only. Not standalone water accounting.
 
 Avoidable spend estimates assume waste patterns are stable over the billing period.
 Actual savings will vary.
@@ -209,7 +215,7 @@ Actual savings will vary.
 
 ### Sustainability appendix `[PLANNED]`
 
-For teams tracking AI inference emissions for CSRD or SEC Scope 3 reporting:
+For teams preparing internal sustainability, FinOps, or engineering reduction inputs:
 
 ```
 Inference emissions summary (7 days)
@@ -221,8 +227,8 @@ Total carbon emitted (est.):        31.2 gCO2e
 Methodology: top-down estimation from token counts × energy intensity.
 Uncertainty: ±50% for Tier 1 models; order-of-magnitude for Tier 3.
 These figures are suitable for directional reduction tracking and internal
-reporting. They are not suitable for regulatory certification or external
-carbon claims without independent verification.
+reporting. They are not suitable for regulatory disclosure, water accounting,
+certification, or external carbon claims without independent verification.
 
 Region used: us-east-1 (380 gCO2e/kWh, static annual average, IEA 2023)
 ```

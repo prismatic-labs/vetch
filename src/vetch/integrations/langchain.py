@@ -1,7 +1,7 @@
 """LangChain integration for Vetch tracking.
 
 This module provides a native LangChain callback handler that automatically
-tracks energy, carbon, and cost for all LLM calls in LangChain pipelines.
+tracks energy, carbon, water, and cost for all LLM calls in LangChain pipelines.
 
 Usage::
 

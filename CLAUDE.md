@@ -131,6 +131,46 @@ estimated_output_tokens = max(1, accumulated_chars // 4)
 
 ---
 
+## Kudzu Sandbox (kudzu/)
+
+Kudzu is the local chaos harness for testing Vetch against Ollama. It runs agent scenarios and checks which waste advisories fire.
+
+### Hardware constraints (M5, 16GB unified memory)
+
+- **One run at a time. Never in parallel.** Ollama loads 8B models (~5GB each) into unified memory shared with the GPU. Two simultaneous runs can exhaust available RAM, causing macOS to kill processes and VS Code to crash.
+- Stick to one model per session. Switching models forces Ollama to evict and reload (~5GB swap each time).
+- Keep `max_steps` under 25 for 8B models.
+- Check `ollama ps` before starting a run if you're unsure what's loaded.
+
+### Scientific standard for Vetch changes
+
+Kudzu findings are evidence, not proof. Before changing any Vetch threshold, detection condition, or advisory logic based on a Kudzu observation:
+
+- **Minimum five runs** on the same profile with different seeds, showing a consistent pattern.
+- **Explain the failure mode** of the current code mechanistically — which exact condition failed and why.
+- **Check the opposing direction**: would the proposed change cause false positives on clean runs?
+
+One experiment that narrowly misses a threshold is a hypothesis, not a justification. Document it in `kudzu/DIARY.md` and run replication seeds before proposing a code change.
+
+### Registry entries (pricing and energy)
+
+When adding or updating entries in `src/vetch/registry/pricing.json` or `energy.json`, **always verify numbers with a live search** — do not use training-data prices. Model pricing changes frequently and knowledge cutoffs make training data stale. Use WebSearch to check the official Anthropic/OpenAI/Google pricing page before writing any number.
+
+If a confirmed figure cannot be found (e.g. a very new model not yet on the pricing page), add the entry with a `"basis"` field that says `"Estimated — verify against official pricing page"` and flag it in the PR.
+
+### Running kudzu
+
+```bash
+# Always run one at a time from the vetch repo root
+python3 kudzu/run.py --profile open --seed 42
+python3 kudzu/run.py --profile forced_stall --seed 42
+
+# Compare results across runs
+python3 kudzu/analyze.py --profile open --constraint retriever_noise=1.0
+```
+
+---
+
 ## Testing Requirements
 
 - 90%+ coverage enforced via pytest-cov

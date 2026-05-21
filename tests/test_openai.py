@@ -12,7 +12,11 @@ from __future__ import annotations
 from typing import Any
 
 from vetch.context import TrackingContext
-from vetch.providers.openai import StreamWrapper, extract_usage
+from vetch.providers.openai import (
+    StreamWrapper,
+    extract_response_diagnostics,
+    extract_usage,
+)
 
 
 class MockUsage:
@@ -31,9 +35,12 @@ class MockResponse:
         self,
         model: str = "gpt-4",
         usage: MockUsage | None = None,
+        content: str | None = None,
+        finish_reason: str | None = None,
     ) -> None:
         self.model = model
         self.usage = usage
+        self.choices = [MockChoice(content, finish_reason=finish_reason)]
 
 
 class MockChunk:
@@ -56,12 +63,21 @@ class MockChunk:
 class MockChoice:
     """Mock OpenAI choice."""
 
-    def __init__(self, content: str | None) -> None:
+    def __init__(self, content: str | None, finish_reason: str | None = None) -> None:
         self.delta = MockDelta(content)
+        self.message = MockMessage(content)
+        self.finish_reason = finish_reason
 
 
 class MockDelta:
     """Mock OpenAI delta."""
+
+    def __init__(self, content: str | None) -> None:
+        self.content = content
+
+
+class MockMessage:
+    """Mock OpenAI message."""
 
     def __init__(self, content: str | None) -> None:
         self.content = content
@@ -105,6 +121,26 @@ class TestExtractUsage:
         assert result is None
         assert cache_read is None
         assert cache_create is None
+
+
+class TestExtractResponseDiagnostics:
+    """Tests for privacy-safe response diagnostics."""
+
+    def test_extract_visible_chars_and_finish_reason(self) -> None:
+        response = MockResponse(content="Hello world", finish_reason="stop")
+
+        visible_chars, finish_reason = extract_response_diagnostics(response)
+
+        assert visible_chars == 11
+        assert finish_reason == "stop"
+
+    def test_extract_zero_visible_chars(self) -> None:
+        response = MockResponse(content="", finish_reason="length")
+
+        visible_chars, finish_reason = extract_response_diagnostics(response)
+
+        assert visible_chars == 0
+        assert finish_reason == "length"
 
 
 class TestStreamWrapper:

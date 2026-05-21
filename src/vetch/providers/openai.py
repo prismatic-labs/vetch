@@ -9,7 +9,8 @@ Supports:
 - Streaming completions (stream=True)
 - Async streaming completions (stream=True)
 
-Privacy guarantee: We only read model, usage, and timing metadata.
+Privacy guarantee: We read model, usage, timing metadata, and output length/status.
+We never store prompt or completion text.
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ class _WeakChatWrapper:
             kwargs.setdefault("stream_options", {}).setdefault("include_usage", True)
 
         try:
-            result = original(*args, **kwargs)
+            result = original(completions, *args, **kwargs)
 
             if is_stream:
                 model_hint = kwargs.get("model", "unknown")
@@ -92,7 +93,7 @@ class _WeakChatWrapper:
                     )
                 kwargs["model"] = original_model
                 try:
-                    result = original(*args, **kwargs)
+                    result = original(completions, *args, **kwargs)
                     if is_stream:
                         model_hint = kwargs.get("model", "unknown")
                         return StreamWrapper(result, model_hint=model_hint)
@@ -130,7 +131,7 @@ class _WeakAsyncChatWrapper:
             kwargs.setdefault("stream_options", {}).setdefault("include_usage", True)
 
         try:
-            result = await original(*args, **kwargs)
+            result = await original(completions, *args, **kwargs)
 
             if is_stream:
                 model_hint = kwargs.get("model", "unknown")
@@ -150,7 +151,7 @@ class _WeakAsyncChatWrapper:
                     )
                 kwargs["model"] = original_model
                 try:
-                    result = await original(*args, **kwargs)
+                    result = await original(completions, *args, **kwargs)
                     if is_stream:
                         model_hint = kwargs.get("model", "unknown")
                         return AsyncStreamWrapper(result, model_hint=model_hint)
@@ -180,7 +181,7 @@ class _WeakEmbeddingsWrapper:
         original = self._originals_dict[embeddings]
 
         try:
-            result = original(*args, **kwargs)
+            result = original(embeddings, *args, **kwargs)
             _after_embeddings_create(result, *args, **kwargs)
             return result
 
@@ -206,7 +207,7 @@ class _WeakAsyncEmbeddingsWrapper:
         original = self._originals_dict[embeddings]
 
         try:
-            result = await original(*args, **kwargs)
+            result = await original(embeddings, *args, **kwargs)
             _after_embeddings_create(result, *args, **kwargs)
             return result
 
@@ -303,6 +304,52 @@ def extract_model(response: Any) -> str:
     return getattr(response, "model", "unknown")
 
 
+def _visible_char_count(content: Any) -> int | None:
+    """Count visible response characters without retaining response content."""
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        total = 0
+        saw_text = False
+        for part in content:
+            text = getattr(part, "text", None)
+            if text is None and isinstance(part, dict):
+                text = part.get("text")
+            if isinstance(text, str):
+                saw_text = True
+                total += len(text)
+        return total if saw_text else None
+    return None
+
+
+def extract_response_diagnostics(response: Any) -> tuple[int | None, str | None]:
+    """Extract privacy-safe output diagnostics from an OpenAI chat response."""
+    choices = getattr(response, "choices", None)
+    if not choices:
+        return None, None
+
+    first = choices[0]
+    finish_reason = getattr(first, "finish_reason", None)
+    if finish_reason is not None:
+        finish_reason = str(finish_reason)
+
+    message = getattr(first, "message", None)
+    if message is None:
+        return None, finish_reason
+    return _visible_char_count(getattr(message, "content", None)), finish_reason
+
+
+def _requested_max_tokens(kwargs: dict[str, Any]) -> int | None:
+    raw = kwargs.get("max_completion_tokens", kwargs.get("max_tokens"))
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return max(0, raw)
+    return None
+
+
 def extract_embeddings_usage(response: Any) -> Usage | None:
     """Extract usage metadata from OpenAI embeddings response.
 
@@ -372,6 +419,7 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         # Non-streaming: capture immediately
         usage, cache_read, cache_create = extract_usage(result)
         model = extract_model(result)
+        visible_chars, finish_reason = extract_response_diagnostics(result)
 
         # Get active context (either auto-created or manual wrap())
         ctx = get_active_context()
@@ -384,6 +432,9 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
                 complete=True,
                 cache_read_tokens=cache_read,
                 cache_creation_tokens=cache_create,
+                visible_output_chars=visible_chars,
+                finish_reason=finish_reason,
+                requested_max_tokens=_requested_max_tokens(kwargs),
             )
 
 
@@ -605,6 +656,7 @@ class StreamWrapper:
                 cache_creation_tokens=self._cache_creation_tokens,
                 accumulated_tik_tokens=self._tik_token_count,
                 content_type_hint=content_type_hint,
+                visible_output_chars=self._accumulated_chars,
             )
             return
 
@@ -625,6 +677,7 @@ class StreamWrapper:
                     cache_creation_tokens=self._cache_creation_tokens,
                     accumulated_tik_tokens=self._tik_token_count,
                     content_type_hint=content_type_hint,
+                    visible_output_chars=self._accumulated_chars,
                 )
         # auto-context exits here → event emitted
 
@@ -820,17 +873,17 @@ def patch_openai_client(client: Any) -> bool:
         # 2. Check if already patched
         completions = getattr(client, "chat", None)
         if completions is None:
-            logger.warning("OpenAI client has no chat attribute")
+            logger.debug("OpenAI client has no chat attribute — skipping patch")
             return False
 
         completions = getattr(completions, "completions", None)
         if completions is None:
-            logger.warning("OpenAI client has no chat.completions attribute")
+            logger.debug("OpenAI client has no chat.completions attribute — skipping patch")
             return False
 
         create = getattr(completions, "create", None)
         if create is None:
-            logger.warning("OpenAI client has no chat.completions.create method")
+            logger.debug("OpenAI client has no chat.completions.create method — skipping patch")
             return False
 
         if is_vetch_patched(create):

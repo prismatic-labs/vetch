@@ -13,6 +13,8 @@ from unittest.mock import MagicMock
 
 from vetch.providers.anthropic import (
     StreamWrapper,
+    _extract_stop_reason,
+    _extract_visible_chars,
     extract_model,
     extract_usage,
     patch_anthropic_client,
@@ -215,6 +217,46 @@ class TestStreamWrapper:
         # Should not raise
         list(wrapper)
 
+    def test_captures_stop_reason_from_message_delta(self) -> None:
+        """stop_reason from message_delta.delta must be stored as _stop_reason."""
+        chunk = MagicMock()
+        chunk.type = "message_delta"
+        chunk.delta = MagicMock()
+        chunk.delta.stop_reason = "max_tokens"
+        chunk.usage = MagicMock()
+        chunk.usage.output_tokens = 10
+
+        wrapper = StreamWrapper(iter([chunk]))
+        list(wrapper)
+
+        assert wrapper._stop_reason == "max_tokens"
+
+    def test_stop_reason_none_when_end_turn(self) -> None:
+        """end_turn stop_reason is captured correctly."""
+        chunk = MagicMock()
+        chunk.type = "message_delta"
+        chunk.delta = MagicMock()
+        chunk.delta.stop_reason = "end_turn"
+        chunk.usage = MagicMock()
+        chunk.usage.output_tokens = 5
+
+        wrapper = StreamWrapper(iter([chunk]))
+        list(wrapper)
+
+        assert wrapper._stop_reason == "end_turn"
+
+    def test_stop_reason_unset_when_not_in_delta(self) -> None:
+        """No message_delta means _stop_reason stays None."""
+        chunk = MagicMock()
+        chunk.type = "content_block_delta"
+        chunk.delta = MagicMock()
+        chunk.delta.text = "hello"
+
+        wrapper = StreamWrapper(iter([chunk]))
+        list(wrapper)
+
+        assert wrapper._stop_reason is None
+
 
 class TestPatchClient:
     """Tests for client patching."""
@@ -290,3 +332,116 @@ class TestPatchClient:
 
         result = unpatch_anthropic_client(client)
         assert result is True
+
+
+class TestExtractVisibleChars:
+    """Tests for _extract_visible_chars — visible text extraction for EMPTY-001."""
+
+    def _make_block(self, block_type: str, text: str = "") -> MagicMock:
+        block = MagicMock()
+        block.type = block_type
+        block.text = text
+        return block
+
+    def test_counts_text_block(self) -> None:
+        response = MagicMock()
+        response.content = [self._make_block("text", "hello world")]
+        assert _extract_visible_chars(response) == 10
+
+    def test_skips_thinking_block(self) -> None:
+        response = MagicMock()
+        response.content = [
+            self._make_block("thinking", "long internal reasoning " * 50),
+            self._make_block("text", "ok"),
+        ]
+        assert _extract_visible_chars(response) == 2
+
+    def test_empty_text_block(self) -> None:
+        response = MagicMock()
+        response.content = [
+            self._make_block("thinking", "lots of thinking"),
+            self._make_block("text", ""),
+        ]
+        assert _extract_visible_chars(response) == 0
+
+    def test_no_content_attribute(self) -> None:
+        response = MagicMock(spec=[])
+        assert _extract_visible_chars(response) is None
+
+    def test_content_not_list(self) -> None:
+        response = MagicMock()
+        response.content = "not a list"
+        assert _extract_visible_chars(response) is None
+
+    def test_multiple_text_blocks(self) -> None:
+        response = MagicMock()
+        response.content = [
+            self._make_block("text", "abc"),
+            self._make_block("text", "de"),
+        ]
+        assert _extract_visible_chars(response) == 5
+
+    def test_whitespace_only_not_counted(self) -> None:
+        """Whitespace-only output must not count as visible chars (EMPTY-001 bypass)."""
+        response = MagicMock()
+        response.content = [self._make_block("text", "\n\n  \n  ")]
+        assert _extract_visible_chars(response) == 0
+
+    def test_counts_non_whitespace_visible_chars(self) -> None:
+        """Visible char counting is consistent with the streaming path."""
+        response = MagicMock()
+        response.content = [self._make_block("text", "  hello world  ")]
+        assert _extract_visible_chars(response) == 10
+
+
+class TestExtractStopReason:
+    """Tests for _extract_stop_reason — Anthropic stop_reason → finish_reason."""
+
+    def _make_response(self, stop_reason: object) -> MagicMock:
+        r = MagicMock()
+        r.stop_reason = stop_reason
+        return r
+
+    def test_end_turn(self) -> None:
+        assert _extract_stop_reason(self._make_response("end_turn")) == "end_turn"
+
+    def test_max_tokens(self) -> None:
+        assert _extract_stop_reason(self._make_response("max_tokens")) == "max_tokens"
+
+    def test_stop_sequence(self) -> None:
+        assert _extract_stop_reason(self._make_response("stop_sequence")) == "stop_sequence"
+
+    def test_tool_use(self) -> None:
+        assert _extract_stop_reason(self._make_response("tool_use")) == "tool_use"
+
+    def test_none_stop_reason(self) -> None:
+        assert _extract_stop_reason(self._make_response(None)) is None
+
+    def test_missing_attribute(self) -> None:
+        r = MagicMock(spec=[])
+        assert _extract_stop_reason(r) is None
+
+    def test_streaming_visible_chars_excludes_whitespace(self) -> None:
+        """Streaming path must count non-whitespace chars, matching non-streaming behaviour."""
+        chunk = MagicMock()
+        chunk.type = "content_block_delta"
+        chunk.delta = MagicMock()
+        chunk.delta.text = "\n\n   \n"
+
+        wrapper = StreamWrapper(iter([chunk]))
+        list(wrapper)
+
+        assert wrapper._visible_chars == 0
+        assert wrapper._accumulated_chars == len("\n\n   \n")
+
+    def test_streaming_visible_chars_counts_content(self) -> None:
+        """Non-whitespace content increments _visible_chars correctly."""
+        chunk = MagicMock()
+        chunk.type = "content_block_delta"
+        chunk.delta = MagicMock()
+        chunk.delta.text = "  hello world  "
+
+        wrapper = StreamWrapper(iter([chunk]))
+        list(wrapper)
+
+        assert wrapper._visible_chars == len("helloworld")  # 10 non-ws chars

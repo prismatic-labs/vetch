@@ -1,4 +1,4 @@
-"""Tests for energy, carbon, and cost calculation.
+"""Tests for energy, carbon, water, and cost calculation.
 
 These tests verify:
 - Model alias resolution
@@ -263,7 +263,8 @@ class TestWaterCalculation:
         """Water calculation returns reasonable values for standard inference."""
         from vetch.calculation import calculate_water
 
-        # Standard 1Wh inference should use ~1.8L water (data center cooling)
+        # Standard 1Wh inference should use about 1.7mL water for OpenAI's
+        # provider-level WUE fallback (1.7 L/kWh).
         water_liters = calculate_water(
             energy_wh=1.0,
             model="gpt-4o",
@@ -271,9 +272,9 @@ class TestWaterCalculation:
             region="us-east-1",
         )
 
-        # Water usage should be positive and in reasonable range (0.5-5 L/Wh)
+        # Water usage should be positive and in a reasonable per-Wh range.
         assert water_liters > 0.0
-        assert water_liters < 10.0  # Sanity check: shouldn't be > 10L per Wh
+        assert 0.0005 < water_liters < 0.005
 
     def test_water_scales_with_energy(self) -> None:
         """Water consumption scales linearly with energy."""
@@ -505,6 +506,22 @@ class TestV024RegistryUpdates:
         model_3, _ = resolve_model("claude-3-haiku")
         assert model_35 != model_3
         assert model_35 == "claude-3.5-haiku"
+
+    def test_claude_45_haiku_alias_and_pricing(self) -> None:
+        """claude-haiku-4-5-20251001 should resolve to the Haiku 4.5 registry entry."""
+        resolved, known = resolve_model("claude-haiku-4-5-20251001")
+        cost, input_cost, output_cost, _, _, billing_tier = calculate_cost(
+            1000,
+            1000,
+            "claude-haiku-4-5-20251001",
+        )
+
+        assert known is True
+        assert resolved == "claude-haiku-4-5"
+        assert billing_tier == "list"
+        assert input_cost == 0.001
+        assert output_cost == 0.005
+        assert cost == 0.006
 
     def test_gpt4_turbo_upgraded_to_tier1(self) -> None:
         """gpt-4-turbo should now be Tier 1 (upgraded from Tier 3)."""

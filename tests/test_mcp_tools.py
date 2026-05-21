@@ -6,7 +6,10 @@ verifying that each handler returns correct data and handles errors gracefully.
 
 from __future__ import annotations
 
+import pytest
+
 from vetch.budget import clear_budgets, set_budget
+from vetch.calculation import calculate_water
 from vetch.mcp.tools import (
     vetch_check_budget,
     vetch_cleanest_region,
@@ -29,6 +32,7 @@ class TestVetchEstimate:
             model="gpt-4o",
             input_tokens=1000,
             output_tokens=500,
+            region="us-east-1",
         )
 
         assert "error" not in result
@@ -37,10 +41,30 @@ class TestVetchEstimate:
         assert result["output_tokens"] == 500
         assert isinstance(result["energy_wh"], float)
         assert isinstance(result["carbon_g"], float)
+        assert isinstance(result["water_l"], float)
         assert isinstance(result["water_ml"], float)
         assert isinstance(result["cost_usd"], float)
         assert result["confidence"] in ("high", "medium", "low")
         assert isinstance(result["training_context"], list)
+
+    def test_water_units_are_reported_correctly(self) -> None:
+        """Estimate reports water in liters and milliliters without unit drift."""
+        result = vetch_estimate(
+            model="gpt-4o",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+        assert "error" not in result
+        assert result["water_l"] > 0
+        assert result["water_ml"] == pytest.approx(result["water_l"] * 1000, rel=1e-4)
+
+        expected_l = calculate_water(
+            energy_wh=result["energy_wh"],
+            model="gpt-4o",
+            region="us-east-1",
+        )
+        assert result["water_l"] == pytest.approx(expected_l, abs=1e-8)
 
     def test_cost_breakdown(self) -> None:
         """Estimate includes cost breakdown."""

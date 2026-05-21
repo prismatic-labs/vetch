@@ -8,12 +8,12 @@
 
 **Stop runaway inference.**
 
-Vetch detects stalled agents, RAG bloat, zombie LLM calls, retry storms, and premium-model overuse — then warns, kills, reroutes, or throttles wasteful inference before it burns budget, latency, energy, and carbon.
+Vetch detects stalled agents, RAG bloat, excessive generation, zombie LLM calls, context snowballs, invisible output burn, prompt cache opportunities, and repeated truncation. It turns those patterns into metadata-only advisory signals, and can warn, kill, or reroute confirmed stalled loops before they burn budget, latency, energy, and carbon. Retry storms and premium-model overuse are tracked in the taxonomy as planned detectors.
 
 - **[Live demo: kill a runaway agent](examples/circuit_breaker_demo.py)** — `vetch.set_stall_action("kill")` and watch
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
 - **[Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
-- **[Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across 48 models
+- **[Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across 50 direct registry models
 
 ```python
 import vetch
@@ -42,6 +42,8 @@ Every wasted inference call is wasted money, compute, energy, and carbon.
 | **RAG bloat** | Retrieval context overwhelming the prompt with low-signal content |
 | **Excessive generation** | Model producing unusually long outputs regardless of task complexity |
 | **Zombie inference** | Sessions or background tasks making LLM calls after they should have stopped |
+| **Context snowballing** | Conversation history or failed tool context growing on every turn |
+| **Invisible output burn** | Output tokens consumed while little or no visible answer is returned |
 | **Retry storm** | Repeated identical or near-identical calls after failures |
 | **Premium model overuse** | High-capability model used where a cheaper one would suffice |
 | **Prompt cache misses** | Repeated prompt structures that could be cached but aren't |
@@ -59,13 +61,18 @@ Vetch analyzes every inference call for behavioral patterns that indicate waste:
 | `CACHE-001` | Prompt caching opportunity | >50% of calls share identical input token counts across ≥6 calls | ✅ Implemented |
 | `RAG-001` | RAG bloat | Average input:output ratio exceeds 50:1 | ✅ Implemented |
 | `BABBLE-001` | Excessive generation | Recent average output exceeds 1,500 tokens without long-form task signal | ✅ Implemented |
+| `ZOMBIE-001` | Post-completion drift | Repeated normal-length outputs after likely task completion | ✅ Implemented |
+| `CTX-001` | Context snowball | The prompt gets larger every turn while useful output stays low | ✅ Implemented |
+| `EMPTY-001` | Invisible output burn | Output tokens consumed while visible output is near-empty | ✅ Implemented |
+| `TRUNC-001` | Repeated response truncation | Frequent `finish_reason=max_tokens` across recent calls | ✅ Implemented |
 | `SESSION-BUDGET-001` | Session over budget | Configured cost/energy/carbon threshold exceeded | ⚠️ Partial — alerts only, no advisory ID |
 | `ATTRIBUTION-001` | Unattributed spend | Required tags missing from calls | ⚠️ Partial — infrastructure only |
 | `RETRY-001` | Retry storm | Burst of repeated failed or near-identical calls | 🔜 Planned |
 | `PREMIUM-001` | Premium model overuse | Expensive model used for low-complexity tasks | 🔜 Planned |
-| `ZOMBIE-001` | Zombie inference | Active calls past expected session completion | 🔜 Planned |
 
 Full taxonomy with detection signals, false positives, and recommended actions: [docs/inference-waste-taxonomy.md](docs/inference-waste-taxonomy.md)
+
+Advisories are deterministic signals, not proof of waste. Confidence labels indicate signal strength from metadata patterns, not statistical certainty. Non-stall advisories are currently warn-only; automatic kill and reroute are scoped to `STALL-001`.
 
 ### Attribute waste
 
@@ -82,7 +89,7 @@ print(f"Carbon: {ctx.event['estimated_carbon_g']:.4f} gCO2e")
 
 ### Stop waste automatically
 
-When a waste advisory fires, Vetch can intervene without manual intervention:
+When `STALL-001` fires, Vetch can intervene without manual intervention:
 
 | Action | What happens |
 |--------|-------------|
@@ -148,11 +155,11 @@ vetch audit --window 7d --tags feature=rag-search  # filter to one feature
 vetch audit --format json  # machine-readable output
 ```
 
-Output includes: advisory findings (STALL-001, CACHE-001, RAG-001, BABBLE-001) with confidence ratings and recommended actions; per-tag attribution breakdowns; observed avoidable cost; projected monthly avoidable cost; and data quality indicators (tagged fraction, methodology versions used).
+Output includes advisory findings (STALL-001, CACHE-001, RAG-001, BABBLE-001, ZOMBIE-001, CTX-001, EMPTY-001, TRUNC-001) with signal-strength labels and recommended actions; per-tag attribution breakdowns; observed avoidable cost; projected monthly avoidable cost; and data quality indicators (tagged fraction, methodology versions used).
 
-**Next — Promote to kill or reroute**
+**Next — Promote confirmed stalls to kill or reroute**
 
-For advisories where you are confident, promote the action:
+For confirmed `STALL-001` patterns, promote the action:
 
 ```python
 vetch.set_stall_action("kill")  # or "reroute", fallback_model="gpt-4o-mini"
@@ -160,29 +167,43 @@ vetch.set_stall_action("kill")  # or "reroute", fallback_model="gpt-4o-mini"
 
 Runaway inference is now stopped automatically.
 
+For non-stall advisories, treat the audit as a review queue. Fix the workflow, retriever, cache configuration, response limits, or attribution gaps before adding automation.
+
+Tune thresholds per workflow when a pattern is expected. For example, a
+classification route that normally returns three tokens can lower the STALL-001
+low-output threshold without changing other routes:
+
+```python
+with vetch.Session(
+    tags={"route": "classifier"},
+    advisory_thresholds={"STALL-001": {"low_output_threshold": 1}},
+):
+    response = client.chat.completions.create(...)
+```
+
 ## Energy and carbon
 
 Every wasteful call you prevent is money saved, tokens not burned, compute not consumed, and estimated emissions avoided. Vetch treats energy and carbon as first-class outputs alongside cost. The same stalled agent loop, bloated RAG context, or retry storm that burns budget also consumes unnecessary compute.
 
-Energy and carbon figures should be interpreted with explicit uncertainty. Tier 1 vendor-published estimates carry approximately ±20–50% uncertainty; Tier 3 estimates are order-of-magnitude directional figures. These numbers are useful for comparison, prioritization, and reduction decisions — not exact carbon certification.
+Energy, carbon, and water figures should be interpreted with explicit uncertainty. Tier 1 empirical/provider benchmark estimates carry approximately ±20–50% uncertainty; Tier 3 estimates are order-of-magnitude directional figures. These numbers are useful for comparison, prioritization, and reduction decisions. They are not exact carbon certification, regulatory disclosure, or water accounting. Water estimates are especially facility-dependent and represent directional operational cooling demand unless you configure local measurements.
 
 **Supported models with Tier 1 (±20–50%) data:**
 - **GPT-4o, GPT-4o-mini, GPT-4.1 family, GPT-4.5, o1, o3, o4-mini** — measured in Azure datacenters
 - **Claude 3.7 Sonnet** (standard + Extended Thinking) — measured in AWS datacenters
 - **DeepSeek-R1, DeepSeek-V3** — reasoning and MoE benchmarks
 - **Llama 3.1 (8B, 70B, 405B), Llama 3.3 70B** — open-weight measurements
-- **48 models** in total; unmeasured models use Tier 3 order-of-magnitude estimates
+- **21 Tier 1 measured entries; 50 direct energy registry entries total.** Unmeasured models use Tier 3 order-of-magnitude estimates.
 
 Source: [Jegham et al. (2025)](https://arxiv.org/abs/2505.09598) — first large-scale LLM energy measurements in commercial datacenters.
 
-Begin tracking AI inference emissions for CSRD (EU) and SEC (US) Scope 3 reporting with `vetch methodology` for full methodology documentation.
+Use these estimates as internal inputs for FinOps, engineering, and sustainability planning. For regulatory reporting or external claims, use independent verification and the methodology notes from `vetch methodology`.
 
 **Energy tiers:**
 
 | Tier | Name | Uncertainty | Source |
 |------|------|-------------|--------|
 | 0 | **Measured** | ±10–20% | Direct GPU measurement (pynvml) |
-| 1 | **Vendor-Published** | ±20–50% | Official provider benchmark data |
+| 1 | **Empirical/provider benchmark** | ±20–50% | Commercial API or provider benchmark data |
 | 2 | **Validated** | ±50–100% | Crowdsourced aggregates |
 | 3 | **Estimated** | Order of magnitude | Parameter-based calculation |
 
@@ -205,7 +226,7 @@ response = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello world"}]
 )
-# Cost, energy, carbon, and advisory events emitted automatically
+# Cost, energy, carbon, water, and advisory events emitted automatically
 ```
 
 ### `wrap()` — Per-call, explicit
@@ -291,7 +312,7 @@ If `region` is not specified, Vetch uses this fallback hierarchy:
 
 ## Session aggregation and attribution
 
-Sessions are the unit of attribution — every call within a session accumulates cost, energy, carbon, and advisory events that can be queried or exported together.
+Sessions are the unit of attribution — every call within a session accumulates cost, energy, carbon, water, and advisory events that can be queried or exported together.
 
 ```python
 import vetch
@@ -446,6 +467,10 @@ The audit reads locally stored metadata, runs advisory detection, computes per-t
 - **CACHE-001** — repeated identical input token counts (uncached prompt structure)
 - **RAG-001** — high input:output ratio (retrieval context overwhelming the prompt)
 - **BABBLE-001** — unusually high average output tokens (excessive generation)
+- **ZOMBIE-001** — repeated normal-length outputs after likely completion
+- **CTX-001** — context/input tokens snowballing across a no-progress session
+- **EMPTY-001** — output tokens consumed while visible output is near-empty
+- **TRUNC-001** — repeated `finish_reason=max_tokens`, often causing cut-off JSON, tool calls, or answers
 
 **Lower-level Python API** (for programmatic access or custom reporting):
 
@@ -527,11 +552,16 @@ Every Vetch operation (patching, calculation, emission) is wrapped in isolated e
 
 ### Privacy and data perimeter
 
-Vetch never reads or stores prompt or completion content. It only extracts metadata (token counts, model names, timing) directly from SDK response objects. No PII or proprietary prompt data ever leaves your execution environment.
+Vetch does not store prompt or completion text. It extracts metadata directly from SDK response objects: token counts, model names, timing, tags, finish reason, and visible output character count. For output diagnostics, Vetch may count visible completion characters and immediately discard the text. No PII or proprietary prompt data ever leaves your execution environment.
 
-### Thread safety (v0.1.4+)
+### Thread safety
 
-Vetch is fully thread-safe and supports multi-client isolation. It uses `contextvars` for async safety and `WeakKeyDictionary` for client patching, ensuring that unpatching one client does not affect another in the same process.
+Vetch uses `contextvars` for async session isolation, locks session statistics
+updates, and uses `WeakKeyDictionary` for client patching so unpatching one
+client does not affect another in the same process. In web or worker systems,
+create a `Session` per request, job, or agent invocation. Set global process
+configuration, such as `set_stall_action()` or `set_advisory_thresholds()`, at
+startup rather than mutating it concurrently per request.
 
 ## Current limitations
 

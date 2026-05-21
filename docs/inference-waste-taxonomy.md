@@ -2,6 +2,8 @@
 
 This document defines the advisory IDs used by Vetch to identify inference waste patterns. Each advisory has a stable ID, defined detection signal, and recommended action.
 
+Advisories are deterministic signals from metadata, not proof of waste. Severity and confidence labels describe signal strength and review priority, not statistical certainty. Except for `STALL-001`, current implemented advisories are warn-only. Automatic kill and reroute are deliberately scoped to stalled-loop detection until workflow-specific policies are configured.
+
 For a full explanation of how calls are intercepted and how detection signals are derived from token-count metadata, see [how-detection-works.md](how-detection-works.md).
 
 **Status key:**
@@ -137,6 +139,136 @@ vetch.set_stall_action("reroute", fallback_model="gpt-4o-mini")
 
 ---
 
+## ZOMBIE-001 — Post-completion drift
+
+**Status:** ✅ Implemented
+
+**Definition:** A session keeps sending highly similar prompts and producing normal-length responses after the workflow appears to have reached a terminal state.
+
+**Signal:**
+- Rolling window of recent calls
+- ≥80% input similarity across the window
+- Average output is above the STALL-001 low-output threshold
+- Output token counts have low variation (`recent_output_token_cv` ≤ 0.15)
+
+**Severity:** `WARNING`
+
+**Why it matters:** A loop can be wasteful even when the model is still producing full sentences. The model may be restating completion, apologies, or status text while the caller keeps asking for another step.
+
+**Example:** An agent submits its final answer, then receives the same state again and repeatedly returns "The final answer has been submitted" for the remaining loop budget.
+
+**Possible false positives:**
+- Batch jobs that intentionally ask the same prompt over similar items
+- Evaluation harnesses with repeated prompts
+- Workflows where consistent response length is expected and useful
+
+**Recommended actions:**
+- Add an explicit completion guard or terminal sentinel
+- Stop the caller loop when the model reports a completed task
+- Set a max-step budget for agent sessions
+- Check `CTX-001` if context is growing while the repeated output continues
+
+**Note:** ZOMBIE-001 is warn-only. It should feed review and workflow fixes, not automatic intervention, until task-specific evals prove the repeated normal-length responses are wasteful.
+
+---
+
+## CTX-001 — Context snowball
+
+**Status:** ✅ Implemented
+
+**Definition:** Input tokens grow quickly across recent calls while the workflow still fails to make proportional progress.
+
+**Signal:**
+- Rolling window of recent calls
+- Recent input tokens grow by ≥3× from the start of the window to the end
+- Input tokens increase on ≥70% of transitions in the window
+- Average input:output ratio is ≥4:1
+
+**Severity:** `WARNING`
+
+**Why it matters:** Failed tool turns, apologies, and repeated instructions often get fed back into the next request. The model may not look stalled, but each turn becomes more expensive as the prompt expands.
+
+**Example:** A tool repeatedly fails, the agent appends every failed attempt to the conversation, and each new request pays for the full failure history again.
+
+**Possible false positives:**
+- Long research sessions where accumulated context is expected
+- Summarization or document-review workflows
+- Multi-step tasks that legitimately build state over time
+
+**Recommended actions:**
+- Trim prior failed turns from the prompt
+- Summarize tool history instead of replaying it verbatim
+- Cap context growth per session
+- Stop after repeated tool-contract failures
+
+**Note:** CTX-001 is warn-only. Automatic truncation can remove useful context, so workflow-specific quality checks are required.
+
+---
+
+## EMPTY-001 — Invisible output burn
+
+**Status:** ✅ Implemented
+
+**Definition:** Recent calls consume output tokens while returning little or no visible answer text.
+
+**Signal:**
+- Rolling window with at least 5 calls that have visible-output character counts
+- At least 4 calls consume ≥20 output tokens while returning ≤2 visible characters
+- At least 50% of visible-counted calls in the window match that pattern
+- Tool-call finish reasons are excluded from the empty-visible count
+
+**Severity:** `WARNING`
+
+**Why it matters:** Some providers and model modes can spend tokens on hidden reasoning, malformed output, whitespace, or truncated attempts that produce no useful visible answer.
+
+**Example:** A reasoning-mode call uses output tokens but returns only whitespace or an empty visible message because it hits a cap before producing a final answer.
+
+**Possible false positives:**
+- Tool-use workflows where the useful output is a tool call rather than text
+- Providers with unusual content block formats
+- Intentionally hidden intermediate reasoning
+
+**Recommended actions:**
+- Check whether the model is hitting an output cap
+- Use a non-reasoning model if hidden reasoning is not needed
+- Add a response-format guard
+- Inspect provider-specific finish reasons and content blocks
+
+**Note:** EMPTY-001 is warn-only. Empty visible output can be legitimate in some reasoning or tool-call workflows.
+
+---
+
+## TRUNC-001 — Repeated response truncation
+
+**Status:** ✅ Implemented
+
+**Definition:** Recent calls frequently end because the model hit its output token limit.
+
+**Signal:**
+- Rolling window of at least 5 calls
+- At least 3 calls in the window have `finish_reason=max_tokens`
+- At least 50% of the window ends with `finish_reason=max_tokens`
+
+**Severity:** `WARNING`
+
+**Why it matters:** Repeated truncation can produce broken JSON, incomplete tool calls, cut-off answers, and retry loops. It is often a configuration issue rather than a model-quality issue.
+
+**Example:** A tool-calling workflow sets `max_tokens=8`, so the model starts a JSON tool argument but cannot finish it. The caller retries, causing the same truncation again.
+
+**Possible false positives:**
+- Workflows that intentionally cap output and accept truncation
+- Streaming or sampling tests that deliberately exercise small token caps
+
+**Recommended actions:**
+- Increase `max_tokens`
+- Add a stop sequence that encourages earlier completion
+- Use a stricter response schema or shorter expected answer format
+- Validate JSON/tool-call completeness before accepting a result
+
+**Note:** TRUNC-001 is warn-only. Confirm truncation is unintended before changing output limits.
+
+---
+
 ## SESSION-BUDGET-001 — Session over budget
 
 **Status:** ⚠️ Partial — budget monitoring fires alerts, no advisory ID or circuit breaker
@@ -236,33 +368,6 @@ vetch.require_tags(["feature", "customer"])
 - Identify the lowest-cost model that meets quality thresholds for the task
 - Use `vetch compare` to see cost and energy differences across model tiers
 - Implement model routing based on task complexity
-
----
-
-## ZOMBIE-001 — Zombie inference
-
-**Status:** 🔜 Planned
-
-**Definition:** An agent session or background job continues making LLM calls after the task it was created for has completed or failed.
-
-**Signal (proposed):**
-- Session active beyond a configurable time or call-count budget with no output to the caller
-- Calls continue after a terminal event (task result delivered, error propagated to caller)
-
-**Severity (proposed):** `WARNING` → `CRITICAL` based on accumulated cost.
-
-**Why it matters:** Zombie inference is invisible by definition — the calls are happening, the bill is accumulating, and no one is consuming the output. Common in background job systems where an agent is kicked off but the calling context has already moved on.
-
-**Example:** A scheduled summarization job that fails to persist its output, is retried by the scheduler, and the original process continues running in parallel — both consuming tokens indefinitely.
-
-**Possible false positives:**
-- Long-running legitimate tasks (research agents, batch processing)
-- Streaming responses with naturally long gaps between tokens
-
-**Recommended actions:**
-- Set explicit session timeouts
-- Use `SESSION-BUDGET-001` as an early warning
-- Ensure task completion events reliably terminate the inference session
 
 ---
 

@@ -283,6 +283,26 @@ class TestApplyStallAction:
         finally:
             session.__exit__(None, None, None)
 
+    def test_reroute_without_fallback_warns_and_skips(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A bad reroute config should warn instead of silently doing nothing."""
+        monkeypatch.setattr("vetch.config.get_stall_action", lambda: ("reroute", None))
+        session = _setup_stalled_session()
+        try:
+            kwargs: dict[str, Any] = {"model": "gpt-4o"}
+            with caplog.at_level(logging.WARNING, logger="vetch._stall"):
+                rerouted, original = apply_stall_action(kwargs, None)
+            assert rerouted is False
+            assert original is None
+            assert kwargs["model"] == "gpt-4o"
+            assert "no fallback_model set" in caplog.text
+            assert "falling back to warn" in caplog.text
+        finally:
+            session.__exit__(None, None, None)
+
     def test_no_active_session_is_noop(self) -> None:
         """Without an active session, the helper is a no-op."""
         set_stall_action("kill")

@@ -166,6 +166,29 @@ class _WeakAsyncMessagesWrapper:
             raise
 
 
+def _extract_visible_chars(response: Any) -> int | None:
+    """Count visible text chars from an Anthropic response, skipping thinking blocks.
+
+    Counts non-whitespace characters so whitespace-only responses are not
+    mistaken for meaningful output (EMPTY-001 bypass via e.g. bare newlines).
+    """
+    content = getattr(response, "content", None)
+    if not isinstance(content, list):
+        return None
+    total = 0
+    for block in content:
+        if getattr(block, "type", "") == "text":
+            text = getattr(block, "text", "") or ""
+            total += sum(1 for char in text if not char.isspace())
+    return total
+
+
+def _extract_stop_reason(response: Any) -> str | None:
+    """Extract stop_reason from an Anthropic response and return as finish_reason."""
+    value = getattr(response, "stop_reason", None)
+    return value if isinstance(value, str) else None
+
+
 def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     """Extract usage metadata from Anthropic response.
 
@@ -238,6 +261,12 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         if isinstance(thinking_param, dict) and thinking_param.get("type") == "enabled":
             model = model + "-thinking"
 
+        # Extract visible chars (text blocks only; thinking blocks excluded).
+        # Required for EMPTY-001 to fire on thinking-mode calls where output_tokens
+        # includes hidden reasoning tokens but visible text may be near zero.
+        visible_chars = _extract_visible_chars(result)
+        finish_reason = _extract_stop_reason(result)
+
         ctx = get_active_context()
         if ctx is not None:
             ctx.capture(
@@ -248,6 +277,8 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
                 complete=True,
                 cache_read_tokens=cache_read,
                 cache_creation_tokens=cache_create,
+                visible_output_chars=visible_chars,
+                finish_reason=finish_reason,
             )
 
 
@@ -280,6 +311,9 @@ class StreamWrapper:
     ) -> None:
         self._stream = stream
         self._accumulated_chars = 0
+        # Non-whitespace count. This matches _extract_visible_chars without
+        # storing streamed output content.
+        self._visible_chars = 0
         self._model = "unknown"
         self._model_hint = model_hint
         self._is_thinking = is_thinking
@@ -290,6 +324,7 @@ class StreamWrapper:
         self._complete = False
         self._error = False
         self._error_type: str | None = None
+        self._stop_reason: str | None = None
         self._captured = False
 
         # Tier 1: tiktoken buffered counting (~100-char buffer reduces encode() call frequency)
@@ -351,6 +386,7 @@ class StreamWrapper:
                 text = getattr(delta, "text", "")
                 if text:
                     self._accumulated_chars += len(text)
+                    self._visible_chars += sum(1 for c in text if not c.isspace())
                     if self._tiktoken_enc is not None:
                         # Tier 1: buffer chunks; encode when buffer reaches ~100 chars
                         self._tik_buffer += text
@@ -375,6 +411,11 @@ class StreamWrapper:
                             self._script_sample_chars += len(text)
 
         elif event_type == "message_delta":
+            delta = getattr(chunk, "delta", None)
+            if delta:
+                stop_reason = getattr(delta, "stop_reason", None)
+                if isinstance(stop_reason, str):
+                    self._stop_reason = stop_reason
             usage = getattr(chunk, "usage", None)
             if usage:
                 self._output_tokens += getattr(usage, "output_tokens", 0)
@@ -421,6 +462,7 @@ class StreamWrapper:
                 usage=final_usage,  # type: ignore[arg-type]
                 is_stream=True,
                 accumulated_chars=self._accumulated_chars,
+                visible_output_chars=self._visible_chars,
                 complete=self._complete,
                 error=self._error,
                 error_type=self._error_type,
@@ -428,6 +470,7 @@ class StreamWrapper:
                 cache_creation_tokens=self._cache_creation_tokens,
                 accumulated_tik_tokens=self._tik_token_count,
                 content_type_hint=content_type_hint,
+                finish_reason=self._stop_reason,
             )
             return
 
@@ -441,6 +484,7 @@ class StreamWrapper:
                     usage=final_usage,  # type: ignore[arg-type]
                     is_stream=True,
                     accumulated_chars=self._accumulated_chars,
+                    visible_output_chars=self._visible_chars,
                     complete=self._complete,
                     error=self._error,
                     error_type=self._error_type,
@@ -448,6 +492,7 @@ class StreamWrapper:
                     cache_creation_tokens=self._cache_creation_tokens,
                     accumulated_tik_tokens=self._tik_token_count,
                     content_type_hint=content_type_hint,
+                    finish_reason=self._stop_reason,
                 )
         # auto-context exits here → event emitted
 

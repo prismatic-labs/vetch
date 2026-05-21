@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.5.1"
+version = "0.6.0"
 description = "Inference waste control for production LLM systems. Detect stalled agents, RAG bloat, and runaway inference — then stop them automatically."
 readme = "README.md"
 license = "Apache-2.0"
@@ -79,6 +79,10 @@ include = [
     "/NOTICE",
     "/SECURITY.md",
     "/CHANGELOG.md",
+]
+exclude = [
+    "/kudzu",
+    "/tests/test_kudzu_recipes.py",
 ]
 
 [tool.pytest.ini_options]

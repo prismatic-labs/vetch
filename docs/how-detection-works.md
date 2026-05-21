@@ -15,7 +15,7 @@ The replacement is a `_WeakChatWrapper` (sync) or `_WeakAsyncChatWrapper` (async
 1. Stores the original `create` function in a `WeakKeyDictionary` keyed by the `completions` object, which avoids GC cycles.
 2. On every call, runs `apply_stall_action()` **before** forwarding to the original (the circuit breaker check).
 3. Calls the real `create(*args, **kwargs)` — the LLM call is never skipped or delayed.
-4. On success, calls `_after_create(result, ...)` which reads `response.usage` and captures `{input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens}` from the provider's metadata fields. No prompt or completion text is read at any point.
+4. On success, calls `_after_create(result, ...)` which reads `response.usage` and captures `{input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens}` from the provider's metadata fields. Prompt text is not read. For EMPTY-001 diagnostics, providers may count visible completion characters and immediately discard the text.
 5. Passes those values to `ctx.capture(...)`, which triggers `VetchContext._emit_event()`, which writes to local storage, updates stats, and exports to OTel.
 
 For streaming responses, the response is wrapped in `StreamWrapper`, which accumulates chunk-level token counts and fires `_emit_event()` on the final chunk.
@@ -28,7 +28,7 @@ If a `wrap()` context is already active (manual instrumentation), `_after_create
 
 ### What is and is not read
 
-Only `response.usage` fields are accessed:
+Vetch reads provider metadata and, for output diagnostics, may count visible completion characters:
 
 | Field read | Source (OpenAI example) |
 |---|---|
@@ -37,8 +37,11 @@ Only `response.usage` fields are accessed:
 | `cache_read_tokens` | `usage.prompt_tokens_details.cached_tokens` |
 | `cache_creation_tokens` | provider-specific field |
 | `model` | `response.model` |
+| `finish_reason` | provider response metadata |
+| `requested_max_tokens` | request kwargs, when available |
+| `visible_output_chars` | counted from visible completion blocks, then discarded |
 
-Prompt text, completion text, tool call arguments, and system prompts are never accessed.
+Prompt text, tool call arguments, and system prompts are never accessed. Completion text is not stored or exported; for output diagnostics, Vetch may count visible completion characters and then discard the text.
 
 ---
 
@@ -46,11 +49,11 @@ Prompt text, completion text, tool call arguments, and system prompts are never 
 
 Every captured event updates a `SessionStats` instance via `track_session_event()`. `SessionStats` maintains:
 
-- A rolling `deque(maxlen=20)` of `(output_tokens, input_tokens, cost_usd)` tuples — the stall detection window.
+- A rolling `deque(maxlen=20)` of recent call metadata, including input tokens, output tokens, cost, visible output character count, finish reason, and requested output cap.
 - A frequency histogram `input_token_counts[n] += 1` — used by both STALL-001 and CACHE-001.
-- Running totals of input/output tokens, energy, cost, carbon.
+- Running totals of input/output tokens, energy, cost, carbon, and water.
 
-`generate_advisories(stats)` is called after each event (once inside a `Session.register_event()` call) and checks four patterns against these numbers:
+`generate_advisories(stats)` is called after each event (once inside a `Session.register_event()` call) and checks these patterns against the metadata:
 
 | Advisory | Signal | Threshold |
 |---|---|---|
@@ -58,8 +61,12 @@ Every captured event updates a `SessionStats` instance via `track_session_event(
 | CACHE-001 | Fraction of all calls sharing the same input token count | >50% share the same count, after ≥6 total calls |
 | RAG-001 | `total_input_tokens / total_output_tokens` | >50:1 average ratio |
 | BABBLE-001 | Average `output_tokens` in last 20 calls | >1,500 tokens average, after ≥10 total calls |
+| ZOMBIE-001 | High input similarity + normal-length outputs with low output-token variation | ≥80% input similarity, output CV ≤0.15, window ≥5 |
+| CTX-001 | Prompt/input tokens grow while output does not grow proportionally | ≥3× input growth, ≥70% increasing turns, average ratio ≥4:1 |
+| EMPTY-001 | Output tokens consumed while visible output is near-empty | ≥4 recent calls and ≥50% of visible-counted window |
+| TRUNC-001 | Provider reports `finish_reason=max_tokens` repeatedly | ≥3 recent calls and ≥50% of window |
 
-No content is read by any of these checks. Every detection signal is derived from token counts and cost alone.
+No prompt content is read by any of these checks. Detection signals are derived from metadata such as token counts, cost, visible output character count, finish reason, and requested output cap.
 
 ### Why STALL-001 needs two signals
 
@@ -90,7 +97,11 @@ session.stall_triggered = True   ← set by Session.register_event() when STALL-
 
 `apply_stall_action()` checks `get_active_session().stall_triggered` before every call. If there is no active `Session`, this check always returns `(False, None)` and the loop continues regardless of what the advisory engine has seen.
 
-`Session.register_event()` is the only place where `generate_advisories()` is called against per-session stats. Without a `Session`, advisory detection still runs against the global `_session_stats` singleton, but the result is never acted on — it only appears in `vetch audit` reports after the fact.
+`Session.register_event()` is the only place where `generate_advisories()` can
+trip the live stall circuit breaker against per-session stats. Without a
+`Session`, advisory detection still runs against the global `_session_stats`
+singleton for audit and optional `on_advisory()` callbacks, but the result is
+not used to kill or reroute calls.
 
 ### Using `instrument()` with stall protection
 
@@ -136,10 +147,12 @@ Per-request stall protection in a web service context requires constructing a `S
 
 These are intentional, not oversights:
 
-**Content-blind by design.** All four advisories are approximate by construction. A classifier returning single-word answers looks like a stall from the token-count perspective; the input similarity guard reduces false positives but cannot eliminate them for all workloads. Treat advisories as signals requiring human confirmation, not ground truth.
+**Content-blind by design.** Advisories are approximate by construction. A classifier returning single-word answers can look like a stall from the token-count perspective; the input similarity guard reduces false positives but cannot eliminate them for all workloads. Treat advisories as signals requiring confirmation, not ground truth.
 
 **BABBLE-001 is warn-only.** Long output is expected for code generation, long-form writing, and analysis tasks. There is no automated action for BABBLE-001 because shortening generation without quality checks would produce wrong answers.
 
 **RAG-001 is warn-only.** Summarisation and extraction tasks have high input:output ratios by design. RAG-001 requires human review to distinguish genuine bloat from legitimate workloads.
+
+**ZOMBIE-001, CTX-001, EMPTY-001, and TRUNC-001 are warn-only.** They identify suspicious patterns that often explain wasted inference, but each can be legitimate in some workflows. Use them to prioritize review and fixes before adding automation.
 
 **STALL-001 requires a minimum call count.** Detection does not fire until ≥10 calls have accumulated in the session. This prevents false positives on fresh sessions where the rolling window has too few data points to be meaningful.

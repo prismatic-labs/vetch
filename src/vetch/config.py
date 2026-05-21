@@ -62,6 +62,50 @@ _stall_fallback_model: str | None = None
 
 VALID_STALL_ACTIONS: frozenset[str] = frozenset({"log", "warn", "kill", "reroute"})
 
+# v0.6.0: Per-advisory threshold overrides.
+# Keys are advisory codes (e.g. "BABBLE-001"); values are dicts of
+# threshold name → numeric override. Unknown keys are silently ignored.
+_advisory_thresholds: dict[str, dict[str, float]] = {}
+
+
+def set_advisory_thresholds(overrides: dict[str, dict[str, float]]) -> None:
+    """Override detection thresholds for specific advisories.
+
+    Call before inference begins. Overrides are global and persist for the
+    process lifetime.
+
+    Example — raise the BABBLE-001 trigger for a long-form generation workflow,
+    and lower the STALL-001 output-token threshold for a classification pipeline
+    that legitimately returns short responses::
+
+        vetch.set_advisory_thresholds({
+            "BABBLE-001": {"min_avg_output_tokens": 4000},
+            "STALL-001": {"low_output_threshold": 1},
+        })
+
+    Supported keys per advisory:
+
+    ``BABBLE-001``: ``min_avg_output_tokens`` (default 1500),
+      ``high_avg_output_tokens`` (default 3000)
+    ``STALL-001``: ``low_output_threshold`` (default 5 tokens)
+    ``ZOMBIE-001``: ``min_window`` (default 5), ``input_similarity`` (default 0.80),
+      ``output_cv`` (default 0.15)
+    ``CTX-001``: ``min_window`` (default 8), ``growth_trigger`` (default 3.0),
+      ``increase_trigger`` (default 0.70), ``ratio_trigger`` (default 4.0)
+    ``EMPTY-001``: ``min_window`` (default 5), ``fraction_trigger`` (default 0.50)
+    ``TRUNC-001``: ``min_window`` (default 5), ``fraction_trigger`` (default 0.50),
+      ``min_count`` (default 3)
+    ``CACHE-001``: ``repetition_rate`` (default 0.50)
+    ``RAG-001``: ``ratio_trigger`` (default 50)
+    """
+    global _advisory_thresholds
+    _advisory_thresholds = {k: dict(v) for k, v in overrides.items()}
+
+
+def get_advisory_threshold(code: str, key: str, default: float) -> float:
+    """Return a possibly-overridden advisory threshold."""
+    return float(_advisory_thresholds.get(code, {}).get(key, default))
+
 
 def add_global_tags(tags: dict[str, str]) -> None:
     """Set tags that will be automatically added to every inference event.
@@ -685,7 +729,7 @@ def _reset_config() -> None:
     global _tag_combinations_seen, _MAX_TAG_COMBINATIONS
     global _tag_combination_limit_exceeded, _last_combination_warning
     global _cached_hmac_key, _hmac_key_loaded
-    global _stall_action, _stall_fallback_model
+    global _stall_action, _stall_fallback_model, _advisory_thresholds
     _required_tags = set()
     _global_tags = {}
     _tag_cardinality_limit = 1000
@@ -701,3 +745,4 @@ def _reset_config() -> None:
     _hmac_key_loaded = False
     _stall_action = "log"
     _stall_fallback_model = None
+    _advisory_thresholds = {}

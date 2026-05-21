@@ -47,6 +47,10 @@ class CapturedCall:
     # Streaming token estimation (tiktoken or script-aware char ratio)
     accumulated_tik_tokens: int = 0
     content_type_hint: str = "en"
+    # Privacy-safe output diagnostics: counts/status only, never content.
+    visible_output_chars: int | None = None
+    finish_reason: str | None = None
+    requested_max_tokens: int | None = None
 
 
 @dataclass
@@ -116,6 +120,9 @@ class TrackingContext:
         cache_creation_tokens: int | None = None,
         accumulated_tik_tokens: int = 0,
         content_type_hint: str = "en",
+        visible_output_chars: int | None = None,
+        finish_reason: str | None = None,
+        requested_max_tokens: int | None = None,
     ) -> None:
         """Capture metadata from an LLM call.
 
@@ -132,6 +139,9 @@ class TrackingContext:
             warnings: Diagnostic warnings.
             cache_read_tokens: Tokens read from prompt cache (cost savings).
             cache_creation_tokens: Tokens written to prompt cache (extra cost).
+            visible_output_chars: Number of visible output characters, without content.
+            finish_reason: Provider finish status when exposed.
+            requested_max_tokens: Output-token cap requested by the caller.
         """
         self.captured_call = CapturedCall(
             model=model,
@@ -148,6 +158,9 @@ class TrackingContext:
             cache_creation_tokens=cache_creation_tokens,
             accumulated_tik_tokens=accumulated_tik_tokens,
             content_type_hint=content_type_hint,
+            visible_output_chars=visible_output_chars,
+            finish_reason=finish_reason,
+            requested_max_tokens=requested_max_tokens,
         )
 
 
