@@ -48,7 +48,10 @@ _DEFAULT_RAW_RETENTION_DAYS = 90
 @dataclass(frozen=True)
 class _StoredEvent:
     event_row: tuple[Any, ...]
-    aggregate_rows: tuple[tuple[str, str, str, int, int, int, float, float, float], ...]
+    aggregate_rows: tuple[
+        tuple[str, str, str, int, int, int, float, float, float, float, float, float],
+        ...,
+    ]
 
 
 _STOP_WRITER = object()
@@ -174,6 +177,9 @@ def _init_db() -> None:
                 energy_wh REAL,
                 carbon_g REAL,
                 cost_usd REAL,
+                cache_cost_saving_usd REAL,
+                cache_energy_saving_wh REAL,
+                cache_carbon_saving_g REAL,
                 tags_json TEXT,
                 raw_json TEXT
             )
@@ -182,6 +188,22 @@ def _init_db() -> None:
         # Index for reporting
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON events(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_model ON events(model)")
+
+        # Interventions table: durable record of circuit breaker fires
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS interventions (
+                intervention_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                session_id TEXT,
+                model TEXT,
+                tags_json TEXT,
+                cost_at_risk_usd REAL,
+                advisory_code TEXT
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_timestamp ON interventions(timestamp)"
+        )
 
         # Durable daily aggregates. These keep consulting/audit totals available
         # after raw_json rows have been compacted.
@@ -196,6 +218,9 @@ def _init_db() -> None:
                 energy_wh REAL NOT NULL DEFAULT 0.0,
                 carbon_g REAL NOT NULL DEFAULT 0.0,
                 cost_usd REAL NOT NULL DEFAULT 0.0,
+                cache_cost_saving_usd REAL NOT NULL DEFAULT 0.0,
+                cache_energy_saving_wh REAL NOT NULL DEFAULT 0.0,
+                cache_carbon_saving_g REAL NOT NULL DEFAULT 0.0,
                 PRIMARY KEY (day, dimension, value)
             )
         """)
@@ -211,7 +236,7 @@ def _init_db() -> None:
 
 
 def _migrate_db() -> None:
-    """Add tables introduced after v0.4.0 to an existing database."""
+    """Add tables and columns introduced after v0.4.0 to an existing database."""
     try:
         conn = sqlite3.connect(DB_PATH)
         _configure_connection(conn)
@@ -236,6 +261,63 @@ def _migrate_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_daily_usage_dimension "
             "ON daily_usage(dimension, value, day)"
         )
+
+        # v0.7.0: new columns on events table
+        existing_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(events)").fetchall()
+        }
+        if "cache_cost_saving_usd" not in existing_cols:
+            conn.execute("ALTER TABLE events ADD COLUMN cache_cost_saving_usd REAL")
+        if "cache_energy_saving_wh" not in existing_cols:
+            conn.execute("ALTER TABLE events ADD COLUMN cache_energy_saving_wh REAL")
+        if "cache_carbon_saving_g" not in existing_cols:
+            conn.execute("ALTER TABLE events ADD COLUMN cache_carbon_saving_g REAL")
+
+        # v0.7.0: savings columns on daily_usage (survive compaction)
+        daily_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(daily_usage)").fetchall()
+        }
+        if "cache_cost_saving_usd" not in daily_cols:
+            conn.execute(
+                "ALTER TABLE daily_usage ADD COLUMN cache_cost_saving_usd REAL NOT NULL DEFAULT 0.0"
+            )
+        if "cache_energy_saving_wh" not in daily_cols:
+            conn.execute(
+                "ALTER TABLE daily_usage ADD COLUMN "
+                "cache_energy_saving_wh REAL NOT NULL DEFAULT 0.0"
+            )
+        if "cache_carbon_saving_g" not in daily_cols:
+            conn.execute(
+                "ALTER TABLE daily_usage ADD COLUMN "
+                "cache_carbon_saving_g REAL NOT NULL DEFAULT 0.0"
+            )
+
+        # v0.7.0: interventions table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS interventions (
+                intervention_id TEXT PRIMARY KEY,
+                timestamp TEXT NOT NULL,
+                session_id TEXT,
+                model TEXT,
+                tags_json TEXT,
+                cost_at_risk_usd REAL,
+                advisory_code TEXT
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_timestamp ON interventions(timestamp)"
+        )
+        intv_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(interventions)").fetchall()
+        }
+        if "model" not in intv_cols:
+            conn.execute("ALTER TABLE interventions ADD COLUMN model TEXT")
+        if "tags_json" not in intv_cols:
+            conn.execute("ALTER TABLE interventions ADD COLUMN tags_json TEXT")
+
         conn.commit()
         conn.close()
     except Exception as exc:
@@ -255,6 +337,48 @@ def store_event(event: InferenceEvent) -> None:
         logger.warning("Vetch storage queue is full; dropping local usage event")
     except Exception as exc:
         logger.debug("Failed to enqueue event for local storage: %s", exc)
+
+
+def store_intervention(
+    session_id: str | None,
+    cost_at_risk_usd: float,
+    advisory_code: str = "STALL-001",
+    model: str | None = None,
+    tags: dict[str, str] | None = None,
+) -> None:
+    """Durably record a circuit breaker intervention.
+
+    Written synchronously (not batched) so the record survives even if the
+    session is killed mid-flight before normal event storage completes.
+    """
+    if not _STORAGE_ENABLED:
+        return
+    try:
+        import uuid
+
+        conn = _get_connection()
+        tags_json = json.dumps(tags or {})
+        with _connection_lock:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO interventions
+                    (intervention_id, timestamp, session_id, model, tags_json,
+                     cost_at_risk_usd, advisory_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    session_id,
+                    model,
+                    tags_json,
+                    cost_at_risk_usd,
+                    advisory_code,
+                ),
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("Failed to store intervention: %s", exc)
 
 
 def flush_storage(timeout: float | None = 5.0) -> None:
@@ -385,10 +509,26 @@ def _prepare_stored_event(event: InferenceEvent) -> _StoredEvent:
     model = str(event.get("model") or "unknown")
     provider = str(event.get("provider") or "unknown")
 
-    aggregate_rows: list[tuple[str, str, str, int, int, int, float, float, float]] = [
-        (day, "all", "all", 1, input_tokens, output_tokens, energy_wh, carbon_g, cost_usd),
-        (day, "model", model, 1, input_tokens, output_tokens, energy_wh, carbon_g, cost_usd),
-        (day, "provider", provider, 1, input_tokens, output_tokens, energy_wh, carbon_g, cost_usd),
+    cache_cost_saving = _float_or_zero(event.get("cache_cost_saving_usd"))
+    cache_energy_saving = _float_or_zero(event.get("cache_energy_saving_wh"))
+    cache_carbon_saving = _float_or_zero(event.get("cache_carbon_saving_g"))
+
+    aggregate_rows: list[
+        tuple[str, str, str, int, int, int, float, float, float, float, float, float]
+    ] = [
+        (
+            day, "all", "all", 1, input_tokens, output_tokens, energy_wh, carbon_g,
+            cost_usd, cache_cost_saving, cache_energy_saving, cache_carbon_saving,
+        ),
+        (
+            day, "model", model, 1, input_tokens, output_tokens, energy_wh, carbon_g,
+            cost_usd, cache_cost_saving, cache_energy_saving, cache_carbon_saving,
+        ),
+        (
+            day, "provider", provider, 1, input_tokens, output_tokens, energy_wh,
+            carbon_g, cost_usd, cache_cost_saving, cache_energy_saving,
+            cache_carbon_saving,
+        ),
     ]
     for key, value in tags_dict.items():
         if value is not None and value != "":
@@ -403,6 +543,9 @@ def _prepare_stored_event(event: InferenceEvent) -> _StoredEvent:
                     energy_wh,
                     carbon_g,
                     cost_usd,
+                    cache_cost_saving,
+                    cache_energy_saving,
+                    cache_carbon_saving,
                 )
             )
 
@@ -417,6 +560,9 @@ def _prepare_stored_event(event: InferenceEvent) -> _StoredEvent:
             event.get("estimated_energy_wh"),
             event.get("estimated_carbon_g"),
             event.get("estimated_cost_usd"),
+            event.get("cache_cost_saving_usd"),
+            event.get("cache_energy_saving_wh"),
+            event.get("cache_carbon_saving_g"),
             json.dumps(tags_dict),
             json.dumps(event),
         ),
@@ -431,8 +577,9 @@ def _insert_stored_event(cursor: sqlite3.Cursor, stored: _StoredEvent) -> None:
             event_id, timestamp, model, provider,
             input_tokens, output_tokens,
             energy_wh, carbon_g, cost_usd,
+            cache_cost_saving_usd, cache_energy_saving_wh, cache_carbon_saving_g,
             tags_json, raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         stored.event_row,
     )
@@ -442,15 +589,19 @@ def _insert_stored_event(cursor: sqlite3.Cursor, stored: _StoredEvent) -> None:
         """
         INSERT INTO daily_usage (
             day, dimension, value, requests, input_tokens, output_tokens,
-            energy_wh, carbon_g, cost_usd
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            energy_wh, carbon_g, cost_usd,
+            cache_cost_saving_usd, cache_energy_saving_wh, cache_carbon_saving_g
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(day, dimension, value) DO UPDATE SET
             requests = requests + excluded.requests,
             input_tokens = input_tokens + excluded.input_tokens,
             output_tokens = output_tokens + excluded.output_tokens,
             energy_wh = energy_wh + excluded.energy_wh,
             carbon_g = carbon_g + excluded.carbon_g,
-            cost_usd = cost_usd + excluded.cost_usd
+            cost_usd = cost_usd + excluded.cost_usd,
+            cache_cost_saving_usd = cache_cost_saving_usd + excluded.cache_cost_saving_usd,
+            cache_energy_saving_wh = cache_energy_saving_wh + excluded.cache_energy_saving_wh,
+            cache_carbon_saving_g = cache_carbon_saving_g + excluded.cache_carbon_saving_g
         """,
         stored.aggregate_rows,
     )
@@ -495,6 +646,11 @@ class UsageSummary:
         self.total_energy_wh = 0.0
         self.total_carbon_g = 0.0
         self.total_cost_usd = 0.0
+        self.total_cache_cost_saving_usd = 0.0
+        self.total_cache_energy_saving_wh = 0.0
+        self.total_cache_carbon_saving_g = 0.0
+        self.total_intervention_cost_at_risk_usd = 0.0
+        self.total_circuit_breaker_interventions = 0
         self.by_model: dict[str, Any] = {}
         self.by_tag: dict[str, Any] = {}
 
@@ -509,7 +665,12 @@ class UsageSummary:
                 "tokens": self.total_input_tokens + self.total_output_tokens,
                 "energy_wh": self.total_energy_wh,
                 "carbon_g": self.total_carbon_g,
-                "cost_usd": self.total_cost_usd
+                "cost_usd": self.total_cost_usd,
+                "cache_cost_saving_usd": self.total_cache_cost_saving_usd,
+                "cache_energy_saving_wh": self.total_cache_energy_saving_wh,
+                "cache_carbon_saving_g": self.total_cache_carbon_saving_g,
+                "circuit_breaker_interventions": self.total_circuit_breaker_interventions,
+                "intervention_cost_at_risk_usd": self.total_intervention_cost_at_risk_usd,
             },
             "breakdown": {
                 "model": self.by_model,
@@ -566,7 +727,10 @@ def query_usage(
                 COALESCE(SUM(output_tokens), 0) as total_output_tokens,
                 COALESCE(SUM(energy_wh), 0.0) as total_energy_wh,
                 COALESCE(SUM(carbon_g), 0.0) as total_carbon_g,
-                COALESCE(SUM(cost_usd), 0.0) as total_cost_usd
+                COALESCE(SUM(cost_usd), 0.0) as total_cost_usd,
+                COALESCE(SUM(cache_cost_saving_usd), 0.0) as total_cache_cost_saving_usd,
+                COALESCE(SUM(cache_energy_saving_wh), 0.0) as total_cache_energy_saving_wh,
+                COALESCE(SUM(cache_carbon_saving_g), 0.0) as total_cache_carbon_saving_g
             FROM events
             WHERE timestamp BETWEEN ? AND ?
         """
@@ -591,6 +755,32 @@ def query_usage(
             summary.total_energy_wh = totals_row['total_energy_wh']
             summary.total_carbon_g = totals_row['total_carbon_g']
             summary.total_cost_usd = totals_row['total_cost_usd']
+            summary.total_cache_cost_saving_usd = totals_row['total_cache_cost_saving_usd']
+            summary.total_cache_energy_saving_wh = totals_row['total_cache_energy_saving_wh']
+            summary.total_cache_carbon_saving_g = totals_row['total_cache_carbon_saving_g']
+
+        # Query 1b: Intervention totals from the dedicated table.
+        intv_query = """
+            SELECT
+                COUNT(*) as total_interventions,
+                COALESCE(SUM(cost_at_risk_usd), 0.0) as total_cost_at_risk_usd
+            FROM interventions
+            WHERE timestamp BETWEEN ? AND ?
+        """
+        intv_params: list[Any] = [start.isoformat(), end.isoformat()]
+        if model:
+            intv_query += " AND model = ?"
+            intv_params.append(model)
+        if tags:
+            for key, value in tags.items():
+                intv_query += " AND json_extract(tags_json, ?) = ?"
+                intv_params.append(f"$.{key}")
+                intv_params.append(value)
+        cursor.execute(intv_query, intv_params)
+        intv_row = cursor.fetchone()
+        if intv_row:
+            summary.total_circuit_breaker_interventions = intv_row['total_interventions']
+            summary.total_intervention_cost_at_risk_usd = intv_row['total_cost_at_risk_usd']
 
         # Query 2: Group by model using SQL aggregation
         by_model_query = """
@@ -801,7 +991,10 @@ def query_daily_usage(
                     COALESCE(SUM(output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(energy_wh), 0.0) as total_energy_wh,
                     COALESCE(SUM(carbon_g), 0.0) as total_carbon_g,
-                    COALESCE(SUM(cost_usd), 0.0) as total_cost_usd
+                    COALESCE(SUM(cost_usd), 0.0) as total_cost_usd,
+                    COALESCE(SUM(cache_cost_saving_usd), 0.0) as total_cache_cost_saving_usd,
+                    COALESCE(SUM(cache_energy_saving_wh), 0.0) as total_cache_energy_saving_wh,
+                    COALESCE(SUM(cache_carbon_saving_g), 0.0) as total_cache_carbon_saving_g
                 FROM daily_usage
                 WHERE day BETWEEN ? AND ?
                   AND dimension = ?
@@ -818,7 +1011,10 @@ def query_daily_usage(
                     COALESCE(SUM(output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(energy_wh), 0.0) as total_energy_wh,
                     COALESCE(SUM(carbon_g), 0.0) as total_carbon_g,
-                    COALESCE(SUM(cost_usd), 0.0) as total_cost_usd
+                    COALESCE(SUM(cost_usd), 0.0) as total_cost_usd,
+                    COALESCE(SUM(cache_cost_saving_usd), 0.0) as total_cache_cost_saving_usd,
+                    COALESCE(SUM(cache_energy_saving_wh), 0.0) as total_cache_energy_saving_wh,
+                    COALESCE(SUM(cache_carbon_saving_g), 0.0) as total_cache_carbon_saving_g
                 FROM daily_usage
                 WHERE day BETWEEN ? AND ?
                   AND dimension = 'all'
@@ -834,6 +1030,9 @@ def query_daily_usage(
             summary.total_energy_wh = float(totals_row["total_energy_wh"])
             summary.total_carbon_g = float(totals_row["total_carbon_g"])
             summary.total_cost_usd = float(totals_row["total_cost_usd"])
+            summary.total_cache_cost_saving_usd = float(totals_row["total_cache_cost_saving_usd"])
+            summary.total_cache_energy_saving_wh = float(totals_row["total_cache_energy_saving_wh"])
+            summary.total_cache_carbon_saving_g = float(totals_row["total_cache_carbon_saving_g"])
 
         if filter_dim == "model" and filter_val is not None:
             summary.by_model[filter_val] = {

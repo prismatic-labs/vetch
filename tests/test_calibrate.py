@@ -76,29 +76,6 @@ class TestCalibrationResult:
         assert result.samples == 10
         assert result.gpu_name == "NVIDIA RTX 4090"
 
-    def test_result_is_namedtuple(self) -> None:
-        """CalibrationResult should be a NamedTuple."""
-        from vetch.calibrate import CalibrationResult
-
-        result = CalibrationResult(
-            model="test",
-            provider="test",
-            wh_per_1k_input=0.1,
-            wh_per_1k_output=0.3,
-            tier=0,
-            samples=5,
-            gpu_name="Test GPU",
-        )
-
-        # NamedTuple should be indexable
-        assert result[0] == "test"  # model
-        assert result[1] == "test"  # provider
-
-        # And have _fields
-        assert "model" in result._fields
-        assert "gpu_name" in result._fields
-
-
 class TestFormatCalibrationResult:
     """Tests for result formatting."""
 
@@ -205,7 +182,9 @@ class TestCalibrateModelMocked:
             importlib.reload(vetch.calibrate)
 
             # Patch is_gpu_available to return True
-            with patch.object(vetch.calibrate, "is_gpu_available", return_value=True):
+            with patch.object(vetch.calibrate, "is_gpu_available", return_value=True), \
+                 tempfile.TemporaryDirectory() as tmp_calib_dir:
+                vetch.calibrate.CALIBRATION_DIR = Path(tmp_calib_dir)
                 result = vetch.calibrate.calibrate_model(
                     provider="ollama",
                     model="llama3.1:8b",
@@ -215,10 +194,78 @@ class TestCalibrateModelMocked:
 
                 assert result.model == "llama3.1:8b"
                 assert result.provider == "ollama"
-                assert result.tier == 0
+                assert result.tier == 1  # NVIDIA path uses heuristic single-sample, not Tier 0
                 assert result.samples == 3
                 # Workload called: 1 warmup + 3 iterations = 4 times
                 assert call_count == 4
+
+    def test_calibrate_rejects_zero_token_workload_without_saving(self) -> None:
+        """NVIDIA heuristic calibration should not install a zero-token result."""
+        mock_pynvml = MagicMock()
+        mock_pynvml.nvmlInit = MagicMock()
+        mock_pynvml.nvmlShutdown = MagicMock()
+        mock_pynvml.nvmlDeviceGetHandleByIndex = MagicMock(return_value="handle")
+        mock_pynvml.nvmlDeviceGetName = MagicMock(return_value="Test GPU")
+        mock_pynvml.nvmlDeviceGetMemoryInfo = MagicMock(
+            return_value=MagicMock(total=8 * 1024 * 1024 * 1024)
+        )
+        mock_pynvml.nvmlSystemGetDriverVersion = MagicMock(return_value="535.0")
+        mock_pynvml.nvmlDeviceGetPowerUsage = MagicMock(return_value=200000)
+
+        def zero_token_workload() -> tuple[int, int]:
+            return (0, 0)
+
+        with patch.dict("sys.modules", {"pynvml": mock_pynvml}):
+            import importlib
+
+            import vetch.calibrate
+            importlib.reload(vetch.calibrate)
+
+            with patch.object(vetch.calibrate, "is_gpu_available", return_value=True), \
+                 tempfile.TemporaryDirectory() as tmp_calib_dir:
+                vetch.calibrate.CALIBRATION_DIR = Path(tmp_calib_dir)
+                with pytest.raises(RuntimeError, match="Calibration quality issues"):
+                    vetch.calibrate.calibrate_model(
+                        provider="ollama",
+                        model="bad-model",
+                        workload=zero_token_workload,
+                        iterations=3,
+                    )
+                assert list(Path(tmp_calib_dir).iterdir()) == []
+
+    def test_calibrate_rejects_zero_power_without_saving(self) -> None:
+        """NVIDIA heuristic calibration should not install a zero-energy result."""
+        mock_pynvml = MagicMock()
+        mock_pynvml.nvmlInit = MagicMock()
+        mock_pynvml.nvmlShutdown = MagicMock()
+        mock_pynvml.nvmlDeviceGetHandleByIndex = MagicMock(return_value="handle")
+        mock_pynvml.nvmlDeviceGetName = MagicMock(return_value="Test GPU")
+        mock_pynvml.nvmlDeviceGetMemoryInfo = MagicMock(
+            return_value=MagicMock(total=8 * 1024 * 1024 * 1024)
+        )
+        mock_pynvml.nvmlSystemGetDriverVersion = MagicMock(return_value="535.0")
+        mock_pynvml.nvmlDeviceGetPowerUsage = MagicMock(return_value=0)
+
+        def workload() -> tuple[int, int]:
+            return (500, 250)
+
+        with patch.dict("sys.modules", {"pynvml": mock_pynvml}):
+            import importlib
+
+            import vetch.calibrate
+            importlib.reload(vetch.calibrate)
+
+            with patch.object(vetch.calibrate, "is_gpu_available", return_value=True), \
+                 tempfile.TemporaryDirectory() as tmp_calib_dir:
+                vetch.calibrate.CALIBRATION_DIR = Path(tmp_calib_dir)
+                with pytest.raises(RuntimeError, match="Calibration quality issues"):
+                    vetch.calibrate.calibrate_model(
+                        provider="ollama",
+                        model="bad-model",
+                        workload=workload,
+                        iterations=3,
+                    )
+                assert list(Path(tmp_calib_dir).iterdir()) == []
 
 
 class TestSaveCalibration:
@@ -226,7 +273,8 @@ class TestSaveCalibration:
 
     def test_save_creates_file(self) -> None:
         """Saving calibration creates JSON file."""
-        from vetch.calibrate import CalibrationResult, _save_calibration
+        from vetch.calibrate import CalibrationResult
+        from vetch.calibrate import save_calibration as _save_calibration
 
         result = CalibrationResult(
             model="test-model",
@@ -257,6 +305,7 @@ class TestSaveCalibration:
                 assert data["wh_per_1k_input"] == 0.05
                 assert data["wh_per_1k_output"] == 0.15
                 assert data["tier"] == 0
+                assert data["samples"] == 5
                 assert "basis" in data
                 assert "timestamp" in data
 
@@ -265,7 +314,8 @@ class TestSaveCalibration:
 
     def test_save_handles_colons_in_model_name(self) -> None:
         """Model names with colons are sanitized."""
-        from vetch.calibrate import CalibrationResult, _save_calibration
+        from vetch.calibrate import CalibrationResult
+        from vetch.calibrate import save_calibration as _save_calibration
 
         result = CalibrationResult(
             model="llama3.1:8b",

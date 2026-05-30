@@ -14,7 +14,7 @@ MIN_PYTHON_VERSION = (3, 9)
 
 # Tested SDK versions (we warn if not in this range)
 TESTED_OPENAI_VERSIONS = ("1.0.0", "2.0.0")  # [min, max)
-TESTED_VERTEXAI_VERSIONS = ("1.0.0", "2.0.0")  # [min, max)
+TESTED_VERTEXAI_VERSIONS = ("1.0.0", "3.0.0")  # [min, max)
 
 
 class VersionInfo(NamedTuple):

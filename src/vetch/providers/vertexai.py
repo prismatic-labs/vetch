@@ -91,7 +91,9 @@ class _WeakGenerateWrapper:
             result = original(*args, **kwargs)
 
             if is_stream:
-                return StreamWrapper(result, model_name)
+                return StreamWrapper(
+                    result, model_name, region=infer_vertex_region(model)
+                )
 
             _after_generate(result, model, *args, **kwargs)
             return result
@@ -103,7 +105,9 @@ class _WeakGenerateWrapper:
                 try:
                     result = original(*args, **kwargs)
                     if is_stream:
-                        return StreamWrapper(result, model_name)
+                        return StreamWrapper(
+                    result, model_name, region=infer_vertex_region(model)
+                )
                     _after_generate(result, model, *args, **kwargs)
                     return result
                 except Exception as fallback_err:
@@ -140,7 +144,9 @@ class _WeakGenerateAsyncWrapper:
             result = await original(*args, **kwargs)
 
             if is_stream:
-                return AsyncStreamWrapper(result, model_name)
+                return AsyncStreamWrapper(
+                    result, model_name, region=infer_vertex_region(model)
+                )
 
             _after_generate(result, model, *args, **kwargs)
             return result
@@ -152,7 +158,9 @@ class _WeakGenerateAsyncWrapper:
                 try:
                     result = await original(*args, **kwargs)
                     if is_stream:
-                        return AsyncStreamWrapper(result, model_name)
+                        return AsyncStreamWrapper(
+                    result, model_name, region=infer_vertex_region(model)
+                )
                     _after_generate(result, model, *args, **kwargs)
                     return result
                 except Exception as fallback_err:
@@ -221,6 +229,24 @@ def infer_region_from_endpoint(endpoint: str | None) -> str | None:
     return None
 
 
+def infer_vertex_region(model_obj: Any) -> str | None:
+    """Infer GCP region from a Vertex GenerativeModel or its client."""
+    location = getattr(model_obj, "location", None)
+    if isinstance(location, str) and location.strip():
+        return location.strip()
+
+    for holder in (model_obj, getattr(model_obj, "_client", None)):
+        if holder is None:
+            continue
+        for attr in ("api_endpoint", "_api_endpoint"):
+            endpoint = getattr(holder, attr, None)
+            if isinstance(endpoint, str):
+                region = infer_region_from_endpoint(endpoint)
+                if region:
+                    return region
+    return None
+
+
 def _after_generate(result: Any, model_obj: Any, *args: Any, **kwargs: Any) -> None:
     """Hook called after model.generate_content.
 
@@ -237,7 +263,9 @@ def _after_generate(result: Any, model_obj: Any, *args: Any, **kwargs: Any) -> N
         return
 
     # Auto-create context if needed, or use existing manual wrap() context
-    with auto_context_for_instrumented_call("vertexai"):
+    with auto_context_for_instrumented_call(
+        "vertexai", region=infer_vertex_region(model_obj)
+    ):
         # Non-streaming: capture immediately
         usage = extract_usage(result)
         model = extract_model(model_obj)
@@ -277,15 +305,22 @@ class StreamWrapper:
     Captures final usage from the last chunk if available.
     """
 
-    def __init__(self, stream: Any, model_name: str) -> None:
+    def __init__(
+        self,
+        stream: Any,
+        model_name: str,
+        region: str | None = None,
+    ) -> None:
         """Initialize stream wrapper.
 
         Args:
             stream: The original Vertex AI stream.
             model_name: Model identifier for capture.
+            region: GCP region for carbon grid lookup (optional).
         """
         self._stream = stream
         self._model = model_name
+        self._region = region
         self._accumulated_chars = 0
         self._final_usage: Usage | None = None
         self._complete = False
@@ -406,7 +441,7 @@ class StreamWrapper:
             return
 
         # Instrumented mode (no manual wrap()) — create auto-context at stream completion
-        with auto_context_for_instrumented_call("vertexai"):
+        with auto_context_for_instrumented_call("vertexai", region=self._region):
             ctx = get_active_context()
             if ctx is not None:
                 ctx.capture(
@@ -482,7 +517,9 @@ def _wrapped_generate(original: Any, model_obj: Any) -> Any:
 
             if is_stream:
                 # Wrap the stream to capture during iteration
-                return StreamWrapper(result, model_name)
+                return StreamWrapper(
+                    result, model_name, region=infer_vertex_region(model)
+                )
 
             # Non-streaming: capture immediately
             _after_generate(result, model_obj, *args, **kwargs)
@@ -518,7 +555,9 @@ def _wrapped_generate_async(original: Any, model_obj: Any) -> Any:
 
             if is_stream:
                 # Wrap the stream to capture during iteration
-                return AsyncStreamWrapper(result, model_name)
+                return AsyncStreamWrapper(
+                    result, model_name, region=infer_vertex_region(model)
+                )
 
             # Non-streaming: capture immediately
             _after_generate(result, model_obj, *args, **kwargs)

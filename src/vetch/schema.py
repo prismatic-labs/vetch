@@ -122,7 +122,9 @@ class InferenceEvent(TypedDict, total=False):
     estimated_cost_input_usd: Union[float, None]
     estimated_cost_output_usd: Union[float, None]
     estimated_cost_cache_write_usd: Union[float, None]  # Cost to write tokens to cache
-    estimated_cost_cache_read_usd: Union[float, None]  # Cost savings from cache reads
+    # Actual discounted cost paid for cache-read tokens, not the saving.
+    # See cache_cost_saving_usd for the difference vs. uncached input price.
+    estimated_cost_cache_read_usd: Union[float, None]
     billing_tier: str  # Always "list" for v1
 
     # Signal quality
@@ -193,6 +195,11 @@ class InferenceEvent(TypedDict, total=False):
     cache_creation_tokens: Union[int, None]  # Tokens written to cache (extra cost)
     cache_hit: Union[bool, None]  # True if any cache was used
     cache_energy_saving_wh: Union[float, None]  # Energy saved vs. uncached baseline (Wh)
+    # Realized cost saving vs. uncached baseline: full input price minus discounted
+    # cache-read price. Distinct from estimated_cost_cache_read_usd, the cost paid.
+    cache_cost_saving_usd: Union[float, None]
+    # Carbon saved vs. uncached baseline, using the same grid/PUE path as carbon_g.
+    cache_carbon_saving_g: Union[float, None]
 
     # Session tracking (v0.1.6)
     session_id: Union[str, None]  # ID of parent session if event is part of a session

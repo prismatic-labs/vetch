@@ -109,6 +109,9 @@ class TestUsageSummary:
         assert summary.total_energy_wh == 0.0
         assert summary.total_carbon_g == 0.0
         assert summary.total_cost_usd == 0.0
+        assert summary.total_cache_cost_saving_usd == 0.0
+        assert summary.total_cache_energy_saving_wh == 0.0
+        assert summary.total_cache_carbon_saving_g == 0.0
 
     def test_summary_to_dict(self) -> None:
         """Convert summary to dict."""
@@ -224,6 +227,41 @@ class TestQueryUsage:
 
             assert summary.total_requests == 3
             assert summary.total_cost_usd == pytest.approx(0.03, rel=0.1)
+
+    def test_cache_savings_survive_raw_event_compaction(self) -> None:
+        """Savings totals should fall back to durable daily aggregates."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            configure_storage(enabled=True, path=db_path)
+            now = datetime.now(timezone.utc)
+            old_timestamp = (now - timedelta(days=2)).isoformat()
+
+            store_event({
+                "event_id": "cache-savings-1",
+                "timestamp": old_timestamp,
+                "model": "gpt-4o",
+                "provider": "openai",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+                "estimated_energy_wh": 0.001,
+                "estimated_carbon_g": 0.05,
+                "estimated_cost_usd": 0.01,
+                "cache_cost_saving_usd": 0.25,
+                "cache_energy_saving_wh": 2.0,
+                "cache_carbon_saving_g": 0.7,
+                "tags": {},
+            })
+            flush_storage()
+            compact_storage(raw_retention_days=0)
+
+            summary = query_usage(
+                start=now - timedelta(days=3),
+                end=now + timedelta(days=1),
+            )
+
+            assert summary.total_requests == 1
+            assert summary.total_cache_cost_saving_usd == pytest.approx(0.25)
+            assert summary.total_cache_energy_saving_wh == pytest.approx(2.0)
+            assert summary.total_cache_carbon_saving_g == pytest.approx(0.7)
 
     def test_query_filters_by_model(self) -> None:
         """Query can filter by model."""

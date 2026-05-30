@@ -18,7 +18,7 @@ Turn every inference call into a signal. Vetch detects patterns that indicate in
 
 **Planned:**
 - 🔜 Retry storm detection
-- 🔜 Premium model overuse detection
+- ✅ Large-model rightsizing candidate detection — audit-only
 - 🔜 Zombie inference detection (active calls past expected session completion)
 - 🔜 Cache miss pattern detection
 - 🔜 Session budget advisory and circuit breaker
@@ -64,7 +64,7 @@ Move from observation to control. Stop waste before it accumulates, not just rep
 - 🔜 Circuit breakers across all waste detection patterns (not just stall detection)
 - 🔜 Policy engine — configurable actions per waste pattern, model, or tag group
 - 🔜 Session budget enforcement
-- 🔜 Automatic model downgrade on premium model overuse
+- 🔜 Automatic model downgrade after eval-backed rightsizing approval
 - 🔜 Throttling per session or tag combination
 - 🔜 Human-in-the-loop recovery for killed sessions
 

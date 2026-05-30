@@ -349,6 +349,16 @@ def _export_event_sync(event: InferenceEvent) -> bool:
             if cache_saving is not None:
                 span.set_attribute("vetch.cache_energy_saving_wh", float(cache_saving))
 
+            # Cache cost saving
+            cache_cost_saving = event.get("cache_cost_saving_usd")
+            if cache_cost_saving is not None:
+                span.set_attribute("vetch.cache_cost_saving_usd", float(cache_cost_saving))
+
+            # Cache carbon saving
+            cache_carbon_saving = event.get("cache_carbon_saving_g")
+            if cache_carbon_saving is not None:
+                span.set_attribute("vetch.cache_carbon_saving_g", float(cache_carbon_saving))
+
             # Budget status
             if event.get("budget_exceeded"):
                 span.set_attribute("vetch.budget_exceeded", True)

@@ -8,15 +8,18 @@ LLM calls are required to generate the report.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
 from vetch.advisory import Advisory, generate_advisories, get_advisory_spec
+from vetch.config import get_advisory_threshold
 from vetch.stats import SessionStats
-from vetch.storage import UsageSummary, query_daily_usage, query_events
+from vetch.storage import UsageSummary, query_daily_usage, query_events, query_usage
 
 DEFAULT_TAG_KEYS = ("feature", "customer", "workflow", "team", "service", "env")
+PREMIUM_WORKFLOW_TAG_KEYS = ("workflow", "feature", "service", "route", "operation")
 MIN_FINDING_SCOPE_EVENTS = 2
 LOW_VOLUME_EVENT_WARNING_THRESHOLD = 20
 MIN_TAGGED_FRACTION = 0.5
@@ -25,6 +28,17 @@ MONTHLY_PROJECTION_DAYS = 30
 MAX_FINDINGS = 25
 MAX_BREAKDOWN_ROWS = 30
 MAX_RENDERED_BREAKDOWN_ROWS = 15
+
+PREMIUM_CODE = "PREMIUM-001"
+PREMIUM_MIN_CALLS = 50
+PREMIUM_MIN_PREMIUM_SHARE = 0.70
+PREMIUM_MAX_INPUT_TOKEN_CV = 0.25
+PREMIUM_MAX_OUTPUT_TOKEN_CV = 0.35
+PREMIUM_MIN_AVG_OUTPUT_TOKENS = 10
+PREMIUM_MAX_RETRY_RATE = 0.05
+PREMIUM_MAX_TOOL_CALL_RATE = 0.10
+PREMIUM_MAX_TRUNCATION_RATE = 0.02
+PREMIUM_MIN_CANDIDATE_DISCOUNT = 0.50
 
 
 @dataclass
@@ -82,6 +96,12 @@ class AuditReport:
     total_carbon_g: float
     observed_avoidable_cost_usd: float
     projected_monthly_avoidable_cost_usd: float
+    realized_cache_savings_usd: float
+    realized_cache_energy_savings_wh: float
+    realized_cache_carbon_savings_g: float
+    projected_monthly_cache_savings_usd: float
+    circuit_breaker_interventions: int
+    intervention_cost_at_risk_usd: float
     data_quality: AuditDataQuality
     findings: list[AuditFinding]
     breakdowns: list[AuditBreakdownRow]
@@ -154,6 +174,17 @@ def build_audit_report(
 
     methodology_versions = data_quality.methodology_versions or ["not recorded"]
 
+    # Savings & interventions — query_usage reads from events + interventions tables
+    savings_summary = query_usage(start=start, end=end, model=model, tags=tags)
+    realized_cache_savings = savings_summary.total_cache_cost_saving_usd
+    realized_cache_energy = savings_summary.total_cache_energy_saving_wh
+    realized_cache_carbon = savings_summary.total_cache_carbon_saving_g
+    projected_monthly_cache = (
+        (realized_cache_savings / projection_days) * MONTHLY_PROJECTION_DAYS
+        if realized_cache_savings
+        else 0.0
+    )
+
     return AuditReport(
         start_time=start.isoformat(),
         end_time=end.isoformat(),
@@ -165,6 +196,12 @@ def build_audit_report(
         total_carbon_g=round(float(totals["carbon_g"]), 6),
         observed_avoidable_cost_usd=round(observed_avoidable, 6),
         projected_monthly_avoidable_cost_usd=round(projected_monthly, 6),
+        realized_cache_savings_usd=round(realized_cache_savings, 6),
+        realized_cache_energy_savings_wh=round(realized_cache_energy, 6),
+        realized_cache_carbon_savings_g=round(realized_cache_carbon, 6),
+        projected_monthly_cache_savings_usd=round(projected_monthly_cache, 6),
+        circuit_breaker_interventions=savings_summary.total_circuit_breaker_interventions,
+        intervention_cost_at_risk_usd=round(savings_summary.total_intervention_cost_at_risk_usd, 6),
         data_quality=data_quality,
         findings=findings,
         breakdowns=breakdowns,
@@ -177,6 +214,8 @@ def build_audit_report(
             "Cache and RAG findings are intentionally qualitative in this first pass.",
             "BABBLE-001 is a metadata-only proxy for unusually long generation; "
             "it does not inspect response content.",
+            "PREMIUM-001 queues model-rightsizing candidates for eval; it does "
+            "not prove a cheaper model is acceptable.",
             "Methodology versions observed: " + ", ".join(methodology_versions) + ".",
             "Energy and carbon figures are estimates from Vetch model and grid methodology.",
         ],
@@ -228,6 +267,8 @@ def _build_findings(
             seen.add(dedupe_key)
             findings.append(_finding_from_advisory(advisory, stats, scope, window_days))
 
+    findings.extend(_build_premium_findings(events))
+
     findings.sort(
         key=lambda f: (
             _severity_rank(f.severity),
@@ -243,14 +284,424 @@ def _build_findings(
     # In multi-session audits, different session-scoped findings for the same
     # code will have different request counts and are preserved.
     seen_code_counts: set[tuple[str, int]] = set()
+    seen_scoped_code_counts: set[tuple[str, str, int]] = set()
     deduped: list[AuditFinding] = []
     for f in findings:
-        dedup_key = (f.code, f.request_count or 0)
-        if dedup_key not in seen_code_counts:
-            seen_code_counts.add(dedup_key)
+        if f.code == PREMIUM_CODE:
+            scoped_key = (f.code, f.scope, f.request_count or 0)
+            if scoped_key in seen_scoped_code_counts:
+                continue
+            seen_scoped_code_counts.add(scoped_key)
             deduped.append(f)
+            continue
+
+        dedup_key = (f.code, f.request_count or 0)
+        if dedup_key in seen_code_counts:
+            continue
+        seen_code_counts.add(dedup_key)
+        deduped.append(f)
 
     return deduped[:MAX_FINDINGS]
+
+
+def _build_premium_findings(events: list[dict[str, Any]]) -> list[AuditFinding]:
+    """Find workflow-level model rightsizing candidates.
+
+    This is deliberately an aggregate audit finding, not a runtime advisory.
+    It queues stable premium-model workflows for evaluation; it does not claim
+    the workflow is safe to downgrade or reroute automatically.
+    """
+    min_calls = int(get_advisory_threshold(PREMIUM_CODE, "min_calls", PREMIUM_MIN_CALLS))
+    min_premium_share = get_advisory_threshold(
+        PREMIUM_CODE, "min_premium_share", PREMIUM_MIN_PREMIUM_SHARE
+    )
+    max_input_cv = get_advisory_threshold(
+        PREMIUM_CODE, "max_input_token_cv", PREMIUM_MAX_INPUT_TOKEN_CV
+    )
+    max_output_cv = get_advisory_threshold(
+        PREMIUM_CODE, "max_output_token_cv", PREMIUM_MAX_OUTPUT_TOKEN_CV
+    )
+    min_avg_output = get_advisory_threshold(
+        PREMIUM_CODE, "min_avg_output_tokens", PREMIUM_MIN_AVG_OUTPUT_TOKENS
+    )
+    max_retry_rate = get_advisory_threshold(
+        PREMIUM_CODE, "max_retry_rate", PREMIUM_MAX_RETRY_RATE
+    )
+    max_tool_rate = get_advisory_threshold(
+        PREMIUM_CODE, "max_tool_call_rate", PREMIUM_MAX_TOOL_CALL_RATE
+    )
+    max_truncation_rate = get_advisory_threshold(
+        PREMIUM_CODE, "max_truncation_rate", PREMIUM_MAX_TRUNCATION_RATE
+    )
+    min_candidate_discount = get_advisory_threshold(
+        PREMIUM_CODE,
+        "min_candidate_discount",
+        PREMIUM_MIN_CANDIDATE_DISCOUNT,
+    )
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        identity = _workflow_identity(event)
+        if identity is None:
+            continue
+        groups.setdefault(identity, []).append(event)
+
+    findings: list[AuditFinding] = []
+    for workflow, workflow_events in groups.items():
+        requests = len(workflow_events)
+        if requests < min_calls:
+            continue
+
+        input_tokens = [_event_input_tokens(event) for event in workflow_events]
+        output_tokens = [_event_output_tokens(event) for event in workflow_events]
+        input_cv = _coefficient_of_variation(input_tokens)
+        output_cv = _coefficient_of_variation(output_tokens)
+        avg_output_tokens = _average(output_tokens)
+        if input_cv > max_input_cv or output_cv > max_output_cv:
+            continue
+        if avg_output_tokens < min_avg_output:
+            continue
+
+        retry_rate = _retry_event_rate(workflow_events)
+        tool_call_rate = _tool_call_event_rate(workflow_events)
+        truncation_rate = _truncation_rate(workflow_events)
+        if (
+            retry_rate > max_retry_rate
+            or tool_call_rate > max_tool_rate
+            or truncation_rate > max_truncation_rate
+        ):
+            continue
+
+        model_stats = _premium_model_stats(workflow_events, min_candidate_discount)
+        if model_stats is None:
+            continue
+        premium_share = float(model_stats["premium_share"])
+        if premium_share < min_premium_share:
+            continue
+
+        confidence = _premium_confidence(
+            requests=requests,
+            premium_share=premium_share,
+            input_cv=input_cv,
+            output_cv=output_cv,
+            retry_rate=retry_rate,
+            tool_call_rate=tool_call_rate,
+            truncation_rate=truncation_rate,
+        )
+        evidence = {
+            "workflow_identity": workflow,
+            "requests": requests,
+            "premium_model": model_stats["premium_model"],
+            "model_cost_class": "premium",
+            "premium_share": round(premium_share, 4),
+            "premium_cost_share": round(float(model_stats["premium_cost_share"]), 4),
+            "input_token_cv": round(input_cv, 4),
+            "output_token_cv": round(output_cv, 4),
+            "avg_input_tokens": round(_average(input_tokens), 2),
+            "avg_output_tokens": round(avg_output_tokens, 2),
+            "retry_event_rate": round(retry_rate, 4),
+            "tool_call_event_rate": round(tool_call_rate, 4),
+            "truncation_rate": round(truncation_rate, 4),
+            "candidate_models": model_stats["candidate_models"],
+            "candidate_discount_threshold": round(min_candidate_discount, 4),
+            "interpretation": (
+                "Stable premium-model traffic should enter an eval queue. "
+                "This finding is not a downgrade decision."
+            ),
+        }
+        findings.append(
+            AuditFinding(
+                code=PREMIUM_CODE,
+                severity="INFO",
+                title="Large Model Rightsizing Candidate",
+                scope=f"workflow:{workflow}",
+                description=(
+                    "This stable workflow is mostly running on a large, premium "
+                    "model. Vetch cannot decide whether a smaller model is good "
+                    "enough, but this is a good candidate for shadow evaluation."
+                ),
+                request_count=requests,
+                evidence=evidence,
+                confidence=confidence,
+                observed_avoidable_cost_usd=None,
+                projected_monthly_avoidable_cost_usd=None,
+                recommended_action=(
+                    "Run an eval against a standard or smaller candidate before "
+                    "changing production routing."
+                ),
+                automation_guidance=(
+                    "Do not auto-reroute from this finding alone; use it to queue "
+                    "an offline or shadow evaluation."
+                ),
+                security_signal=False,
+                security_refs=(),
+            )
+        )
+
+    return findings
+
+
+def _workflow_identity(event: dict[str, Any]) -> str | None:
+    tags = event.get("tags") or {}
+    if not isinstance(tags, dict):
+        return None
+    for key in PREMIUM_WORKFLOW_TAG_KEYS:
+        value = tags.get(key)
+        if value:
+            return f"{key}:{value}"
+    return None
+
+
+def _premium_model_stats(
+    events: list[dict[str, Any]],
+    min_candidate_discount: float,
+) -> dict[str, Any] | None:
+    totals_by_model: dict[str, dict[str, float]] = {}
+    total_cost = 0.0
+    for event in events:
+        model = str(event.get("model") or "")
+        if not model:
+            continue
+        cost = float(event.get("estimated_cost_usd") or 0.0)
+        total_cost += cost
+        bucket = totals_by_model.setdefault(model, {"requests": 0.0, "cost": 0.0})
+        bucket["requests"] += 1.0
+        bucket["cost"] += cost
+
+    candidates: list[dict[str, Any]] = []
+    premium_requests = 0.0
+    premium_cost = 0.0
+    for model, totals in totals_by_model.items():
+        model_info = _model_price_info(model)
+        if model_info is None or model_info["model_cost_class"] != "premium":
+            continue
+        cheaper = _cheaper_candidate_models(
+            model_info,
+            min_candidate_discount=min_candidate_discount,
+        )
+        if not cheaper:
+            continue
+        premium_requests += totals["requests"]
+        premium_cost += totals["cost"]
+        candidates.append({
+            "model": model,
+            "requests": int(totals["requests"]),
+            "cost": totals["cost"],
+            "price": float(model_info["price"]),
+            "candidate_models": cheaper,
+        })
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item["requests"], item["cost"]), reverse=True)
+    primary = candidates[0]
+    request_count = len(events)
+    premium_share = premium_requests / request_count if request_count else 0.0
+    premium_cost_share = premium_cost / total_cost if total_cost > 0 else premium_share
+    return {
+        "premium_model": primary["model"],
+        "premium_share": premium_share,
+        "premium_cost_share": premium_cost_share,
+        "candidate_models": primary["candidate_models"],
+    }
+
+
+def _model_price_info(model: str) -> dict[str, Any] | None:
+    pricing = _pricing_registry()
+    if not pricing:
+        return None
+    resolved = _resolve_pricing_model(model, pricing)
+    if resolved is None:
+        return None
+    price = _weighted_model_price(pricing[resolved])
+    provider = _model_provider(resolved)
+    if price is None or provider == "unknown":
+        return None
+    return {
+        "model": resolved,
+        "provider": provider,
+        "price": price,
+        "model_cost_class": _model_cost_class(provider, price, pricing),
+    }
+
+
+def _pricing_registry() -> dict[str, dict[str, Any]]:
+    from vetch import calculation
+
+    calculation._load_registry()
+    return calculation._PRICING or {}
+
+
+def _resolve_pricing_model(
+    model: str,
+    pricing: dict[str, dict[str, Any]],
+) -> str | None:
+    if model in pricing:
+        return model
+
+    from vetch.calculation import resolve_model
+
+    resolved, known = resolve_model(model)
+    if known and resolved in pricing:
+        return resolved
+
+    parts = model.split("-")
+    for i in range(len(parts) - 1, 0, -1):
+        prefix = "-".join(parts[:i])
+        if prefix in pricing:
+            return prefix
+    return None
+
+
+def _weighted_model_price(entry: dict[str, Any]) -> float | None:
+    try:
+        rate_in = float(entry["usd_per_1k_input"])
+        rate_out = float(entry["usd_per_1k_output"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if rate_in == 0 and rate_out == 0:
+        return 0.0
+    # Output tokens are often the limiting cost lever. Give them more weight
+    # without tying this audit signal to a content-specific workload.
+    return (rate_in + (2 * rate_out)) / 3
+
+
+def _model_provider(model: str) -> str:
+    lower = model.lower()
+    if lower.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    if lower.startswith("claude"):
+        return "anthropic"
+    if lower.startswith("gemini"):
+        return "google"
+    if lower.startswith("deepseek"):
+        return "deepseek"
+    if lower.startswith(("llama", "mixtral")):
+        return "local"
+    return "unknown"
+
+
+def _model_cost_class(provider: str, price: float, pricing: dict[str, dict[str, Any]]) -> str:
+    if price == 0:
+        return "local"
+    same_provider_prices = sorted(
+        candidate_price
+        for candidate_model, entry in pricing.items()
+        if _model_provider(candidate_model) == provider
+        for candidate_price in [_weighted_model_price(entry)]
+        if candidate_price is not None and candidate_price > 0
+    )
+    if not same_provider_prices:
+        return "unknown"
+
+    cheapest = same_provider_prices[0]
+    if price >= cheapest * 3:
+        return "premium"
+    if price <= cheapest * 1.5:
+        return "economy"
+    return "standard"
+
+
+def _cheaper_candidate_models(
+    model_info: dict[str, Any],
+    min_candidate_discount: float,
+) -> list[str]:
+    pricing = _pricing_registry()
+    provider = str(model_info["provider"])
+    current_model = str(model_info["model"])
+    current_price = float(model_info["price"])
+    max_candidate_price = current_price * min_candidate_discount
+    candidates: list[tuple[float, str]] = []
+    for candidate, entry in pricing.items():
+        if candidate == current_model or _model_provider(candidate) != provider:
+            continue
+        price = _weighted_model_price(entry)
+        if price is None or price <= 0 or price > max_candidate_price:
+            continue
+        candidates.append((price, candidate))
+    candidates.sort()
+    return [candidate for _, candidate in candidates[:5]]
+
+
+def _premium_confidence(
+    *,
+    requests: int,
+    premium_share: float,
+    input_cv: float,
+    output_cv: float,
+    retry_rate: float,
+    tool_call_rate: float,
+    truncation_rate: float,
+) -> str:
+    if (
+        requests >= 200
+        and premium_share >= 0.9
+        and input_cv <= 0.15
+        and output_cv <= 0.20
+        and retry_rate == 0
+        and tool_call_rate == 0
+        and truncation_rate == 0
+    ):
+        return "HIGH"
+    if requests >= 100 and premium_share >= 0.8:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _event_input_tokens(event: dict[str, Any]) -> int:
+    usage = event.get("usage", {}) or {}
+    text = usage.get("text", {}) or {}
+    return int(text.get("input_tokens") or event.get("input_tokens") or 0)
+
+
+def _event_output_tokens(event: dict[str, Any]) -> int:
+    usage = event.get("usage", {}) or {}
+    text = usage.get("text", {}) or {}
+    return int(text.get("output_tokens") or event.get("output_tokens") or 0)
+
+
+def _coefficient_of_variation(values: list[int]) -> float:
+    if not values:
+        return 0.0
+    mean = _average(values)
+    if mean == 0:
+        return 0.0
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return math.sqrt(variance) / mean
+
+
+def _average(values: list[int]) -> float:
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _retry_event_rate(events: list[dict[str, Any]]) -> float:
+    if not events:
+        return 0.0
+    retry_events = sum(1 for event in events if int(event.get("retry_count") or 0) > 0)
+    return retry_events / len(events)
+
+
+def _tool_call_event_rate(events: list[dict[str, Any]]) -> float:
+    if not events:
+        return 0.0
+    tool_events = sum(
+        1 for event in events if int(event.get("tool_call_count") or 0) > 0
+    )
+    return tool_events / len(events)
+
+
+def _truncation_rate(events: list[dict[str, Any]]) -> float:
+    if not events:
+        return 0.0
+    truncated = 0
+    for event in events:
+        finish_reason = str(event.get("finish_reason") or "").lower()
+        if finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+            truncated += 1
+    return truncated / len(events)
 
 
 def _finding_from_advisory(
@@ -496,7 +947,26 @@ def _format_text(report: AuditReport) -> str:
     for warning in report.data_quality.warnings:
         lines.append(f"WARNING: {warning}")
 
-    lines.extend(["", "Findings", "-" * 30])
+    lines.extend([
+        "",
+        "Savings & Interventions",
+        "-" * 30,
+        "Realized cache savings",
+        f"  Cost saved via caching:       ${report.realized_cache_savings_usd:,.2f}",
+        f"  Energy saved via caching:     {report.realized_cache_energy_savings_wh:,.2f} Wh",
+        f"  Carbon saved via caching:     {report.realized_cache_carbon_savings_g:,.2f} gCO2e",
+        (
+            "  Monthly run-rate:             "
+            f"${report.projected_monthly_cache_savings_usd:,.2f} / month"
+        ),
+        "",
+        "Circuit breaker interventions",
+        f"  Interventions:                {report.circuit_breaker_interventions}",
+        f"  Cost at risk interrupted:     ${report.intervention_cost_at_risk_usd:,.2f}",
+        "",
+    ])
+
+    lines.extend(["Findings", "-" * 30])
     if not report.findings:
         lines.append("No waste advisories found for this window.")
     for finding in report.findings:
@@ -505,6 +975,7 @@ def _format_text(report: AuditReport) -> str:
             f"[{finding.severity}] {finding.code}{security_suffix} - {finding.title}",
             f"Scope: {finding.scope}",
             f"Confidence: {finding.confidence}",
+            f"Description: {finding.description}",
             f"Observed avoidable cost: "
             f"{_format_money(finding.observed_avoidable_cost_usd)}",
             f"Projected monthly avoidable cost: "
@@ -562,7 +1033,31 @@ def _format_markdown(report: AuditReport) -> str:
         for warning in report.data_quality.warnings:
             lines.append(f"- {warning}")
 
-    lines.extend(["", "## Findings", ""])
+    lines.extend([
+        "",
+        "## Savings & Interventions",
+        "",
+        "**Realized cache savings** (actual, measurable)",
+        "",
+        f"- Cost saved via caching: **${report.realized_cache_savings_usd:,.2f}**",
+        f"- Energy saved via caching: **{report.realized_cache_energy_savings_wh:,.2f} Wh**",
+        f"- Carbon saved via caching: **{report.realized_cache_carbon_savings_g:,.2f} gCO2e**",
+        (
+            "- Monthly run-rate: "
+            f"**${report.projected_monthly_cache_savings_usd:,.2f} / month**"
+        ),
+        "",
+        (
+            "**Circuit breaker interventions** "
+            "(cost protected — reported separately, not guaranteed savings)"
+        ),
+        "",
+        f"- Interventions: **{report.circuit_breaker_interventions}**",
+        f"- Cost at risk interrupted: **${report.intervention_cost_at_risk_usd:,.2f}**",
+        "",
+        "## Findings",
+        "",
+    ])
     if not report.findings:
         lines.append("No waste advisories found for this window.")
     else:
@@ -574,6 +1069,7 @@ def _format_markdown(report: AuditReport) -> str:
                 f"- Severity: **{finding.severity}**",
                 f"- Scope: `{finding.scope}`",
                 f"- Confidence: **{finding.confidence}**",
+                f"- Description: {finding.description}",
                 f"- Observed avoidable cost: "
                 f"**{_format_money(finding.observed_avoidable_cost_usd)}**",
                 f"- Projected monthly avoidable cost: "

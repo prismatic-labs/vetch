@@ -53,7 +53,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("vetch")
 except _PNFError:
-    __version__ = "0.6.0"  # fallback when running from source without install
+    __version__ = "0.7.0"  # fallback when running from source without install
 __all__ = [
     "wrap",
     "awrap",

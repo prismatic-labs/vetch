@@ -25,6 +25,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _intervention_tags(ctx: TrackingContext | None, session: Any) -> dict[str, str] | None:
+    """Return the best attribution tags available for a circuit-breaker action."""
+    if ctx is not None and ctx.tags:
+        return dict(ctx.tags)
+    session_tags = getattr(session, "tags", None)
+    if session_tags:
+        return dict(session_tags)
+    return None
+
+
 def apply_stall_action(
     kwargs: dict[str, Any],
     ctx: TrackingContext | None,
@@ -80,7 +90,7 @@ def apply_stall_action(
             from vetch.otel import export_advisory_otlp, is_otlp_configured
             if is_otlp_configured():
                 model_name = kwargs.get("model") or (advisory.code if advisory else None)
-                tags = dict(ctx.tags) if ctx and ctx.tags else None
+                tags = _intervention_tags(ctx, session)
                 export_advisory_otlp(
                     code="STALL-001",
                     severity=advisory.severity if advisory else "WARNING",
@@ -94,6 +104,18 @@ def apply_stall_action(
             pass  # OTLP export never blocks inference
 
         if action == "kill":
+            recorded = session.record_circuit_breaker_intervention(wasted or 0.0)
+            try:
+                from vetch.storage import store_intervention
+                if recorded:
+                    store_intervention(
+                        session.session_id,
+                        wasted or 0.0,
+                        model=str(kwargs.get("model")) if kwargs.get("model") else None,
+                        tags=_intervention_tags(ctx, session),
+                    )
+            except Exception:
+                pass
             raise StallDetected(
                 f"Agentic stall detected. {count} of recent calls produced "
                 f"low output, ~${wasted:.2f} wasted. Stopping the loop. "
@@ -130,6 +152,18 @@ def apply_stall_action(
                 ctx.warnings.append(
                     f"STALL-001 reroute: {original_model} -> {fallback_model}"
                 )
+            recorded = session.record_circuit_breaker_intervention(wasted or 0.0)
+            try:
+                from vetch.storage import store_intervention
+                if recorded:
+                    store_intervention(
+                        session.session_id,
+                        wasted or 0.0,
+                        model=str(original_model) if original_model else None,
+                        tags=_intervention_tags(ctx, session),
+                    )
+            except Exception:
+                pass
             return (True, original_model)
 
         if action == "reroute" and not fallback_model:

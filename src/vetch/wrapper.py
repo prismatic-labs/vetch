@@ -108,10 +108,12 @@ def _infer_region() -> tuple[str | None, str | None]:
     return None, None
 
 
+
 @contextmanager
 def auto_context_for_instrumented_call(
     provider: str,
     model: str = "unknown",
+    region: str | None = None,
 ) -> Generator[VetchContext | None, None, None]:
     """Create an automatic context for instrumented calls without explicit wrap().
 
@@ -147,7 +149,7 @@ def auto_context_for_instrumented_call(
 
     # No context exists - create automatic context using defaults from instrument()
     auto_ctx = VetchContext(
-        region=get_default_region(),
+        region=region or get_default_region(),
         tags=get_default_tags(),
         energy_override=get_default_energy_override(),
         emit=True,
@@ -162,6 +164,7 @@ def auto_context_for_instrumented_call(
 async def async_auto_context_for_instrumented_call(
     provider: str,
     model: str = "unknown",
+    region: str | None = None,
 ) -> AsyncGenerator[VetchContext | None, None]:
     """Async version of auto_context_for_instrumented_call.
 
@@ -197,7 +200,7 @@ async def async_auto_context_for_instrumented_call(
 
     # No context exists - create automatic context using defaults from instrument()
     auto_ctx = VetchContext(
-        region=get_default_region(),
+        region=region or get_default_region(),
         tags=get_default_tags(),
         energy_override=get_default_energy_override(),
         emit=True,
@@ -609,6 +612,7 @@ class VetchContext:
                 error = True
                 error_type = captured.error_type
 
+
         # Delegate all energy/carbon/cost calculations to calculation.py
         metrics: InferenceMetrics = prepare_inference_metrics(
             model=model,
@@ -657,6 +661,8 @@ class VetchContext:
         usage_estimated = metrics.usage_estimated
         usage_estimation_method = metrics.usage_estimation_method
         cache_energy_saving_wh = metrics.cache_energy_saving_wh
+        cache_cost_saving_usd = metrics.cache_cost_saving_usd
+        cache_carbon_saving_g = metrics.cache_carbon_saving_g
         tracking_degraded = metrics.tracking_degraded
         request_fingerprint = metrics.request_fingerprint
 
@@ -684,6 +690,11 @@ class VetchContext:
             cost_usd *= 0.5
             cost_in_usd = cost_in_usd * 0.5 if cost_in_usd is not None else None
             cost_out_usd = cost_out_usd * 0.5 if cost_out_usd is not None else None
+            cache_cost_saving_usd = (
+                cache_cost_saving_usd * 0.5
+                if cache_cost_saving_usd is not None
+                else None
+            )
             if billing_tier and "batch" not in billing_tier.lower():
                 billing_tier = f"{billing_tier} (batch 50% discount)"
 
@@ -774,6 +785,8 @@ class VetchContext:
             cache_creation_tokens=cache_creation_tokens,
             cache_hit=bool(isinstance(cache_read_tokens, int) and cache_read_tokens > 0),
             cache_energy_saving_wh=cache_energy_saving_wh,
+            cache_cost_saving_usd=cache_cost_saving_usd,
+            cache_carbon_saving_g=cache_carbon_saving_g,
             session_id=active_session.session_id if active_session else None,
             trace_id=None,  # TODO: Extract from OpenTelemetry context
             span_id=None,  # TODO: Extract from OpenTelemetry context

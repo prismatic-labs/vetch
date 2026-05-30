@@ -97,6 +97,11 @@ def set_advisory_thresholds(overrides: dict[str, dict[str, float]]) -> None:
       ``min_count`` (default 3)
     ``CACHE-001``: ``repetition_rate`` (default 0.50)
     ``RAG-001``: ``ratio_trigger`` (default 50)
+    ``PREMIUM-001``: aggregate audit-only thresholds: ``min_calls`` (default 50),
+      ``min_premium_share`` (default 0.70), ``max_input_token_cv`` (default 0.25),
+      ``max_output_token_cv`` (default 0.35), ``min_avg_output_tokens`` (default 10),
+      ``max_retry_rate`` (default 0.05), ``max_tool_call_rate`` (default 0.10),
+      ``max_truncation_rate`` (default 0.02), ``min_candidate_discount`` (default 0.50).
     """
     global _advisory_thresholds
     _advisory_thresholds = {k: dict(v) for k, v in overrides.items()}

@@ -103,7 +103,7 @@ class TestEnergyCalculation:
         assert energy == 5.0
         assert tier == 2
         assert uncertainty_pct == 100  # Tier 2 = ±100%
-        assert source == "override"
+        assert source == "benchmarks"  # source field from override is returned as-is
         assert basis == "Custom measurement"
 
 
@@ -782,3 +782,4 @@ class TestV024CacheEnergyDiscount:
             existing_warnings=[],
         )
         assert metrics.cache_energy_saving_wh is None
+

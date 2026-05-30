@@ -250,6 +250,25 @@ class TestApplyStallAction:
         finally:
             session.__exit__(None, None, None)
 
+    def test_kill_action_stores_intervention_with_session_tags_when_no_context(self) -> None:
+        """Auto-instrumented calls may trip the breaker before an auto-context exists."""
+        set_stall_action("kill")
+        session = Session(emit=False, tags={"run_id": "run-123", "profile": "forced_stall"})
+        session.__enter__()
+        _stall_a_session(session)
+        try:
+            with patch("vetch.storage.store_intervention") as store:
+                with pytest.raises(StallDetected):
+                    apply_stall_action({"model": "gpt-4o"}, None)
+
+            assert store.call_count == 1
+            assert store.call_args.kwargs["tags"] == {
+                "run_id": "run-123",
+                "profile": "forced_stall",
+            }
+        finally:
+            session.__exit__(None, None, None)
+
     def test_reroute_action_substitutes_model(self) -> None:
         """'reroute' replaces kwargs['model'] and returns original."""
         set_stall_action("reroute", fallback_model="gpt-4o-mini")

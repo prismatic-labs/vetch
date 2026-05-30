@@ -91,6 +91,11 @@ class SessionEvent:
     models_used: list[str]
     providers_used: list[str]
     errors: int
+    total_cache_cost_saving_usd: float
+    total_cache_energy_saving_wh: float
+    total_cache_carbon_saving_g: float
+    circuit_breaker_interventions: int
+    circuit_breaker_cost_at_risk_usd: float
 
 
 class Session:
@@ -162,6 +167,12 @@ class Session:
         self._total_output_tokens: int = 0
         self._total_cache_read_tokens: int = 0
         self._total_cache_creation_tokens: int = 0
+        self._total_cache_cost_saving_usd: float = 0.0
+        self._total_cache_energy_saving_wh: float = 0.0
+        self._total_cache_carbon_saving_g: float = 0.0
+        self._circuit_breaker_interventions: int = 0
+        self._circuit_breaker_cost_at_risk_usd: float = 0.0
+        self._stall_intervention_recorded: bool = False
         self._call_count: int = 0
         self._errors: int = 0
         self._saturated: bool = False
@@ -242,6 +253,36 @@ class Session:
             return self._total_cache_creation_tokens
 
     @property
+    def total_cache_cost_saving_usd(self) -> float:
+        """Realized cost savings from prompt caching (vs. uncached baseline)."""
+        with self._lock:
+            return self._total_cache_cost_saving_usd
+
+    @property
+    def total_cache_energy_saving_wh(self) -> float:
+        """Realized energy savings from prompt caching (Wh vs. uncached baseline)."""
+        with self._lock:
+            return self._total_cache_energy_saving_wh
+
+    @property
+    def total_cache_carbon_saving_g(self) -> float:
+        """Realized carbon savings from prompt caching (gCO2e vs. uncached baseline)."""
+        with self._lock:
+            return self._total_cache_carbon_saving_g
+
+    @property
+    def circuit_breaker_interventions(self) -> int:
+        """Number of circuit breaker (STALL-001) interventions in this session."""
+        with self._lock:
+            return self._circuit_breaker_interventions
+
+    @property
+    def circuit_breaker_cost_at_risk_usd(self) -> float:
+        """Cost at risk interrupted by circuit breaker interventions (not guaranteed savings)."""
+        with self._lock:
+            return self._circuit_breaker_cost_at_risk_usd
+
+    @property
     def duration_ms(self) -> float | None:
         """Session duration in milliseconds."""
         if self._start_time is None:
@@ -306,6 +347,15 @@ class Session:
                 cost = event.get("estimated_cost_usd")
                 if cost is not None:
                     self._total_cost_usd += cost
+                cache_cost_saving = event.get("cache_cost_saving_usd")
+                if cache_cost_saving is not None:
+                    self._total_cache_cost_saving_usd += cache_cost_saving
+                cache_energy_saving = event.get("cache_energy_saving_wh")
+                if cache_energy_saving is not None:
+                    self._total_cache_energy_saving_wh += cache_energy_saving
+                cache_carbon_saving = event.get("cache_carbon_saving_g")
+                if cache_carbon_saving is not None:
+                    self._total_cache_carbon_saving_g += cache_carbon_saving
                 if event.get("error"):
                     self._errors += 1
                 return
@@ -339,6 +389,18 @@ class Session:
             cache_creation = event.get("cache_creation_tokens")
             if cache_creation is not None:
                 self._total_cache_creation_tokens += cache_creation
+
+            cache_cost_saving = event.get("cache_cost_saving_usd")
+            if cache_cost_saving is not None:
+                self._total_cache_cost_saving_usd += cache_cost_saving
+
+            cache_energy_saving = event.get("cache_energy_saving_wh")
+            if cache_energy_saving is not None:
+                self._total_cache_energy_saving_wh += cache_energy_saving
+
+            cache_carbon_saving = event.get("cache_carbon_saving_g")
+            if cache_carbon_saving is not None:
+                self._total_cache_carbon_saving_g += cache_carbon_saving
 
             # Track models and providers (capped to prevent unbounded growth)
             model = event.get("model", "unknown")
@@ -377,6 +439,25 @@ class Session:
         with self._lock:
             self.stall_triggered = False
             self.stall_advisory = None
+            self._stall_intervention_recorded = False
+
+    def record_circuit_breaker_intervention(self, cost_at_risk_usd: float = 0.0) -> bool:
+        """Record a circuit breaker (STALL-001) intervention.
+
+        Called by _stall.apply_stall_action() after killing or rerouting a
+        stalled call. The cost_at_risk_usd is the potential waste interrupted,
+        reported separately from realized cache savings — not folded into a total.
+
+        Thread-safe. Returns True when this call recorded a new stall episode,
+        False when the current armed episode was already counted.
+        """
+        with self._lock:
+            if self._stall_intervention_recorded:
+                return False
+            self._circuit_breaker_interventions += 1
+            self._circuit_breaker_cost_at_risk_usd += cost_at_risk_usd
+            self._stall_intervention_recorded = True
+            return True
 
     def inject_headers(self, headers: dict[str, str]) -> dict[str, str]:
         """Inject session IDs into HTTP headers for distributed tracing.
@@ -543,6 +624,11 @@ class Session:
                 "models_used": self.models_used,
                 "providers_used": self.providers_used,
                 "errors": self._errors,
+                "total_cache_cost_saving_usd": self._total_cache_cost_saving_usd,
+                "total_cache_energy_saving_wh": self._total_cache_energy_saving_wh,
+                "total_cache_carbon_saving_g": self._total_cache_carbon_saving_g,
+                "circuit_breaker_interventions": self._circuit_breaker_interventions,
+                "circuit_breaker_cost_at_risk_usd": self._circuit_breaker_cost_at_risk_usd,
             }
             # Cast to satisfy type checker - emit_event handles both event types
             emit_event(cast("InferenceEvent", event))

@@ -344,30 +344,38 @@ vetch.require_tags(["feature", "customer"])
 
 ---
 
-## PREMIUM-001 — Premium model overuse
+## PREMIUM-001 — Large model rightsizing candidate
 
-**Status:** 🔜 Planned
+**Status:** ✅ Implemented in audit reports (v0.7.0). Audit-only; no automatic routing change.
 
-**Definition:** A high-capability, high-cost model is being used for tasks where a cheaper model would produce equivalent results.
+**Definition:** A stable, tagged workflow is mostly using a large or premium model, and the pricing registry contains smaller or cheaper same-provider candidates worth evaluating.
 
-**Signal (proposed):**
-- Session average cost-per-output-token is in the top tier of the model registry
-- Output complexity indicators suggest low-reasoning tasks (short outputs, structured extraction, classification)
+**Signal:**
+- Workflow-level grouping by `workflow`, `feature`, `service`, `route`, or `operation` tag
+- At least 50 calls in the audit window
+- At least 70% of calls use a premium-cost model class
+- Input and output token counts are stable enough to suggest a repeatable traffic shape
+- Retry, tool-call, and truncation rates are low
+- The pricing registry contains same-provider candidate models at least 50% cheaper by weighted input/output price
 
-**Severity (proposed):** `INFO` → `WARNING` based on estimated cost difference.
+**Severity:** `INFO`.
 
-**Why it matters:** Using GPT-4o or Claude Sonnet for tasks that GPT-4o-mini or Haiku handle equally well is a direct margin hit. The cost difference between tiers can be 10–50×.
+**Why it matters:** Large models are often the right choice, especially while a workflow is still being designed. Once a workflow becomes stable and repeatable, it is worth checking whether a smaller model can preserve quality with lower cost, latency, and energy use.
 
-**Example:** A customer support triage pipeline using GPT-4.5 ($0.075/1k input tokens) to classify incoming tickets into five categories — a task GPT-4o-mini ($0.00015/1k input tokens) handles accurately.
+**Example:** A support-summary workflow runs most production calls through a premium model, with very similar input and output sizes each time. Vetch flags it as a candidate for shadow evaluation against smaller same-provider models.
 
 **Possible false positives:**
 - Tasks that appear simple but require nuanced reasoning
 - Cases where the premium model is explicitly required for quality guarantees
+- Workflows with hidden quality constraints not visible in metadata
 
 **Recommended actions:**
-- Identify the lowest-cost model that meets quality thresholds for the task
+- Run an offline or shadow eval against the suggested candidate models
+- Identify the lowest-cost model that meets the workflow's quality threshold
 - Use `vetch compare` to see cost and energy differences across model tiers
-- Implement model routing based on task complexity
+- Only change production routing after evals confirm quality is preserved
+
+**Automation guidance:** Do not auto-downgrade from this finding alone. Treat it as an eval queue signal.
 
 ---
 

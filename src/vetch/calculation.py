@@ -30,6 +30,7 @@ _PRICING: dict[str, dict[str, float]] | None = None
 _ALIASES: dict[str, str] | None = None
 
 
+
 def _load_json_with_override(default_path: Path, override_name: str) -> dict[str, Any]:
     """Load JSON file with optional local override.
 
@@ -167,6 +168,7 @@ def _reset_registries() -> None:
     _ENERGY = None
     _PRICING = None
     _ALIASES = None
+
 
 
 def resolve_model(model: str) -> tuple[str, bool]:
@@ -459,7 +461,7 @@ def calculate_energy(
         uncertainty_pct = get_uncertainty_pct(tier)
         # Check if model is known in registry anyway for informational purposes
         _, known = resolve_model(model)
-        return energy_wh, tier, uncertainty_pct, "override", basis, known
+        return energy_wh, tier, uncertainty_pct, source, basis, known
 
     resolved_model, known = resolve_model(model)
     _load_registry()
@@ -1087,6 +1089,8 @@ class InferenceMetrics:
         "request_fingerprint",
         "warnings",
         "cache_energy_saving_wh",
+        "cache_cost_saving_usd",
+        "cache_carbon_saving_g",
     )
 
     def __init__(self) -> None:
@@ -1118,6 +1122,8 @@ class InferenceMetrics:
         self.request_fingerprint: str | None = None
         self.warnings: list[str] = []
         self.cache_energy_saving_wh: float | None = None
+        self.cache_cost_saving_usd: float | None = None
+        self.cache_carbon_saving_g: float | None = None
 
 
 def prepare_inference_metrics(
@@ -1255,6 +1261,8 @@ def prepare_inference_metrics(
                 cache_read_tokens=_cache_tokens,
             )
 
+            baseline_energy_wh: float | None = None
+
             # Compute cache energy saving vs. uncached baseline
             if _cache_tokens > 0 and metrics.energy_wh is not None:
                 (baseline_energy_wh, *_) = calculate_energy(
@@ -1291,6 +1299,17 @@ def prepare_inference_metrics(
                 metrics.embodied_carbon_g = calculate_embodied_carbon(
                     in_tokens, out_tokens, model
                 )
+                if baseline_energy_wh is not None and metrics.carbon_g is not None:
+                    baseline_carbon_g, *_ = calculate_carbon(
+                        baseline_energy_wh,
+                        metrics.grid_val,
+                        model=model,
+                        provider_hint=provider,
+                    )
+                    metrics.cache_carbon_saving_g = max(
+                        0.0,
+                        baseline_carbon_g - metrics.carbon_g,
+                    )
 
             (
                 metrics.cost_usd,
@@ -1317,6 +1336,21 @@ def prepare_inference_metrics(
                 metrics.cost_cache_write_usd *= price_multiplier
                 metrics.cost_cache_read_usd *= price_multiplier
                 metrics.billing_tier = f"list×{price_multiplier}"
+
+            # Compute cache cost saving vs. uncached baseline.
+            # Both sides scaled by price_multiplier so the comparison is apples-to-apples:
+            # metrics.cost_usd already includes the multiplier; apply it to uncached_cost too.
+            if _cache_tokens > 0 and metrics.cost_usd is not None:
+                (uncached_cost, *_) = calculate_cost(
+                    in_tokens,
+                    out_tokens,
+                    model,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=cache_creation_tokens,
+                )
+                if uncached_cost is not None:
+                    adjusted_uncached = uncached_cost * price_multiplier
+                    metrics.cache_cost_saving_usd = max(0.0, adjusted_uncached - metrics.cost_usd)
 
     # 3b. Floor energy uncertainty when token counts are estimated.
     # Only applied when energy_wh is non-zero — a zero-energy result has no meaningful

@@ -26,6 +26,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# JavaScript / TypeScript dependencies
+node_modules/
+
 # PyInstaller
 *.manifest
 *.spec

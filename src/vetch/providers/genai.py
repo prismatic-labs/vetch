@@ -7,7 +7,7 @@ Supports:
 - Sync content generation (client.models.generate_content)
 - Async content generation (client.aio.models.generate_content)
 - Embeddings (client.models.embed_content)
-- Streaming responses (stream=True)
+- Streaming (client.models.generate_content_stream / aio.models.generate_content_stream)
 
 Privacy guarantee: We only read model, usage, and timing metadata.
 """
@@ -43,6 +43,153 @@ _client_lock = threading.Lock()
 
 # Module-level storage for original Client.__init__ (strong reference)
 _module_original_init: Any = None
+
+
+def _capture_genai_error(model_kwarg: Any, exc: BaseException) -> None:
+    """Capture error metadata to active context before re-raising."""
+    from vetch.wrapper import auto_context_for_instrumented_call
+
+    model = _normalize_model_name(str(model_kwarg)) if model_kwarg else "unknown"
+    ctx = get_active_context()
+    if ctx is not None:
+        ctx.capture(
+            model=model,
+            provider="google_genai",
+            error=True,
+            error_type=type(exc).__name__,
+            complete=False,
+        )
+    else:
+        with auto_context_for_instrumented_call("google_genai"):
+            inner_ctx = get_active_context()
+            if inner_ctx is not None:
+                inner_ctx.capture(
+                    model=model,
+                    provider="google_genai",
+                    error=True,
+                    error_type=type(exc).__name__,
+                    complete=False,
+                )
+
+
+class _GenAIStreamWrapper:
+    """Sync wrapper for Google GenAI streaming responses.
+
+    Iterates over chunks, extracts usage from the final chunk,
+    and emits a single tracking event on stream completion or error.
+    """
+
+    __slots__ = (
+        "_stream", "_model", "_accumulated_chars",
+        "_final_usage", "_complete", "_error", "_error_type", "_captured",
+    )
+
+    def __init__(self, stream: Any, model: str) -> None:
+        self._stream = stream
+        self._model = model
+        self._accumulated_chars = 0
+        self._final_usage: Usage | None = None
+        self._complete = False
+        self._error = False
+        self._error_type: str | None = None
+        self._captured = False
+
+    def __iter__(self) -> _GenAIStreamWrapper:
+        return self
+
+    def __next__(self) -> Any:
+        try:
+            chunk = next(self._stream)
+            self._process_chunk(chunk)
+            return chunk
+        except StopIteration:
+            self._complete = True
+            self._capture_to_context()
+            raise
+        except Exception as e:
+            self._error = True
+            self._error_type = type(e).__name__
+            self._capture_to_context()
+            raise
+
+    def _process_chunk(self, chunk: Any) -> None:
+        text = getattr(chunk, "text", None)
+        if text:
+            self._accumulated_chars += len(text)
+        usage_metadata = getattr(chunk, "usage_metadata", None)
+        if usage_metadata:
+            self._final_usage = build_google_usage(usage_metadata)
+
+    def _capture_to_context(self) -> None:
+        if self._captured:
+            return
+        self._captured = True
+
+        from vetch.wrapper import auto_context_for_instrumented_call
+
+        ctx = get_active_context()
+        if ctx is not None:
+            ctx.capture(
+                model=self._model,
+                provider="google_genai",
+                usage=self._final_usage,
+                is_stream=True,
+                accumulated_chars=self._accumulated_chars,
+                complete=self._complete,
+                error=self._error,
+                error_type=self._error_type,
+            )
+            return
+
+        with auto_context_for_instrumented_call("google_genai"):
+            inner_ctx = get_active_context()
+            if inner_ctx is not None:
+                inner_ctx.capture(
+                    model=self._model,
+                    provider="google_genai",
+                    usage=self._final_usage,
+                    is_stream=True,
+                    accumulated_chars=self._accumulated_chars,
+                    complete=self._complete,
+                    error=self._error,
+                    error_type=self._error_type,
+                )
+
+    def __enter__(self) -> _GenAIStreamWrapper:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        if exc_type is not None:
+            self._error = True
+            self._error_type = exc_type.__name__
+        self._capture_to_context()
+
+
+class _AsyncGenAIStreamWrapper(_GenAIStreamWrapper):
+    """Async wrapper for Google GenAI streaming responses."""
+
+    def __aiter__(self) -> _AsyncGenAIStreamWrapper:
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            chunk = await self._stream.__anext__()
+            self._process_chunk(chunk)
+            return chunk
+        except StopAsyncIteration:
+            self._complete = True
+            self._capture_to_context()
+            raise
+        except Exception as e:
+            self._error = True
+            self._error_type = type(e).__name__
+            self._capture_to_context()
+            raise
 
 
 def _record_reroute_fallback(exc: Exception, original_model: str) -> None:
@@ -105,15 +252,26 @@ class _WeakMethodWrapper:
                 if rerouted and original_model and looks_like_param_mismatch(e):
                     _record_reroute_fallback(e, original_model)
                     kwargs["model"] = original_model
-                    if isinstance(original, tuple):
-                        orig_func, orig_self = original
-                        response = orig_func(orig_self, *args, **kwargs)
-                    else:
-                        response = original(*args, **kwargs)
+                    try:
+                        if isinstance(original, tuple):
+                            orig_func, orig_self = original
+                            response = orig_func(orig_self, *args, **kwargs)
+                        else:
+                            response = original(*args, **kwargs)
+                    except Exception as retry_e:
+                        _capture_genai_error(kwargs.get("model"), retry_e)
+                        raise
                 else:
+                    _capture_genai_error(kwargs.get("model"), e)
                     raise
 
-            # Extract and capture metadata
+            # If the response is a stream (has __next__ but no usage_metadata),
+            # wrap it so usage is captured at iteration time.
+            if hasattr(response, "__next__") and not hasattr(response, "usage_metadata"):
+                model_name = _normalize_model_name(str(kwargs.get("model", "unknown")))
+                return _GenAIStreamWrapper(response, model_name)
+
+            # Non-streaming: extract and capture metadata immediately
             usage, cache_read, cache_create = extract_usage(response)
             model = extract_model(response)
 
@@ -171,15 +329,25 @@ class _WeakAsyncMethodWrapper:
                 if rerouted and original_model and looks_like_param_mismatch(e):
                     _record_reroute_fallback(e, original_model)
                     kwargs["model"] = original_model
-                    if isinstance(original, tuple):
-                        orig_func, orig_self = original
-                        response = await orig_func(orig_self, *args, **kwargs)
-                    else:
-                        response = await original(*args, **kwargs)
+                    try:
+                        if isinstance(original, tuple):
+                            orig_func, orig_self = original
+                            response = await orig_func(orig_self, *args, **kwargs)
+                        else:
+                            response = await original(*args, **kwargs)
+                    except Exception as retry_e:
+                        _capture_genai_error(kwargs.get("model"), retry_e)
+                        raise
                 else:
+                    _capture_genai_error(kwargs.get("model"), e)
                     raise
 
-            # Extract and capture metadata
+            # If the response is an async stream, wrap it for deferred capture.
+            if hasattr(response, "__anext__") and not hasattr(response, "usage_metadata"):
+                model_name = _normalize_model_name(str(kwargs.get("model", "unknown")))
+                return _AsyncGenAIStreamWrapper(response, model_name)
+
+            # Non-streaming: extract and capture metadata immediately
             usage, cache_read, cache_create = extract_usage(response)
             model = extract_model(response)
 
@@ -334,6 +502,8 @@ def patch_client(client: Any) -> None:
         # Store originals
         _client_originals[client] = {
             "generate_content": None,
+            "generate_content_stream": None,
+            "aio_generate_content_stream": None,
             "embed_content": None,
         }
 
@@ -376,6 +546,36 @@ def patch_client(client: Any) -> None:
             # Use async wrapper class with weak reference
             client.aio.models.generate_content = _WeakAsyncMethodWrapper(
                 client, "aio_generate_content", _client_originals
+            )
+
+        # Patch models.generate_content_stream (sync streaming)
+        if hasattr(client, "models") and hasattr(client.models, "generate_content_stream"):
+            method = client.models.generate_content_stream
+            if hasattr(method, "__func__"):
+                _client_originals[client]["generate_content_stream"] = (
+                    method.__func__, client.models
+                )
+            else:
+                _client_originals[client]["generate_content_stream"] = method
+            client.models.generate_content_stream = _WeakMethodWrapper(
+                client, "generate_content_stream", _client_originals
+            )
+
+        # Patch aio.models.generate_content_stream (async streaming)
+        if (
+            hasattr(client, "aio")
+            and hasattr(client.aio, "models")
+            and hasattr(client.aio.models, "generate_content_stream")
+        ):
+            method = client.aio.models.generate_content_stream
+            if hasattr(method, "__func__"):
+                _client_originals[client]["aio_generate_content_stream"] = (
+                    method.__func__, client.aio.models
+                )
+            else:
+                _client_originals[client]["aio_generate_content_stream"] = method
+            client.aio.models.generate_content_stream = _WeakAsyncMethodWrapper(
+                client, "aio_generate_content_stream", _client_originals
             )
 
         # Patch models.embed_content (embeddings)
@@ -431,6 +631,22 @@ def unpatch_client(client: Any) -> None:
                 client.aio.models.generate_content = types.MethodType(func, self_obj)
             else:
                 client.aio.models.generate_content = original
+
+        if originals.get("generate_content_stream"):
+            original = originals["generate_content_stream"]
+            if isinstance(original, tuple):
+                func, self_obj = original
+                client.models.generate_content_stream = types.MethodType(func, self_obj)
+            else:
+                client.models.generate_content_stream = original
+
+        if originals.get("aio_generate_content_stream"):
+            original = originals["aio_generate_content_stream"]
+            if isinstance(original, tuple):
+                func, self_obj = original
+                client.aio.models.generate_content_stream = types.MethodType(func, self_obj)
+            else:
+                client.aio.models.generate_content_stream = original
 
         if originals.get("embed_content"):
             original = originals["embed_content"]

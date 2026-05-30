@@ -17,6 +17,7 @@ from vetch.providers.vertexai import (
     extract_model,
     extract_usage,
     infer_region_from_endpoint,
+    infer_vertex_region,
 )
 
 
@@ -203,6 +204,20 @@ class TestInferRegion:
         region = infer_region_from_endpoint("custom.example.com")
 
         assert region is None
+
+
+class TestInferVertexRegion:
+    def test_from_model_location(self) -> None:
+        class Model:
+            location = "us-central1"
+
+        assert infer_vertex_region(Model()) == "us-central1"
+
+    def test_from_api_endpoint(self) -> None:
+        class Model:
+            _api_endpoint = "europe-west4-aiplatform.googleapis.com"
+
+        assert infer_vertex_region(Model()) == "europe-west4"
 
 
 class TestStreamWrapper:

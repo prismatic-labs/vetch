@@ -254,6 +254,15 @@ def export_event_as_span(
             span.set_attribute(
                 "vetch.cache.creation_tokens", event["cache_creation_tokens"]
             )
+        cache_cost_saving = event.get("cache_cost_saving_usd")
+        if cache_cost_saving is not None:
+            span.set_attribute("vetch.cache_cost_saving_usd", float(cache_cost_saving))
+        cache_energy_saving = event.get("cache_energy_saving_wh")
+        if cache_energy_saving is not None:
+            span.set_attribute("vetch.cache_energy_saving_wh", float(cache_energy_saving))
+        cache_carbon_saving = event.get("cache_carbon_saving_g")
+        if cache_carbon_saving is not None:
+            span.set_attribute("vetch.cache_carbon_saving_g", float(cache_carbon_saving))
 
         logger.debug(f"Exported vetch event to OpenTelemetry span: {span_name}")
 

@@ -8,7 +8,7 @@
 
 **Stop runaway inference.**
 
-Vetch detects stalled agents, RAG bloat, excessive generation, zombie LLM calls, context snowballs, invisible output burn, prompt cache opportunities, and repeated truncation. It turns those patterns into metadata-only advisory signals, and can warn, kill, or reroute confirmed stalled loops before they burn budget, latency, energy, and carbon. Retry storms and premium-model overuse are tracked in the taxonomy as planned detectors.
+Vetch detects stalled agents, RAG bloat, excessive generation, zombie LLM calls, context snowballs, invisible output burn, prompt cache opportunities, repeated truncation, and large-model rightsizing candidates. It turns those patterns into metadata-only advisory signals, and can warn, kill, or reroute confirmed stalled loops before they burn budget, latency, energy, and carbon. Retry storms remain tracked in the taxonomy as a planned detector.
 
 - **[Live demo: kill a runaway agent](examples/circuit_breaker_demo.py)** — `vetch.set_stall_action("kill")` and watch
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
@@ -45,7 +45,7 @@ Every wasted inference call is wasted money, compute, energy, and carbon.
 | **Context snowballing** | Conversation history or failed tool context growing on every turn |
 | **Invisible output burn** | Output tokens consumed while little or no visible answer is returned |
 | **Retry storm** | Repeated identical or near-identical calls after failures |
-| **Premium model overuse** | High-capability model used where a cheaper one would suffice |
+| **Large-model rightsizing candidate** | Stable workflow using a premium model where smaller candidates deserve eval |
 | **Prompt cache misses** | Repeated prompt structures that could be cached but aren't |
 | **Unattributed spend** | Inference cost that cannot be tied to a feature, customer, or workflow |
 
@@ -68,11 +68,11 @@ Vetch analyzes every inference call for behavioral patterns that indicate waste:
 | `SESSION-BUDGET-001` | Session over budget | Configured cost/energy/carbon threshold exceeded | ⚠️ Partial — alerts only, no advisory ID |
 | `ATTRIBUTION-001` | Unattributed spend | Required tags missing from calls | ⚠️ Partial — infrastructure only |
 | `RETRY-001` | Retry storm | Burst of repeated failed or near-identical calls | 🔜 Planned |
-| `PREMIUM-001` | Premium model overuse | Expensive model used for low-complexity tasks | 🔜 Planned |
+| `PREMIUM-001` | Large model rightsizing candidate | Stable tagged workflow mostly uses a premium model and has cheaper eval candidates | ✅ Implemented — audit-only |
 
 Full taxonomy with detection signals, false positives, and recommended actions: [docs/inference-waste-taxonomy.md](docs/inference-waste-taxonomy.md)
 
-Advisories are deterministic signals, not proof of waste. Confidence labels indicate signal strength from metadata patterns, not statistical certainty. Non-stall advisories are currently warn-only; automatic kill and reroute are scoped to `STALL-001`.
+Advisories are deterministic signals, not proof of waste. Confidence labels indicate signal strength from metadata patterns, not statistical certainty. Non-stall runtime advisories are warn-only; `PREMIUM-001` is audit-only and queues eval candidates rather than recommending an automatic downgrade. Automatic kill and reroute are scoped to `STALL-001`.
 
 ### Attribute waste
 
@@ -155,7 +155,7 @@ vetch audit --window 7d --tags feature=rag-search  # filter to one feature
 vetch audit --format json  # machine-readable output
 ```
 
-Output includes advisory findings (STALL-001, CACHE-001, RAG-001, BABBLE-001, ZOMBIE-001, CTX-001, EMPTY-001, TRUNC-001) with signal-strength labels and recommended actions; per-tag attribution breakdowns; observed avoidable cost; projected monthly avoidable cost; and data quality indicators (tagged fraction, methodology versions used).
+Output includes advisory findings (STALL-001, CACHE-001, RAG-001, BABBLE-001, ZOMBIE-001, CTX-001, EMPTY-001, TRUNC-001, PREMIUM-001) with signal-strength labels and recommended actions; per-tag attribution breakdowns; observed avoidable cost; projected monthly avoidable cost; and data quality indicators (tagged fraction, methodology versions used).
 
 **Next — Promote confirmed stalls to kill or reroute**
 
