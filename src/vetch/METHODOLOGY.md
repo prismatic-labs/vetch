@@ -1,7 +1,7 @@
 # Vetch Methodology
 
-methodology_version: "1.1"
-sdk_version: "0.3.1"
+methodology_version: "1.2"
+sdk_version: "0.8.0"
 
 ## Preamble
 Vetch exists because AI systems currently operate with no feedback on their energy consumption. Every inference draws power from infrastructure with real costs—financial, environmental, and systemic. None of this is visible to the developer making the API call.
@@ -35,7 +35,10 @@ This means the tracking boundary is the individual API call, not a manually deli
 ## Methodology Version
 This document is versioned. If we change the energy heuristics (e.g., input:output ratio from 1:3 to 1:2.5), methodology_version will increment. Check this field to understand why historical data may differ from current calculations.
 
-**Current: methodology_version 1.1**
+**Current: methodology_version 1.2**
+
+- **1.2 (v0.8.0):** Added VLM image energy term (`wh_per_image`), Apple Silicon powermetrics Tier-0 calibration, and per-request fixed overhead intercept (`intercept_wh`). Energy formula now optionally includes `n_images × wh_per_image + intercept_wh` for VLM providers.
+- **1.1:** Reasoning token path, schema v2, session advisory engine.
 
 ## The Formulas
 

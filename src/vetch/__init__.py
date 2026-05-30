@@ -53,7 +53,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("vetch")
 except _PNFError:
-    __version__ = "0.7.0"  # fallback when running from source without install
+    __version__ = "0.8.0"  # fallback when running from source without install
 __all__ = [
     "wrap",
     "awrap",
@@ -341,6 +341,19 @@ def instrument(
 
             logging.getLogger("vetch").debug(f"Failed to instrument Google GenAI: {e}")
 
+        # Try to instrument Ollama (native Python SDK)
+        try:
+            from vetch.providers.ollama import instrument_ollama_module
+
+            if instrument_ollama_module():
+                instrumented_any = True
+        except (ImportError, ModuleNotFoundError):
+            pass
+        except Exception as e:
+            import logging
+
+            logging.getLogger("vetch").debug(f"Failed to instrument Ollama: {e}")
+
         # Warn if any installed SDKs are outside tested version ranges
         try:
             import logging as _logging
@@ -460,6 +473,18 @@ def uninstrument() -> bool:
         import logging
 
         logging.getLogger("vetch").debug(f"Failed to uninstrument Google GenAI: {e}")
+        uninstrumented_all = False
+
+    try:
+        from vetch.providers.ollama import uninstrument_ollama_module
+
+        uninstrument_ollama_module()
+    except (ImportError, ModuleNotFoundError):
+        pass
+    except Exception as e:
+        import logging
+
+        logging.getLogger("vetch").debug(f"Failed to uninstrument Ollama: {e}")
         uninstrumented_all = False
 
     _instrumented = False

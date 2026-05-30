@@ -1,0 +1,37 @@
+{
+  "source": "Python vetch.calculation.prepare_inference_metrics",
+  "inputs": {
+    "model": "gpt-4.1-mini",
+    "provider": "openai",
+    "region": "US-CA",
+    "input_tokens": 1000,
+    "text_output_tokens": 100,
+    "reasoning_output_tokens": 50,
+    "cache_read_tokens": 800,
+    "cache_creation_tokens": 25,
+    "price_multiplier": 1.0
+  },
+  "fields": {
+    "estimated_energy_wh": 0.14567999999999998,
+    "estimated_carbon_g": 0.062001408,
+    "estimated_water_l": 0.00024765599999999996,
+    "estimated_cost_usd": 0.00041,
+    "estimated_cost_input_usd": 0.00017,
+    "estimated_cost_output_usd": 0.00024,
+    "estimated_cost_cache_write_usd": 0.00001,
+    "estimated_cost_cache_read_usd": 0.00008,
+    "billing_tier": "list",
+    "signal_quality": "blind",
+    "energy_tier": 1,
+    "energy_uncertainty_pct": 50,
+    "energy_source": "registry",
+    "grid_intensity_gco2e_kwh": 380,
+    "pue": 1.12,
+    "pue_tier": 1,
+    "tracking_degraded": false,
+    "cache_energy_saving_wh": 0.12852000000000002,
+    "cache_cost_saving_usd": 0.0002400000000000001,
+    "cache_carbon_saving_g": 0.054698112000000014,
+    "model_known": true
+  }
+}

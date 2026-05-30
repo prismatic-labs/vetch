@@ -48,11 +48,19 @@ class _WeakChatWrapper:
     Solution: Use weak reference to completions object and retrieve original from dict.
     """
 
-    __slots__ = ("_completions_ref", "_originals_dict", "vetch_patched", "_vetch_original")
+    __slots__ = (
+        "_completions_ref", "_originals_dict", "vetch_patched", "_vetch_original", "_provider"
+    )
 
-    def __init__(self, completions: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
+    def __init__(
+        self,
+        completions: Any,
+        originals_dict: WeakKeyDictionary[Any, Any],
+        provider: str = "openai",
+    ) -> None:
         self._completions_ref = weakref.ref(completions)
         self._originals_dict = originals_dict
+        self._provider = provider
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         completions = self._completions_ref()
@@ -75,9 +83,9 @@ class _WeakChatWrapper:
 
             if is_stream:
                 model_hint = kwargs.get("model", "unknown")
-                return StreamWrapper(result, model_hint=model_hint)
+                return StreamWrapper(result, model_hint=model_hint, provider=self._provider)
 
-            _after_create(result, *args, **kwargs)
+            _after_create(result, *args, _vetch_provider=self._provider, **kwargs)
             return result
 
         except Exception as e:
@@ -96,24 +104,32 @@ class _WeakChatWrapper:
                     result = original(completions, *args, **kwargs)
                     if is_stream:
                         model_hint = kwargs.get("model", "unknown")
-                        return StreamWrapper(result, model_hint=model_hint)
-                    _after_create(result, *args, **kwargs)
+                        return StreamWrapper(result, model_hint=model_hint, provider=self._provider)
+                    _after_create(result, *args, _vetch_provider=self._provider, **kwargs)
                     return result
                 except Exception as fallback_err:
-                    _on_create_error(fallback_err)
+                    _on_create_error(fallback_err, provider=self._provider)
                     raise
-            _on_create_error(e)
+            _on_create_error(e, provider=self._provider)
             raise
 
 
 class _WeakAsyncChatWrapper:
     """Async wrapper for chat.completions.create with weak reference."""
 
-    __slots__ = ("_completions_ref", "_originals_dict", "vetch_patched", "_vetch_original")
+    __slots__ = (
+        "_completions_ref", "_originals_dict", "vetch_patched", "_vetch_original", "_provider"
+    )
 
-    def __init__(self, completions: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
+    def __init__(
+        self,
+        completions: Any,
+        originals_dict: WeakKeyDictionary[Any, Any],
+        provider: str = "openai",
+    ) -> None:
         self._completions_ref = weakref.ref(completions)
         self._originals_dict = originals_dict
+        self._provider = provider
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         completions = self._completions_ref()
@@ -135,9 +151,9 @@ class _WeakAsyncChatWrapper:
 
             if is_stream:
                 model_hint = kwargs.get("model", "unknown")
-                return AsyncStreamWrapper(result, model_hint=model_hint)
+                return AsyncStreamWrapper(result, model_hint=model_hint, provider=self._provider)
 
-            _after_create(result, *args, **kwargs)
+            _after_create(result, *args, _vetch_provider=self._provider, **kwargs)
             return result
 
         except Exception as e:
@@ -154,13 +170,15 @@ class _WeakAsyncChatWrapper:
                     result = await original(completions, *args, **kwargs)
                     if is_stream:
                         model_hint = kwargs.get("model", "unknown")
-                        return AsyncStreamWrapper(result, model_hint=model_hint)
-                    _after_create(result, *args, **kwargs)
+                        return AsyncStreamWrapper(
+                            result, model_hint=model_hint, provider=self._provider
+                        )
+                    _after_create(result, *args, _vetch_provider=self._provider, **kwargs)
                     return result
                 except Exception as fallback_err:
-                    _on_create_error(fallback_err)
+                    _on_create_error(fallback_err, provider=self._provider)
                     raise
-            _on_create_error(e)
+            _on_create_error(e, provider=self._provider)
             raise
 
 
@@ -399,7 +417,32 @@ def infer_region_from_base_url(base_url: str | None) -> str | None:
     return None
 
 
-def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
+def _infer_openai_provider(base_url: str | None) -> str:
+    """Infer the actual provider label from base_url or environment variables.
+
+    Returns "ollama" when the client is pointed at a local Ollama OpenAI-compat
+    endpoint (localhost:11434 or the OLLAMA_HOST env var), so that Vetch uses
+    Ollama calibrations instead of OpenAI calibrations.
+    """
+    import os
+
+    ollama_host = os.environ.get("OLLAMA_HOST", "")
+    if ollama_host:
+        return "ollama"
+
+    if base_url is None:
+        return "openai"
+
+    base_url_lower = base_url.lower()
+    if "localhost:11434" in base_url_lower or "127.0.0.1:11434" in base_url_lower:
+        return "ollama"
+
+    return "openai"
+
+
+def _after_create(
+    result: Any, *args: Any, _vetch_provider: str = "openai", **kwargs: Any
+) -> None:
     """Hook called after chat.completions.create.
 
     Captures metadata from the response into the active context.
@@ -415,7 +458,7 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         return
 
     # Auto-create context if needed, or use existing manual wrap() context
-    with auto_context_for_instrumented_call("openai"):
+    with auto_context_for_instrumented_call(_vetch_provider):
         # Non-streaming: capture immediately
         usage, cache_read, cache_create = extract_usage(result)
         model = extract_model(result)
@@ -426,7 +469,7 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
         if ctx is not None:
             ctx.capture(
                 model=model,
-                provider="openai",
+                provider=_vetch_provider,
                 usage=usage,
                 is_stream=False,
                 complete=True,
@@ -438,17 +481,16 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
             )
 
 
-def _on_create_error(error: BaseException) -> None:
+def _on_create_error(error: BaseException, provider: str = "openai") -> None:
     """Hook called when chat.completions.create fails."""
     from vetch.wrapper import auto_context_for_instrumented_call
 
-    # Auto-create context if needed, or use existing manual wrap() context
-    with auto_context_for_instrumented_call("openai"):
+    with auto_context_for_instrumented_call(provider):
         ctx = get_active_context()
         if ctx is not None:
             ctx.capture(
                 model="unknown",
-                provider="openai",
+                provider=provider,
                 error=True,
                 error_type=type(error).__name__,
                 complete=False,
@@ -504,16 +546,18 @@ class StreamWrapper:
     Captures final usage from the last chunk if available.
     """
 
-    def __init__(self, stream: Any, model_hint: str = "unknown") -> None:
+    def __init__(self, stream: Any, model_hint: str = "unknown", provider: str = "openai") -> None:
         """Initialize stream wrapper.
 
         Args:
             stream: The original OpenAI stream.
             model_hint: Model name from the request kwargs (used for tiktoken).
+            provider: Provider label (e.g. "openai" or "ollama").
         """
         self._stream = stream
         self._accumulated_chars = 0
         self._model = "unknown"
+        self._provider = provider
         self._final_usage: Usage | None = None
         self._cache_read_tokens: int | None = None
         self._cache_creation_tokens: int | None = None
@@ -645,7 +689,7 @@ class StreamWrapper:
             # Manual wrap() is active — capture to it; it emits on exit
             ctx.capture(
                 model=self._model,
-                provider="openai",
+                provider=self._provider,
                 usage=self._final_usage,
                 is_stream=True,
                 accumulated_chars=self._accumulated_chars,
@@ -661,12 +705,12 @@ class StreamWrapper:
             return
 
         # Instrumented mode (no manual wrap()) — create auto-context at stream completion
-        with auto_context_for_instrumented_call("openai"):
+        with auto_context_for_instrumented_call(self._provider):
             ctx = get_active_context()
             if ctx is not None:
                 ctx.capture(
                     model=self._model,
-                    provider="openai",
+                    provider=self._provider,
                     usage=self._final_usage,
                     is_stream=True,
                     accumulated_chars=self._accumulated_chars,
@@ -902,12 +946,27 @@ def patch_openai_client(client: Any) -> bool:
                 create.__func__ if hasattr(create, "__func__") else create
             )
 
+            # Detect whether this client targets Ollama (OpenAI-compat endpoint)
+            raw_base_url = getattr(client, "base_url", None)
+            inferred_provider = _infer_openai_provider(
+                str(raw_base_url) if raw_base_url is not None else None
+            )
+            if inferred_provider == "ollama":
+                logger.debug(
+                    "vetch: detected Ollama OpenAI-compat endpoint — "
+                    "provider label set to 'ollama'; Ollama calibrations will apply."
+                )
+
             # Apply patch using weak reference wrapper to avoid GC cycles
             wrapper: Any
             if inspect.iscoroutinefunction(create):
-                wrapper = _WeakAsyncChatWrapper(completions, _client_originals)
+                wrapper = _WeakAsyncChatWrapper(
+                    completions, _client_originals, provider=inferred_provider
+                )
             else:
-                wrapper = _WeakChatWrapper(completions, _client_originals)
+                wrapper = _WeakChatWrapper(
+                    completions, _client_originals, provider=inferred_provider
+                )
 
             wrapper.vetch_patched = True
             wrapper._vetch_original = _client_originals[completions]
@@ -1063,7 +1122,7 @@ def instrument_openai_module() -> bool:
                 with contextlib.suppress(Exception):
                     patch_openai_client(self)
 
-            openai.OpenAI.__init__ = patched_init
+            openai.OpenAI.__init__ = patched_init  # type: ignore[method-assign]
 
             # Also patch AsyncOpenAI if available
             if hasattr(openai, "AsyncOpenAI"):
@@ -1074,7 +1133,7 @@ def instrument_openai_module() -> bool:
                     with contextlib.suppress(Exception):
                         patch_openai_client(self)
 
-                openai.AsyncOpenAI.__init__ = patched_async_init
+                openai.AsyncOpenAI.__init__ = patched_async_init  # type: ignore[method-assign]
 
             _module_instrumented = True
             logger.debug("OpenAI module instrumented")
@@ -1118,11 +1177,11 @@ def uninstrument_openai_module() -> bool:
 
         # Restore original __init__ (after per-client cleanup)
         if _original_openai_init is not None:
-            openai.OpenAI.__init__ = _original_openai_init
+            openai.OpenAI.__init__ = _original_openai_init  # type: ignore[method-assign]
 
         # Restore AsyncOpenAI if we patched it
         if _original_async_openai_init is not None and hasattr(openai, "AsyncOpenAI"):
-            openai.AsyncOpenAI.__init__ = _original_async_openai_init
+            openai.AsyncOpenAI.__init__ = _original_async_openai_init  # type: ignore[method-assign]
 
         _module_instrumented = False
         _original_openai_init = None

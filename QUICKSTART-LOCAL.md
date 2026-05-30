@@ -96,12 +96,16 @@ print(response.choices[0].message.content)
   "estimated_energy_wh": 0.0156,
   "estimated_carbon_g": 0.0078,
   "model": "llama3.2:3b",
-  "provider": "openai",
+  "provider": "ollama",
   "region": "us-west-1",
   "tier": 3,
   "tags": {"env": "local", "gpu": "rtx-4090"}
 }
 ```
+
+> **Note**: Vetch auto-detects `localhost:11434` (and the `OLLAMA_HOST` env var)
+> and sets `provider="ollama"` automatically, so Tier-0 Ollama calibrations
+> apply even when using the OpenAI-compat API. No extra configuration needed.
 
 ---
 

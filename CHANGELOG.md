@@ -104,6 +104,153 @@ Both export paths (`otel.py` and `exporters/opentelemetry.py`) now emit
 `vetch.cache_cost_saving_usd` and `vetch.cache_carbon_saving_g` as span
 attributes alongside the existing `vetch.cache_energy_saving_wh`.
 
+## [0.8.0] - 2026-05-30
+
+### Added — Apple Silicon Calibration Toolbox
+
+New `vetch calibrate-apple-silicon` command produces Tier 0 hardware-measured
+energy coefficients for Ollama models running on Apple Silicon. Uses
+`powermetrics` (requires `sudo`) to read Apple PMU counters (CPU+GPU+ANE).
+
+- **VLM energy model**: four-parameter least-squares fit — `β0` (intercept),
+  `β_img` (`wh_per_image`), `β_in` (`wh_per_1k_input`), `β_out` (`wh_per_1k_output`)
+- **`CalibrationResult`** extended with optional VLM fields: `wh_per_image`,
+  `visual_tokens_per_image`, `intercept_wh`, `active`, `rejection_reasons`
+- **`save_calibration()`** writes to `~/.vetch/calibrations/` and is picked up
+  automatically by `calculate_energy()` at inference time
+- **Validation gates**: rejects calibrations with R² < 0.85, negative
+  coefficients, condition number > 30, idle power drift > 15%, or missing GPU power
+- **Workload grid**: ~22 runs covering `n_images` ∈ {0,1,2}, text tokens ∈
+  {20,128,512}, max tokens ∈ {5,32,128,256}; unique images per run to prevent
+  Ollama KV-cache contamination
+- **Image set**: Wikimedia public-domain images (`vetch calibrate-apple-silicon
+  --fetch-images`); falls back to procedurally generated synthetic images
+- **`--strict-images`**: fail if any Wikimedia download is missing
+- **Detail JSON** (`*_apple_detail.json`): shareable calibration record including
+  fit statistics, CI bounds, hardware metadata, and power sampler provenance
+
+Note: measures estimated SoC power (CPU+GPU+ANE), not wall power. Numbers are
+internally consistent for relative comparisons on the same hardware; do not
+use them directly in $/kWh or gCO2e/kWh narratives without accounting for
+the measurement basis (`"not_wall_power": true` in the detail JSON).
+
+### Added — Vercel AI SDK Middleware (`@vetch/ai-sdk`)
+
+First-party Vetch middleware for Vercel AI SDK 6.x. Schema v2 events,
+local energy/carbon/cost estimates, advisories, and Edge-safe emission.
+
+- **`createVetchMiddleware()` / `withVetch()`**: wraps Vercel AI SDK model
+  calls and emits `VetchEvent` objects after each inference
+- **`enrichVetchEvent()`**: local energy/cost/carbon calculation from the
+  bundled registry; supports `EnergyOverride` for calibration-sourced values
+- **`EnergyOverride`**: interface for local calibration values — includes
+  `wh_per_image`, `visual_tokens_per_image`, and `intercept_wh` for VLMs
+- **`loadLocalCalibration()`**: reads `~/.vetch/calibrations/` on Node.js;
+  auto-loaded into `enrichVetchEvent` when present
+- **`createVetchSession()` / `detectAdvisories()`**: per-session state and
+  protocol advisory detection (VOID, PROTO-001, etc.)
+- **Emitters**: `consoleJsonEmitter`, `createFetchEmitter` (with retries and
+  bearer token), `noopEmitter`; all throw on timeout (no silent drops)
+- **Session LRU**: `onSessionEvicted` callback with debug warning for evicted
+  sessions with incomplete state
+- **`VETCH_VERSION`**: exported constant, aligned with Python package version
+- **Registry sync**: `scripts/sync_ai_sdk_registries.py` + CI step keeps
+  energy/pricing/alias/WUE registries in sync between Python and TypeScript
+
+### Added — Native Ollama SDK Instrumentation
+
+`providers/ollama.py` instruments `ollama.Client.generate` and `.chat`
+without requiring the OpenAI-compatible endpoint. Captures model, token
+counts (from `prompt_eval_count` and `eval_count`), and image count from
+request kwargs.
+
+- Auto-enabled when `instrument()` is called and the `ollama` package is imported
+- Reversible via `uninstrument()`
+- Using Ollama via the OpenAI SDK (`base_url="http://localhost:11434/v1"`) now
+  also works: `providers/openai.py` auto-detects localhost:11434 (and the
+  `OLLAMA_HOST` env var) and sets `provider="ollama"` so Tier-0 calibrations
+  apply. No code change required.
+
+### Added — Session Advisories (Python)
+
+Three new advisories added to `advisory.py` alongside the existing nine:
+
+- **CACHE-002**: High input-token repetition (same signal as CACHE-001) with no
+  `cache_read_tokens` observed — caching is available but not yet active.
+  Fires when >50% of recent calls share the same input count and none return
+  cache reads.
+- **STREAM-001**: High incomplete-stream fraction — fires when ≥30% of streaming
+  calls over a ≥5-call window complete with `complete=False`. Indicates streams
+  being cancelled before finishing.
+- **REASONING-001**: Reasoning model called without returning reasoning tokens —
+  fires when o1/o3/deepseek-r1-style models have no `usage.reasoning` output
+  across ≥5 recent calls, suggesting the reasoning path is not being activated.
+
+`_RecentCall` (internal rolling-window record) extended with five new fields
+required by the above: `cache_read_tokens`, `is_stream`, `complete`,
+`is_reasoning_model`, `has_reasoning_tokens`.
+
+### Added — Session Advisories (`@vetch/ai-sdk`)
+
+`detectAdvisories` in `advisories.ts` now includes three session-level
+checks (using the rolling 40-event window alongside existing per-call checks):
+
+- **STALL-001**: last 5 non-error calls each produced ≤5 output tokens.
+- **CACHE-001**: >50% of the recent window shares the same input token count
+  (≥6-event minimum).
+- **CACHE-002**: CACHE-001 conditions met with no `cache_read_tokens > 0`
+  anywhere in the window.
+
+7 new vitest tests added; total parity test suite is 14 tests.
+
+### Added — `retry_count` on `InferenceEvent`
+
+`InferenceEvent` (schema v2) now includes `retry_count: int | None`. The
+wrapper emits `0` by default (first try, no retries). Applications performing
+explicit retry logic can set this field to activate the `PREMIUM-001`
+retry-rate gate in the audit engine, which filters stable workflows from
+downgrade recommendations. The default of `0` means the gate is inert for
+callers that do not set it — this is documented in `audit_report.py` and
+`METHODOLOGY.md`.
+
+### Added — Ollama OpenAI-compat provider auto-detection
+
+`providers/openai.py` now calls `_infer_openai_provider()` during
+`patch_openai_client()`. When the client's `base_url` contains
+`localhost:11434` or `127.0.0.1:11434`, or `OLLAMA_HOST` is set, the
+provider label is set to `"ollama"` instead of `"openai"`. This means
+Tier-0 Ollama calibrations apply automatically when using Ollama via the
+OpenAI-compat API — no code change required.
+
+### Added — Community Calibrations
+
+`src/vetch/community_calibrations.py` + bundled `data/community_calibrations.json`.
+Provides a fallback registry of community-contributed hardware-measured
+coefficients for models not covered by the vendor-published registry.
+Currently empty; populated by `scripts/aggregate_calibrations.py` from
+submitted detail JSON files.
+
+### Added — ERROR-001 Advisory
+
+New advisory: fires when ≥3 consecutive API errors are detected, or when
+≥40% of recent calls return `error=True`. Covers provider outages, quota
+exhaustion, safety filter blocks, and malformed request patterns.
+
+Severity: CRITICAL when ≥5 consecutive errors; WARNING otherwise.
+Security signal flagged (OWASP-LLM04, OWASP-LLM10).
+
+### Fixed
+
+- **TRUNC-001**: Python rolling-window detection only checked
+  `finish_reason == "max_tokens"` (Anthropic). Now also catches
+  `"length"` (OpenAI), so TRUNC-001 fires correctly for all providers.
+- **`calculation.py`**: `_effective_text_input_tokens()` correctly subtracts
+  visual tokens from text input when `visual_tokens_per_image` is set,
+  preventing double-counting in `wh_per_1k_input` when a calibration is
+  active for a VLM.
+- **`load_calibration()`**: resolves model aliases (`moondream` ↔
+  `moondream:latest`) so calibrations are found regardless of tag suffix.
+
 ## [0.4.0] - 2026-04-27
 
 ### Added — Uncertainty bounds (UACA Phase 1)

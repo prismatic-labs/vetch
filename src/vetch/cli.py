@@ -607,6 +607,66 @@ def calibrate_status(args: argparse.Namespace) -> None:
         print("No calibrations directory yet.")
 
 
+def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
+    """Calibrate energy using Apple Silicon powermetrics (requires sudo)."""
+    from vetch.calibrate import CALIBRATION_DIR
+    from vetch.calibrate_metal import (
+        calibrate_apple_silicon,
+        download_calibration_images,
+        format_calibration_result_apple,
+        is_apple_silicon,
+    )
+
+    if args.fetch_images:
+        download_calibration_images(strict=getattr(args, "strict_images", False))
+        return
+
+    if not is_apple_silicon():
+        print(
+            "ERROR: calibrate-apple-silicon requires macOS on Apple Silicon.\n"
+            "Use 'vetch calibrate' for NVIDIA GPU calibration.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    model = args.model or "moondream:latest"
+    provider = args.provider or "ollama"
+    base_url = args.base_url or "http://localhost:11434"
+    iterations = args.iterations or 1
+    verbose = args.verbose
+
+    try:
+        result = calibrate_apple_silicon(
+            model=model,
+            provider=provider,
+            base_url=base_url,
+            iterations=iterations,
+            verbose=verbose,
+        )
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"Calibration failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    safe_model = model.replace(":", "_").replace("/", "_")
+    detail_path = CALIBRATION_DIR / f"{provider}_{safe_model}_apple_detail.json"
+
+    if args.format == "json":
+        import dataclasses
+        import json as _json
+        print(_json.dumps(dataclasses.asdict(result), indent=2))
+    else:
+        print(format_calibration_result_apple(result, detail_path))
+
+    if not result.active:
+        if result.rejection_reasons:
+            print("Active calibration NOT installed:", file=sys.stderr)
+            for reason in result.rejection_reasons:
+                print(f"  - {reason}", file=sys.stderr)
+        sys.exit(1)
+
+
 def config_cmd(args: argparse.Namespace) -> None:
     """Manage Vetch configuration.
 
@@ -1212,6 +1272,39 @@ def main() -> None:
         "--format", choices=["text", "json"], default="text", help="Output format"
     )
 
+    # Calibrate Apple Silicon
+    cal_as_parser = subparsers.add_parser(
+        "calibrate-apple-silicon",
+        help="Calibrate energy on Apple Silicon using powermetrics (requires sudo)",
+    )
+    cal_as_parser.add_argument(
+        "--model", default="moondream:latest", help="Ollama model (default: moondream:latest)"
+    )
+    cal_as_parser.add_argument(
+        "--provider", default="ollama", help="Provider label (default: ollama)"
+    )
+    cal_as_parser.add_argument(
+        "--base-url", dest="base_url", default="http://localhost:11434", help="Ollama API base URL"
+    )
+    cal_as_parser.add_argument(
+        "--iterations", type=int, default=1,
+        help="Grid iteration multiplier (default: 1, ~22 runs)",
+    )
+    cal_as_parser.add_argument("--verbose", action="store_true", help="Print per-run details")
+    cal_as_parser.add_argument(
+        "--format", choices=["text", "json"], default="text", help="Output format"
+    )
+    cal_as_parser.add_argument(
+        "--fetch-images", dest="fetch_images", action="store_true",
+        help="Download the Wikimedia standard image set (no sudo needed) and exit",
+    )
+    cal_as_parser.add_argument(
+        "--strict-images",
+        dest="strict_images",
+        action="store_true",
+        help="With --fetch-images, fail if any Wikimedia download is missing",
+    )
+
     # Report
     report_parser = subparsers.add_parser("report", help="Generate usage report")
     report_parser.add_argument(
@@ -1315,6 +1408,8 @@ def main() -> None:
             calibrate_status(args)
         else:
             calibrate(args)
+    elif args.command == "calibrate-apple-silicon":
+        calibrate_apple_silicon_cmd(args)
     elif args.command == "report":
         report(args)
     elif args.command == "savings":

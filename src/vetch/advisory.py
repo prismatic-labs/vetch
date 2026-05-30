@@ -34,6 +34,16 @@ CONTEXT_SNOWBALL_INCREASE_TRIGGER = 0.70
 CONTEXT_SNOWBALL_RATIO_TRIGGER = 4.0
 EMPTY_VISIBLE_MIN_WINDOW = 5
 EMPTY_VISIBLE_FRACTION_TRIGGER = 0.50
+ERROR_MIN_WINDOW = 5
+ERROR_CONSECUTIVE_TRIGGER = 3
+ERROR_FRACTION_TRIGGER = 0.40
+CACHE2_MIN_CALLS = 6
+CACHE2_REPETITION_TRIGGER = 0.50
+CACHE2_MISS_FRACTION_TRIGGER = 0.80
+STREAM1_MIN_WINDOW = 5
+STREAM1_INCOMPLETE_FRACTION_TRIGGER = 0.30
+REASONING1_MIN_CALLS = 5
+REASONING1_MISSING_FRACTION_TRIGGER = 0.40
 
 
 class Advisory(NamedTuple):
@@ -235,6 +245,59 @@ def _empty_visible_confidence(stats: SessionStats) -> str:
     return "low"
 
 
+def _cache2_confidence(stats: SessionStats) -> str:
+    summary = stats.summary()
+    miss_fraction = float(summary.get("recent_cache_miss_fraction") or 0.0)
+    window_size = int(summary.get("recent_window_size") or 0)
+    if miss_fraction >= 0.95 and window_size >= CACHE2_MIN_CALLS:
+        return "high"
+    if miss_fraction >= CACHE2_MISS_FRACTION_TRIGGER and window_size >= CACHE2_MIN_CALLS:
+        return "medium"
+    return "low"
+
+
+def _stream1_confidence(stats: SessionStats) -> str:
+    summary = stats.summary()
+    stream_count = int(summary.get("recent_stream_count") or 0)
+    incomplete_count = int(summary.get("recent_stream_incomplete_count") or 0)
+    if stream_count < STREAM1_MIN_WINDOW:
+        return "low"
+    incomplete_fraction = incomplete_count / stream_count if stream_count else 0.0
+    if incomplete_fraction >= 0.6:
+        return "high"
+    if incomplete_fraction >= STREAM1_INCOMPLETE_FRACTION_TRIGGER:
+        return "medium"
+    return "low"
+
+
+def _reasoning1_confidence(stats: SessionStats) -> str:
+    summary = stats.summary()
+    reasoning_model_count = int(summary.get("recent_reasoning_model_count") or 0)
+    missing_count = int(summary.get("recent_reasoning_missing_count") or 0)
+    if reasoning_model_count < REASONING1_MIN_CALLS:
+        return "low"
+    missing_fraction = missing_count / reasoning_model_count if reasoning_model_count else 0.0
+    if missing_fraction >= 0.8:
+        return "high"
+    if missing_fraction >= REASONING1_MISSING_FRACTION_TRIGGER:
+        return "medium"
+    return "low"
+
+
+def _error_confidence(stats: SessionStats) -> str:
+    summary = stats.summary()
+    consecutive = int(summary.get("recent_consecutive_errors") or 0)
+    fraction = float(summary.get("recent_error_fraction") or 0.0)
+    window_size = int(summary.get("recent_window_size") or 0)
+    if consecutive >= 5 or (fraction >= 0.6 and window_size >= ERROR_MIN_WINDOW):
+        return "high"
+    if consecutive >= ERROR_CONSECUTIVE_TRIGGER or (
+        fraction >= ERROR_FRACTION_TRIGGER and window_size >= ERROR_MIN_WINDOW
+    ):
+        return "medium"
+    return "low"
+
+
 _ADVISORY_SPECS: dict[str, AdvisorySpec] = {
     "STALL-001": AdvisorySpec(
         recommended_action=(
@@ -380,6 +443,80 @@ _ADVISORY_SPECS: dict[str, AdvisorySpec] = {
             "recent_max_tokens_finish_fraction",
         ),
         confidence=_trunc_confidence,
+    ),
+    "ERROR-001": AdvisorySpec(
+        recommended_action=(
+            "Check provider status, API key validity, and prompt safety filters. "
+            "Add structured error handling and exponential back-off. "
+            "If errors are intermittent, consider a fallback model or provider."
+        ),
+        automation_guidance=(
+            "Warn-only. Do not automatically kill on error rate alone — "
+            "some errors are transient. Combine with retry count and latency signals."
+        ),
+        evidence=_summary_evidence(
+            "total_requests",
+            "recent_window_size",
+            "recent_error_count",
+            "recent_error_fraction",
+            "recent_consecutive_errors",
+        ),
+        confidence=_error_confidence,
+    ),
+    "CACHE-002": AdvisorySpec(
+        recommended_action=(
+            "Enable Prompt Caching (Anthropic/OpenAI/DeepSeek) and verify that your "
+            "system prompt is structured to be cache-eligible. Check that the SDK or "
+            "provider is not prepending dynamic content before the static prefix."
+        ),
+        automation_guidance=(
+            "Advisory only. Caching requires API-level opt-in; do not auto-enable "
+            "without verifying cost expectations and latency trade-offs."
+        ),
+        evidence=_summary_evidence(
+            "total_requests",
+            "recent_window_size",
+            "recent_cache_miss_count",
+            "recent_cache_miss_fraction",
+        ),
+        confidence=_cache2_confidence,
+    ),
+    "STREAM-001": AdvisorySpec(
+        recommended_action=(
+            "Check for client-side disconnects, timeouts shorter than generation time, "
+            "or upstream proxy cutoffs. Incomplete streams are billable but yield no "
+            "useful output. Consider raising the client timeout or using non-streaming "
+            "for short outputs."
+        ),
+        automation_guidance=(
+            "Warn-only. Incomplete streams may be legitimate user interrupts. "
+            "Only automate after confirming they are not expected behavior."
+        ),
+        evidence=_summary_evidence(
+            "total_requests",
+            "recent_stream_count",
+            "recent_stream_incomplete_count",
+        ),
+        confidence=_stream1_confidence,
+    ),
+    "REASONING-001": AdvisorySpec(
+        recommended_action=(
+            "Verify that extended thinking / reasoning is enabled in the request "
+            "(e.g., `thinking: {type: 'enabled', budget_tokens: N}` for Anthropic, "
+            "or that the model variant actually performs chain-of-thought reasoning). "
+            "If reasoning is intentionally disabled, switch to a non-reasoning model "
+            "to avoid paying the reasoning-model premium."
+        ),
+        automation_guidance=(
+            "Advisory only. Some workflows intentionally call reasoning models "
+            "without extended thinking. Confirm intent before acting."
+        ),
+        evidence=_summary_evidence(
+            "total_requests",
+            "recent_reasoning_model_count",
+            "recent_reasoning_missing_count",
+        ),
+        confidence=_reasoning1_confidence,
     ),
 }
 
@@ -704,6 +841,144 @@ def generate_advisories(stats: SessionStats) -> list[Advisory]:
                 "and response format constraints."
             ),
             request_count=int(window_size),
+        ))
+
+    # 9. Error Storm
+    # Fires when recent calls show a high error rate or consecutive errors,
+    # indicating a broken prompt, exhausted quota, or provider outage.
+    recent_error_count = int(summary.get("recent_error_count") or 0)
+    recent_error_fraction = float(summary.get("recent_error_fraction") or 0.0)
+    consecutive_errors = int(summary.get("recent_consecutive_errors") or 0)
+    error_fraction_trigger = _threshold(
+        stats, "ERROR-001", "fraction_trigger", ERROR_FRACTION_TRIGGER
+    )
+    error_consecutive_trigger = int(
+        _threshold(stats, "ERROR-001", "consecutive_trigger", ERROR_CONSECUTIVE_TRIGGER)
+    )
+    if window_size >= ERROR_MIN_WINDOW and (
+        consecutive_errors >= error_consecutive_trigger
+        or (recent_error_count > 0 and recent_error_fraction >= error_fraction_trigger)
+    ):
+        severity = "CRITICAL" if consecutive_errors >= 5 else "WARNING"
+        if consecutive_errors >= error_consecutive_trigger:
+            desc_trigger = (
+                f"Last {consecutive_errors} calls in a row returned errors."
+            )
+        else:
+            desc_trigger = (
+                f"{recent_error_count} of the last {window_size} calls returned errors "
+                f"({recent_error_fraction:.0%} of window)."
+            )
+        advisories.append(Advisory(
+            code="ERROR-001",
+            severity=severity,
+            title="High inference error rate detected",
+            description=(
+                f"{desc_trigger} "
+                "Repeated errors waste spend on failed calls and can mask stall or "
+                "zombie patterns. Check provider status, API key validity, content "
+                "filters, and request format. "
+                "Security signal: systematic errors can support review for "
+                "prompt-injection attempts that trigger safety filters or "
+                "malformed payloads designed to exhaust quota."
+            ),
+            request_count=recent_error_count,
+            security_signal=True,
+            security_refs=("OWASP-LLM04", "OWASP-LLM10"),
+        ))
+
+    # 10. Cache opportunity ignored (CACHE-002)
+    # Fires when input-token repetition is high (same as CACHE-001 trigger) AND
+    # most recent calls have no cache_read_tokens — meaning caching is available
+    # but not being used. CACHE-001 fires on the opportunity; CACHE-002 fires when
+    # the opportunity is clearly being missed in production.
+    if stats.total_requests >= CACHE2_MIN_CALLS:
+        # Reuse repetition_rate from section 1 above
+        repeated_inputs2 = sum(c for c in stats.input_token_counts.values() if c > 1)
+        repetition_rate2 = repeated_inputs2 / stats.total_requests
+        cache_miss_count = int(summary.get("recent_cache_miss_count") or 0)
+        cache_miss_fraction = float(summary.get("recent_cache_miss_fraction") or 0.0)
+        cache2_rep_trigger = _threshold(
+            stats, "CACHE-002", "repetition_rate", CACHE2_REPETITION_TRIGGER
+        )
+        cache2_miss_trigger = _threshold(
+            stats, "CACHE-002", "miss_fraction", CACHE2_MISS_FRACTION_TRIGGER
+        )
+        if (
+            window_size >= CACHE2_MIN_CALLS
+            and repetition_rate2 >= cache2_rep_trigger
+            and cache_miss_fraction >= cache2_miss_trigger
+        ):
+            advisories.append(Advisory(
+                code="CACHE-002",
+                severity="WARNING",
+                title="Prompt caching opportunity not used",
+                description=(
+                    f"{repetition_rate2:.0%} of requests share identical input token counts, "
+                    f"but {cache_miss_fraction:.0%} of recent calls had no cache reads. "
+                    "The repetition pattern suggests a static system prompt that could be "
+                    "cached, but caching does not appear to be active. "
+                    "Enable Prompt Caching to reduce input costs by up to 90%."
+                ),
+                request_count=cache_miss_count,
+            ))
+
+    # 11. Incomplete stream burn (STREAM-001)
+    # Fires when a significant fraction of streaming calls do not complete.
+    stream_count = int(summary.get("recent_stream_count") or 0)
+    stream_incomplete_count = int(summary.get("recent_stream_incomplete_count") or 0)
+    stream1_min_window = int(
+        _threshold(stats, "STREAM-001", "min_window", STREAM1_MIN_WINDOW)
+    )
+    stream1_fraction_trigger = _threshold(
+        stats, "STREAM-001", "fraction_trigger", STREAM1_INCOMPLETE_FRACTION_TRIGGER
+    )
+    if stream_count >= stream1_min_window and stream_incomplete_count > 0:
+        incomplete_fraction = stream_incomplete_count / stream_count
+        if incomplete_fraction >= stream1_fraction_trigger:
+            advisories.append(Advisory(
+                code="STREAM-001",
+                severity="WARNING",
+                title="High rate of incomplete streams",
+                description=(
+                    f"{stream_incomplete_count} of {stream_count} recent streaming calls "
+                    f"did not complete ({incomplete_fraction:.0%}). Incomplete streams "
+                    "are billed for tokens generated so far, wasting spend with no "
+                    "usable output. Check for client timeouts, dropped connections, "
+                    "or upstream proxy cutoffs shorter than generation time."
+                ),
+                request_count=stream_incomplete_count,
+            ))
+
+    # 12. Reasoning model called without reasoning tokens (REASONING-001)
+    # Fires when calls go to reasoning-capable models but usage.reasoning is absent.
+    # Indicates either reasoning is disabled or the model is being used at full
+    # premium cost without the test-time compute that justifies it.
+    reasoning_model_count = int(summary.get("recent_reasoning_model_count") or 0)
+    reasoning_missing_count = int(summary.get("recent_reasoning_missing_count") or 0)
+    reasoning1_min_calls = int(
+        _threshold(stats, "REASONING-001", "min_calls", REASONING1_MIN_CALLS)
+    )
+    reasoning1_fraction = _threshold(
+        stats, "REASONING-001", "missing_fraction", REASONING1_MISSING_FRACTION_TRIGGER
+    )
+    if (
+        reasoning_model_count >= reasoning1_min_calls
+        and reasoning_missing_count > 0
+        and reasoning_missing_count / reasoning_model_count >= reasoning1_fraction
+    ):
+        advisories.append(Advisory(
+            code="REASONING-001",
+            severity="INFO",
+            title="Reasoning model without reasoning tokens",
+            description=(
+                f"{reasoning_missing_count} of {reasoning_model_count} recent calls to "
+                "a reasoning-capable model returned no reasoning tokens. You may be "
+                "paying the reasoning-model premium without using extended thinking. "
+                "Either enable reasoning (set budget_tokens > 0) or switch to a "
+                "non-reasoning variant to reduce cost."
+            ),
+            request_count=reasoning_missing_count,
         ))
 
     return advisories

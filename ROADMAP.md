@@ -16,10 +16,13 @@ Turn every inference call into a signal. Vetch detects patterns that indicate in
 - ✅ RAG context bloat detection
 - ⚠️ Session budget monitoring — warn-only, circuit breaker not yet wired
 
+**Added in v0.8.0:**
+- ✅ Error storm detection (ERROR-001) — fires on ≥3 consecutive errors or ≥40% error rate
+
 **Planned:**
 - 🔜 Retry storm detection
 - ✅ Large-model rightsizing candidate detection — audit-only
-- 🔜 Zombie inference detection (active calls past expected session completion)
+- ✅ Zombie inference detection (ZOMBIE-001)
 - 🔜 Cache miss pattern detection
 - 🔜 Session budget advisory and circuit breaker
 - 🔜 Missing attribution advisory
@@ -98,6 +101,8 @@ Meet engineers where they are. Waste detection should work across all major LLM 
 - ✅ Vertex AI (Gemini)
 - ✅ Google GenAI SDK
 - ✅ All OpenAI-compatible endpoints (OpenRouter, Together.ai, Ollama, vLLM, TGI)
+- ✅ Native Ollama SDK instrumentation (`providers/ollama.py`) — added in v0.8.0
+- ✅ Vercel AI SDK middleware (`@vetch/ai-sdk`) — added in v0.8.0
 - ✅ OpenTelemetry / OTLP export (Grafana, Datadog, Honeycomb)
 - ✅ MCP server for agent-native integrations
 - ✅ Background jobs via distributed session propagation
@@ -144,6 +149,7 @@ Energy and carbon estimates are only useful if their uncertainty is clearly stat
 - ✅ Provider-specific PUE
 - ✅ Registry provenance documentation ([PROVENANCE.md](src/vetch/registry/PROVENANCE.md))
 - ✅ Electricity Maps integration for live grid carbon intensity
+- ✅ Apple Silicon hardware calibration (`vetch calibrate-apple-silicon`) — Tier 0, added in v0.8.0; measures SoC power (CPU+GPU+ANE) via powermetrics, not wall power
 
 **Planned:**
 - 🔜 Region confidence levels (static annual average vs. live vs. unknown)

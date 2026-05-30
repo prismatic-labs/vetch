@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from vetch import __version__
 from vetch.context import TrackingContext, get_active_context
 from vetch.emitter import emit_event
-from vetch.schema import SCHEMA_VERSION, InferenceEvent, validate_energy_override
+from vetch.schema import SCHEMA_VERSION, InferenceEvent, Usage, validate_energy_override
 
 if TYPE_CHECKING:
     from vetch.schema import EnergyOverride
@@ -107,6 +107,21 @@ def _infer_region() -> tuple[str | None, str | None]:
 
     return None, None
 
+
+def _infer_n_images_from_usage(usage: Usage | None) -> int:
+    """Infer image count from schema v2 usage for VLM energy (wh_per_image)."""
+    if not usage:
+        return 0
+    image_usage = usage.get("image")
+    if not isinstance(image_usage, dict):
+        return 0
+    count = image_usage.get("image_count")
+    if isinstance(count, int) and count > 0:
+        return count
+    input_tokens = image_usage.get("input_tokens")
+    if isinstance(input_tokens, int) and input_tokens > 0:
+        return 1
+    return 0
 
 
 @contextmanager
@@ -577,7 +592,7 @@ class VetchContext:
         # Determine model and provider
         model = "unknown"
         provider = "unknown"
-        usage = None
+        usage: Usage | None = None
         is_stream = False
         accumulated_chars = 0
         accumulated_tik_tokens = 0
@@ -613,6 +628,9 @@ class VetchContext:
                 error_type = captured.error_type
 
 
+        # Extract image count from usage for VLM energy calculation
+        n_images = _infer_n_images_from_usage(usage)
+
         # Delegate all energy/carbon/cost calculations to calculation.py
         metrics: InferenceMetrics = prepare_inference_metrics(
             model=model,
@@ -627,6 +645,7 @@ class VetchContext:
             existing_warnings=list(self._warnings),
             accumulated_tik_tokens=accumulated_tik_tokens,
             content_type_hint=content_type_hint,
+            n_images=n_images,
         )
 
         # Propagate usage_estimated counter for monitoring dashboards
@@ -772,6 +791,7 @@ class VetchContext:
             tags=self.tags,
             error=error,
             error_type=error_type,
+            retry_count=0,
             tracking_disabled=self._tracking_disabled,
             tracking_degraded=tracking_degraded,
             vetch_warnings=all_warnings if all_warnings else None,

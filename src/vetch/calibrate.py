@@ -15,8 +15,9 @@ import logging
 import math
 import time
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,8 @@ def _warn_experimental() -> None:
 CALIBRATION_DIR = Path.home() / ".vetch" / "calibrations"
 
 
-class CalibrationResult(NamedTuple):
+@dataclass
+class CalibrationResult:
     """Result of a model calibration run."""
 
     model: str
@@ -49,7 +51,18 @@ class CalibrationResult(NamedTuple):
     wh_per_1k_output: float
     tier: int
     samples: int
-    gpu_name: str
+    gpu_name: str | None = None
+
+    # VLM fields — populated by calibrate_apple_silicon(); None for text-only models
+    wh_per_image: float | None = None
+    visual_tokens_per_image: int | None = None
+    intercept_wh: float | None = None
+
+    # False when quality gates blocked ~/.vetch active install (detail JSON may still exist)
+    active: bool = True
+    rejection_reasons: list[str] | None = None
+    # "community" = bundled data/calibrations.json prior (not machine-measured)
+    origin: str = "local"
 
 
 def is_gpu_available() -> bool:
@@ -239,25 +252,63 @@ def save_calibration(res: CalibrationResult) -> None:
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
     path = CALIBRATION_DIR / f"{res.provider}_{res.model.replace(':', '_')}.json"
 
+    hw_label = res.gpu_name or "hardware"
     data: dict[str, Any] = {
         "wh_per_1k_input": res.wh_per_1k_input,
         "wh_per_1k_output": res.wh_per_1k_output,
         "tier": res.tier,
         "samples": res.samples,
-        "basis": f"Hardware calibration on {res.gpu_name} ({res.samples} samples)",
+        "basis": f"Hardware calibration on {hw_label} ({res.samples} samples)",
         "timestamp": time.time(),
-        "gpu_name": res.gpu_name,
+        "active": res.active,
     }
+    if res.wh_per_image is not None:
+        data["wh_per_image"] = res.wh_per_image
+    if res.visual_tokens_per_image is not None:
+        data["visual_tokens_per_image"] = res.visual_tokens_per_image
+    if res.intercept_wh is not None:
+        data["intercept_wh"] = res.intercept_wh
+    if res.gpu_name is not None:
+        data["gpu_name"] = res.gpu_name
 
     path.write_text(json.dumps(data, indent=2))
+
+    # Invalidate calculation.py's in-process cache so the next inference call
+    # picks up the new calibration without requiring a process restart.
+    try:
+        from vetch.calculation import _clear_calibration_cache
+        _clear_calibration_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # Keep private alias for backward compatibility with any direct callers
 _save_calibration = save_calibration
 
 
-def load_calibration(provider: str, model: str) -> CalibrationResult | None:
-    """Load a saved CalibrationResult from ~/.vetch/calibrations/, or None if absent."""
+def calibration_model_variants(model: str) -> list[str]:
+    """Model name variants for ~/.vetch calibration file lookup (order matters)."""
+    variants: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        if name and name not in seen:
+            seen.add(name)
+            variants.append(name)
+
+    _add(model)
+    if ":" in model:
+        base, tag = model.rsplit(":", 1)
+        if tag == "latest":
+            _add(base)
+        else:
+            _add(f"{base}:latest")
+    else:
+        _add(f"{model}:latest")
+    return variants
+
+
+def _load_calibration_file(provider: str, model: str) -> CalibrationResult | None:
     path = CALIBRATION_DIR / f"{provider}_{model.replace(':', '_')}.json"
     if not path.exists():
         return None
@@ -270,25 +321,49 @@ def load_calibration(provider: str, model: str) -> CalibrationResult | None:
             wh_per_1k_output=float(data["wh_per_1k_output"]),
             tier=int(data.get("tier", 0)),
             samples=int(data.get("samples", 0)),
-            gpu_name=data.get("gpu_name", ""),
+            gpu_name=data.get("gpu_name"),
+            wh_per_image=data.get("wh_per_image"),
+            visual_tokens_per_image=data.get("visual_tokens_per_image"),
+            intercept_wh=data.get("intercept_wh"),
+            active=bool(data.get("active", True)),
         )
     except (KeyError, ValueError, json.JSONDecodeError):
         return None
 
 
+def load_calibration(provider: str, model: str) -> CalibrationResult | None:
+    """Load a saved CalibrationResult from ~/.vetch/calibrations/, or None if absent."""
+    for variant in calibration_model_variants(model):
+        loaded = _load_calibration_file(provider, variant)
+        if loaded is not None:
+            if variant != model:
+                logger.debug(
+                    "Loaded calibration for %s/%s via alias %s", provider, model, variant
+                )
+            return loaded
+    return None
+
+
 def format_calibration_result(res: CalibrationResult) -> str:
+    hw = res.gpu_name or "Apple Silicon"
     lines = [
         f"Calibration Complete for {res.model} ({res.provider})",
-        f"Hardware: {res.gpu_name}",
+        f"Hardware: {hw}",
         "----------------------------------------",
         f"Energy (Input):  {res.wh_per_1k_input:.4f} Wh/1k tokens",
         f"Energy (Output): {res.wh_per_1k_output:.4f} Wh/1k tokens",
     ]
+    if res.wh_per_image is not None:
+        lines.append(f"Energy (Image):  {res.wh_per_image:.6f} Wh/image")
     tier_labels = {
         0: "Tier 0 (Measured)",
-        1: "Tier 1 (Vendor)",
+        1: "Tier 1 (Heuristic hardware estimate)",
         2: "Tier 2 (Research)",
         3: "Tier 3 (Estimated)",
     }
     lines.append(f"Confidence:      {tier_labels.get(res.tier, f'Tier {res.tier}')}")
+    if res.tier == 1:
+        lines.append(
+            "  Method:        Single NVML power sample; 1:3 in/out split — not Tier 0."
+        )
     return "\n".join(lines) + "\n"

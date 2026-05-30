@@ -162,7 +162,7 @@ def instrument_azure_openai_module() -> bool:
                 with contextlib.suppress(Exception):
                     patch_openai_client(self)
 
-            openai.AzureOpenAI.__init__ = patched_init
+            openai.AzureOpenAI.__init__ = patched_init  # type: ignore[method-assign]
 
             # Also patch AsyncAzureOpenAI if available
             if hasattr(openai, "AsyncAzureOpenAI"):
@@ -173,7 +173,7 @@ def instrument_azure_openai_module() -> bool:
                     with contextlib.suppress(Exception):
                         patch_openai_client(self)
 
-                openai.AsyncAzureOpenAI.__init__ = patched_async_init
+                openai.AsyncAzureOpenAI.__init__ = patched_async_init  # type: ignore[method-assign]
 
             _module_instrumented = True
 
@@ -209,13 +209,13 @@ def uninstrument_azure_openai_module() -> bool:
         with _instrument_lock:
             # Restore original __init__
             if _original_azure_init is not None and hasattr(openai, "AzureOpenAI"):
-                openai.AzureOpenAI.__init__ = _original_azure_init
+                openai.AzureOpenAI.__init__ = _original_azure_init  # type: ignore[method-assign]
 
             # Restore AsyncAzureOpenAI if we patched it
             if _original_async_azure_init is not None and hasattr(
                 openai, "AsyncAzureOpenAI"
             ):
-                openai.AsyncAzureOpenAI.__init__ = _original_async_azure_init
+                openai.AsyncAzureOpenAI.__init__ = _original_async_azure_init  # type: ignore[method-assign]
 
             _module_instrumented = False
             _original_azure_init = None

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.7.0"
+version = "0.8.0"
 description = "Inference waste control for production LLM systems. Detect stalled agents, RAG bloat, and runaway inference — then stop them automatically."
 readme = "README.md"
 license = "Apache-2.0"
@@ -42,6 +42,7 @@ vertexai = ["google-cloud-aiplatform>=1.0"]
 genai = ["google-genai>=0.1.0"]  # Google GenAI SDK
 tiktoken = ["tiktoken>=0.5.0"]  # Accurate token counting for OpenAI models
 calibrate = ["nvidia-ml-py3"]  # Hardware power sensing for NVIDIA GPUs
+apple-silicon = ["numpy>=1.24"]  # Apple Silicon energy calibration via powermetrics
 otel = [  # OpenTelemetry OTLP export
     "opentelemetry-sdk>=1.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.0",
@@ -74,6 +75,7 @@ packages = ["src/vetch"]
 include = [
     "/src",
     "/tests",
+    "/data",
     "/README.md",
     "/LICENSE",
     "/NOTICE",
@@ -122,9 +124,12 @@ module = [
     "fastapi.*",
     "mcp",
     "mcp.*",
+    "numpy",
+    "numpy.*",
+    "ollama",
 ]
 ignore_missing_imports = true
 
 [tool.bandit]
 exclude_dirs = ["tests"]
-skips = ["B101", "B110", "B112", "B311", "B310"]  # B101: asserts for mypy narrowing; B110/B112: fail-open by design; B311: random for jitter, not crypto; B310: urlopen with validated URLs
+skips = ["B101", "B110", "B112", "B311", "B310", "B404", "B603", "B607"]  # B101: asserts for mypy narrowing; B110/B112: fail-open by design; B311: random for jitter, not crypto; B310: urlopen with validated URLs; B404/B603/B607: subprocess with fixed system-tool args (sysctl/powermetrics/system_profiler)

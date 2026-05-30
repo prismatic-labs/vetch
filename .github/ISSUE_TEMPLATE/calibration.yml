@@ -1,0 +1,168 @@
+name: Calibration Submission
+description: Submit Apple Silicon energy calibration data for a Vetch-supported model
+title: "[calib] "
+labels: ["calibration"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before submitting**, confirm your run passes all quality gates:
+        - `valid: true` in the detail JSON
+        - `r2 >= 0.85`
+        - `condition_number < 30`
+        - No negative coefficients
+        - `gpu_power_captured: true`
+        - `idle_drift_pct < 15`
+        - No throttled runs
+        - Machine was on AC power
+        - Default image set used (`image_set: "vetch_standard_v1"`)
+
+        Only submissions using the default image set are included in aggregated datasets.
+
+  - type: input
+    id: chip
+    attributes:
+      label: Chip (verbatim from system_profiler)
+      description: "e.g. Apple M3 Max — copy from the `hardware.chip_raw` field in your detail JSON"
+      placeholder: Apple M5
+    validations:
+      required: true
+
+  - type: input
+    id: memory_gb
+    attributes:
+      label: Memory (GB)
+      placeholder: "16"
+    validations:
+      required: true
+
+  - type: input
+    id: macos_version
+    attributes:
+      label: macOS version
+      placeholder: "15.4.1"
+    validations:
+      required: true
+
+  - type: input
+    id: ollama_version
+    attributes:
+      label: Ollama version
+      placeholder: "0.9.0"
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model + tag
+      placeholder: "moondream:latest"
+    validations:
+      required: true
+
+  - type: input
+    id: quantization
+    attributes:
+      label: Quantization
+      description: "From `ollama show <model>` — e.g. Q4_K_M, F16"
+      placeholder: Q4_K_M
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Ollama backend hint
+      options:
+        - Metal (default)
+        - MLX preview
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ac_power
+    attributes:
+      label: On AC power?
+      description: Battery runs are not accepted — energy readings on battery are unreliable.
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: power_mode
+    attributes:
+      label: Power mode
+      options:
+        - Automatic
+        - High Power
+        - Low Power
+    validations:
+      required: true
+
+  - type: textarea
+    id: output_json
+    attributes:
+      label: Full output JSON
+      description: >
+        Paste the full contents of `~/.vetch/calibrations/<provider>_<model>_apple_detail.json`.
+        Must include the `fit`, `power_sampler`, `vlm`, `hardware`, and `environment` blocks —
+        not just the coefficients. GitHub caps issue bodies at ~65 KB; use a Gist if your file is larger.
+      placeholder: |
+        {
+          "model": "moondream:latest",
+          "wh_per_1k_input": ...,
+          ...
+        }
+    validations:
+      required: true
+
+  - type: textarea
+    id: raw_samples
+    attributes:
+      label: Raw samples (optional)
+      description: >
+        Paste raw per-run data if you have it. Use a collapsed block (see placeholder) or
+        link a GitHub Gist — raw files are often >65 KB.
+      placeholder: |
+        <details>
+        <summary>Raw samples</summary>
+
+        ```json
+        [ ... ]
+        ```
+        </details>
+
+  - type: checkboxes
+    id: quality_checklist
+    attributes:
+      label: Fit quality checklist
+      description: Confirm your run meets all quality gates before submitting.
+      options:
+        - label: "`r2 >= 0.85`"
+          required: true
+        - label: "`condition_number < 30`"
+          required: true
+        - label: No negative coefficients (`wh_per_image`, `wh_per_1k_input`, `wh_per_1k_output` all ≥ 0)
+          required: true
+        - label: "`residuals_structured: false` (or no structured residual pattern visible)"
+          required: true
+        - label: "`idle_drift_pct < 15`"
+          required: true
+        - label: No runs flagged as thermally throttled
+          required: true
+        - label: "`gpu_power_captured: true`"
+          required: true
+        - label: Machine was on AC power during the run
+          required: true
+        - label: Default image set used (`image_set: \"vetch_standard_v1\"`)
+          required: true
+
+  - type: checkboxes
+    id: suspect
+    attributes:
+      label: Suspect run
+      options:
+        - label: My run failed one or more quality gates above — I'm submitting anyway for reference

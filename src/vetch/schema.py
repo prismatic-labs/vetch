@@ -172,6 +172,7 @@ class InferenceEvent(TypedDict, total=False):
     # Error handling
     error: bool
     error_type: Union[str, None]
+    retry_count: Union[int, None]  # Application-level retries for this logical call (0 = first try)
 
     # Tracking status
     tracking_disabled: bool
@@ -228,6 +229,8 @@ class EnergyOverride(TypedDict, total=False):
     tier: int  # 0, 1, 2, or 3
     source: str  # Free-text provenance
     basis: str  # Methodology/provenance detail
+    wh_per_image: float  # VLM only: Wh per image (vision encoder cost)
+    intercept_wh: float  # VLM only: fixed per-request overhead from 4-parameter LS fit
 
 
 class ValidationResult:
@@ -299,6 +302,26 @@ def validate_energy_override(
     basis = override.get("basis")
     if basis is not None and isinstance(basis, str):
         result["basis"] = basis
+
+    # Optional wh_per_image (VLM calibrations)
+    wh_img = override.get("wh_per_image")
+    if wh_img is not None:
+        if isinstance(wh_img, (int, float)) and wh_img >= 0:
+            result["wh_per_image"] = float(wh_img)
+        else:
+            warnings.append(
+                f"energy_override.wh_per_image must be non-negative, got {wh_img!r}, ignoring"
+            )
+
+    # Optional intercept_wh (fixed per-request overhead from 4-parameter LS fit)
+    intercept = override.get("intercept_wh")
+    if intercept is not None:
+        if isinstance(intercept, (int, float)) and intercept >= 0:
+            result["intercept_wh"] = float(intercept)
+        else:
+            warnings.append(
+                f"energy_override.intercept_wh must be non-negative, got {intercept!r}, ignoring"
+            )
 
     return result, warnings
 

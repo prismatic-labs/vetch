@@ -678,6 +678,11 @@ def _average(values: list[int]) -> float:
 
 
 def _retry_event_rate(events: list[dict[str, Any]]) -> float:
+    # retry_count is emitted as 0 by wrapper.py (default: first try, no retries).
+    # The PREMIUM-001 gate here will filter out workflows where the application
+    # performs explicit retries; those workflows are less safe to downgrade because
+    # retry logic may mask a capability gap. Set retry_count > 0 on InferenceEvent
+    # to activate this gate (e.g., via tags or a custom wrapper).
     if not events:
         return 0.0
     retry_events = sum(1 for event in events if int(event.get("retry_count") or 0) > 0)

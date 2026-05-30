@@ -12,6 +12,7 @@ Vetch detects stalled agents, RAG bloat, excessive generation, zombie LLM calls,
 
 - **[Live demo: kill a runaway agent](examples/circuit_breaker_demo.py)** — `vetch.set_stall_action("kill")` and watch
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
+- **[Vercel AI SDK (Next.js / Edge)](QUICKSTART-VERCEL.md)**
 - **[Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
 - **[Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across 50 direct registry models
 
@@ -59,15 +60,19 @@ Vetch analyzes every inference call for behavioral patterns that indicate waste:
 |----------|---------|--------|--------|
 | `STALL-001` | Stalled agent loop | ≥80% of last 20 calls produce short output with repeated input | ✅ Implemented |
 | `CACHE-001` | Prompt caching opportunity | >50% of calls share identical input token counts across ≥6 calls | ✅ Implemented |
+| `CACHE-002` | Cache not active | Same repetition signal as CACHE-001 but no cache reads observed | ✅ Implemented |
 | `RAG-001` | RAG bloat | Average input:output ratio exceeds 50:1 | ✅ Implemented |
 | `BABBLE-001` | Excessive generation | Recent average output exceeds 1,500 tokens without long-form task signal | ✅ Implemented |
 | `ZOMBIE-001` | Post-completion drift | Repeated normal-length outputs after likely task completion | ✅ Implemented |
 | `CTX-001` | Context snowball | The prompt gets larger every turn while useful output stays low | ✅ Implemented |
 | `EMPTY-001` | Invisible output burn | Output tokens consumed while visible output is near-empty | ✅ Implemented |
-| `TRUNC-001` | Repeated response truncation | Frequent `finish_reason=max_tokens` across recent calls | ✅ Implemented |
+| `TRUNC-001` | Repeated response truncation | Frequent `finish_reason=max_tokens` or `length` across recent calls | ✅ Implemented |
+| `STREAM-001` | Incomplete streams | ≥30% of streaming calls cancelled before completion | ✅ Implemented |
+| `REASONING-001` | Reasoning model, no reasoning | o1/o3 calls return no reasoning tokens | ✅ Implemented |
+| `ERROR-001` | Error storm | ≥3 consecutive errors or ≥40% error rate in recent window | ✅ Implemented |
 | `SESSION-BUDGET-001` | Session over budget | Configured cost/energy/carbon threshold exceeded | ⚠️ Partial — alerts only, no advisory ID |
 | `ATTRIBUTION-001` | Unattributed spend | Required tags missing from calls | ⚠️ Partial — infrastructure only |
-| `RETRY-001` | Retry storm | Burst of repeated failed or near-identical calls | 🔜 Planned |
+| `RETRY-001` | Retry storm | Burst of repeated failed or near-identical calls | 🔜 Planned (`retry_count` field available; detector not yet wired) |
 | `PREMIUM-001` | Large model rightsizing candidate | Stable tagged workflow mostly uses a premium model and has cheaper eval candidates | ✅ Implemented — audit-only |
 
 Full taxonomy with detection signals, false positives, and recommended actions: [docs/inference-waste-taxonomy.md](docs/inference-waste-taxonomy.md)
@@ -470,7 +475,9 @@ The audit reads locally stored metadata, runs advisory detection, computes per-t
 - **ZOMBIE-001** — repeated normal-length outputs after likely completion
 - **CTX-001** — context/input tokens snowballing across a no-progress session
 - **EMPTY-001** — output tokens consumed while visible output is near-empty
-- **TRUNC-001** — repeated `finish_reason=max_tokens`, often causing cut-off JSON, tool calls, or answers
+- **TRUNC-001** — repeated `finish_reason=max_tokens` or `length`, often causing cut-off JSON, tool calls, or answers
+- **ERROR-001** — error storm: ≥3 consecutive errors or ≥40% error rate in the recent window
+- **CACHE-002** — repetition pattern with no cache reads observed (caching available but not active)
 
 **Lower-level Python API** (for programmatic access or custom reporting):
 
@@ -499,6 +506,14 @@ print(format_calibration_result(result))
 ```
 
 **Requirements:** NVIDIA GPU with `pynvml` (`pip install nvidia-ml-py3`)
+
+### Apple Silicon (M-series)
+
+On Apple Silicon, use `vetch calibrate-apple-silicon` for powermetrics-based hardware measurement (requires `sudo`). Results are stored in `~/.vetch/calibrations/` and picked up automatically at inference time. See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md) for details.
+
+### Community calibrations
+
+`data/calibrations.json` ships with community-contributed coefficients and is populated from accepted GitHub submissions. To share your calibration results, open a PR adding your `_apple_detail.json` output from `~/.vetch/calibrations/` to the `community/` directory.
 
 ## Clean test isolation
 
@@ -537,7 +552,7 @@ vetch.uninstrument()  # Restore original SDK methods
 | OpenRouter | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
 | Together.ai | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
 | Anyscale | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
-| Ollama | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
+| Ollama | Supported | Native SDK (`vetch.providers.ollama`) or OpenAI-compat API (auto-detected) |
 | vLLM / TGI | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
 
 **OpenAI-compatible endpoints** (OpenRouter, Together.ai, Ollama, vLLM, TGI) work automatically with `vetch.instrument()` since they use the `openai` Python SDK under the hood.
@@ -590,6 +605,15 @@ export VETCH_OUTPUT=none  # Silence all output
 import logging
 logging.getLogger("vetch").setLevel(logging.DEBUG)
 ```
+
+## v0.8.0 release train (Python + Vercel AI SDK)
+
+v0.8.0 ships two install surfaces:
+
+1. **Python (PyPI):** [`QUICKSTART.md`](QUICKSTART.md) — `pip install vetch`, `vetch.instrument()`, audits, stall circuit breaker.
+2. **Vercel AI SDK:** [`QUICKSTART-VERCEL.md`](QUICKSTART-VERCEL.md) — `@vetch/ai-sdk` middleware for AI SDK 6.x (monorepo install until npm publish).
+
+Registry parity check (when changing energy/pricing data): `python scripts/sync_ai_sdk_registries.py`
 
 ## Contributing
 

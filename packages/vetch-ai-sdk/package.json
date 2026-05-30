@@ -1,0 +1,34 @@
+{
+  "name": "@vetch/ai-sdk",
+  "version": "0.8.0",
+  "private": true,
+  "type": "module",
+  "description": "First-party Vetch middleware for Vercel AI SDK 6.x — schema v2 events, local energy/carbon/cost estimates, advisories, and Edge-safe emission.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build",
+    "test": "npm run build && vitest run && node ./test/event-smoke.mjs && node ./test/event-stream-usage.mjs && node ./test/stream-middleware.mjs"
+  },
+  "peerDependencies": {
+    "@ai-sdk/provider": "^3.0.0",
+    "ai": "^6.0.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^3.0.0",
+    "@types/node": "^22.0.0",
+    "ai": "^6.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.7"
+  }
+}

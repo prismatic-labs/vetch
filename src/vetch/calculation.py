@@ -171,6 +171,49 @@ def _reset_registries() -> None:
 
 
 
+
+_calibration_cache: dict[tuple[str, str], Any] = {}
+
+
+def _clear_calibration_cache() -> None:
+    """Flush the local-calibration file cache. Call after writing a new calibration."""
+    _calibration_cache.clear()
+
+
+def _effective_text_input_tokens(
+    input_tokens: int,
+    n_images: int,
+    image_input_tokens: int,
+    visual_tokens_per_image: int | None,
+) -> int:
+    """Text-only input tokens for Tier-0 coeffs fit on decoupled prompt counts."""
+    in_tokens = max(0, input_tokens)
+    if not visual_tokens_per_image or visual_tokens_per_image <= 0:
+        return in_tokens
+    visual_total = max(0, n_images) * visual_tokens_per_image
+    if image_input_tokens > 0:
+        visual_total = max(visual_total, int(image_input_tokens))
+    return max(0, in_tokens - visual_total)
+
+
+def _get_local_calibration(provider: str, model: str) -> Any:
+    """Return a cached CalibrationResult for (provider, model), or None."""
+    key = (provider, model)
+    if key not in _calibration_cache:
+        try:
+            from vetch.calibrate import load_calibration
+            from vetch.community_calibrations import lookup_community_calibration
+
+            cal = load_calibration(provider, model)
+            if cal is None:
+                cal = lookup_community_calibration(provider, model)
+            _calibration_cache[key] = cal
+        except (ImportError, OSError, ValueError) as e:
+            logger.debug("Failed to load local calibration for %s/%s: %s", provider, model, e)
+            _calibration_cache[key] = None
+    return _calibration_cache[key]
+
+
 def resolve_model(model: str) -> tuple[str, bool]:
     """Resolve a model name to a registry entry, handling aliases.
 
@@ -421,6 +464,8 @@ def calculate_energy(
     model: str,
     energy_override: dict[str, Any] | None = None,
     cache_read_tokens: int = 0,
+    n_images: int = 0,
+    image_input_tokens: int = 0,
 ) -> tuple[float, int, int, str, str, bool]:
     """Calculate energy consumption in Watt-hours.
 
@@ -457,7 +502,39 @@ def calculate_energy(
         source = energy_override.get("source", "override")
         basis = energy_override.get("basis", "User-provided override")
 
-        energy_wh = (in_tokens * wh_in + out_tokens * wh_out) / 1000
+        visual_tokens_per_image = energy_override.get("visual_tokens_per_image")
+        vtok = (
+            int(visual_tokens_per_image)
+            if isinstance(visual_tokens_per_image, int) and visual_tokens_per_image > 0
+            else None
+        )
+        text_in_tokens = _effective_text_input_tokens(
+            in_tokens, n_images, image_input_tokens, vtok
+        )
+
+        cache_tokens = min(max(0, cache_read_tokens), text_in_tokens)
+        fresh_tokens = text_in_tokens - cache_tokens
+        energy_wh = (
+            fresh_tokens * wh_in
+            + cache_tokens * wh_in * CACHE_READ_ENERGY_FACTOR
+            + out_tokens * wh_out
+        ) / 1000
+
+        # Add vision-encoder energy for VLM calibrations.
+        wh_per_image = energy_override.get("wh_per_image")
+        if wh_per_image is not None:
+            image_units = float(max(0, n_images))
+            if vtok is not None and image_input_tokens > 0:
+                token_units = image_input_tokens / vtok
+                image_units = max(image_units, token_units)
+            if image_units > 0:
+                energy_wh += wh_per_image * image_units
+
+        # Add fixed per-request intercept from 4-parameter LS fit (Apple Silicon calibration)
+        intercept_wh = energy_override.get("intercept_wh")
+        if intercept_wh is not None and intercept_wh > 0:
+            energy_wh += intercept_wh
+
         uncertainty_pct = get_uncertainty_pct(tier)
         # Check if model is known in registry anyway for informational purposes
         _, known = resolve_model(model)
@@ -1139,6 +1216,7 @@ def prepare_inference_metrics(
     existing_warnings: list[str],
     accumulated_tik_tokens: int = 0,
     content_type_hint: str = "en",
+    n_images: int = 0,
 ) -> InferenceMetrics:
     """Compute all energy/carbon/cost metrics for a single inference call.
 
@@ -1167,6 +1245,36 @@ def prepare_inference_metrics(
 
     metrics = InferenceMetrics()
     metrics.warnings = list(existing_warnings)
+
+    # Auto-load local hardware calibration when no override is provided.
+    # Calibrations saved by `vetch calibrate-apple-silicon` (or `vetch calibrate`)
+    # are Tier 0 (hardware-measured) and take precedence over the registry.
+    # Results are cached in-process (see _calibration_cache) to avoid file I/O
+    # on every inference call.
+    if energy_override is None:
+        cal = _get_local_calibration(provider, model)
+        if cal is not None and cal.active:
+            if cal.origin == "community":
+                source = "community_calibration"
+                basis = (
+                    f"Community calibration prior ({cal.gpu_name or 'Apple Silicon'})"
+                )
+            else:
+                source = "local_calibration"
+                basis = f"Hardware-measured on {cal.gpu_name or 'local GPU'}"
+            energy_override = {
+                "wh_per_1k_input": cal.wh_per_1k_input,
+                "wh_per_1k_output": cal.wh_per_1k_output,
+                "tier": cal.tier,
+                "source": source,
+                "basis": basis,
+            }
+            if cal.wh_per_image is not None:
+                energy_override["wh_per_image"] = cal.wh_per_image
+            if cal.visual_tokens_per_image is not None:
+                energy_override["visual_tokens_per_image"] = cal.visual_tokens_per_image
+            if cal.intercept_wh is not None:
+                energy_override["intercept_wh"] = cal.intercept_wh
 
     # 1. Grid intensity
     grid_intensity = get_carbon_intensity(region)
@@ -1223,6 +1331,10 @@ def prepare_inference_metrics(
         if text:
             in_tokens = _int_or_zero(text.get("input_tokens"))
             out_tokens = _int_or_zero(text.get("output_tokens"))
+            image_input_tokens = 0
+            image = usage.get("image")
+            if isinstance(image, dict):
+                image_input_tokens = _int_or_zero(image.get("input_tokens"))
 
             # Include reasoning tokens (o1/o3 thinking, Gemini thinking).
             # These are generated (decode), so they count as output for energy.
@@ -1259,11 +1371,14 @@ def prepare_inference_metrics(
                 model,
                 cast("dict[str, Any]", energy_override),
                 cache_read_tokens=_cache_tokens,
+                n_images=n_images,
+                image_input_tokens=image_input_tokens,
             )
 
             baseline_energy_wh: float | None = None
 
-            # Compute cache energy saving vs. uncached baseline
+            # Compute cache energy saving vs. uncached baseline.
+            # n_images is passed so image energy cancels symmetrically on both sides.
             if _cache_tokens > 0 and metrics.energy_wh is not None:
                 (baseline_energy_wh, *_) = calculate_energy(
                     in_tokens,
@@ -1271,6 +1386,8 @@ def prepare_inference_metrics(
                     model,
                     cast("dict[str, Any]", energy_override),
                     cache_read_tokens=0,
+                    n_images=n_images,
+                    image_input_tokens=image_input_tokens,
                 )
                 if baseline_energy_wh is not None:
                     metrics.cache_energy_saving_wh = baseline_energy_wh - metrics.energy_wh

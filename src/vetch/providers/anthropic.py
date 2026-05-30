@@ -748,7 +748,7 @@ def instrument_anthropic_module() -> bool:
             with contextlib.suppress(Exception):
                 patch_anthropic_client(self)
 
-        anthropic.Anthropic.__init__ = patched_init
+        anthropic.Anthropic.__init__ = patched_init  # type: ignore[method-assign]
 
         # Also patch AsyncAnthropic if available
         if hasattr(anthropic, "AsyncAnthropic"):
@@ -759,7 +759,7 @@ def instrument_anthropic_module() -> bool:
                 with contextlib.suppress(Exception):
                     patch_anthropic_client(self)
 
-            anthropic.AsyncAnthropic.__init__ = patched_async_init
+            anthropic.AsyncAnthropic.__init__ = patched_async_init  # type: ignore[method-assign]
 
         _module_instrumented = True
         logger.debug("Anthropic module instrumented")
@@ -799,10 +799,10 @@ def uninstrument_anthropic_module() -> bool:
             _client_originals.clear()
 
         if _original_anthropic_init is not None:
-            anthropic.Anthropic.__init__ = _original_anthropic_init
+            anthropic.Anthropic.__init__ = _original_anthropic_init  # type: ignore[method-assign]
 
         if _original_async_anthropic_init is not None and hasattr(anthropic, "AsyncAnthropic"):
-            anthropic.AsyncAnthropic.__init__ = _original_async_anthropic_init
+            anthropic.AsyncAnthropic.__init__ = _original_async_anthropic_init  # type: ignore[method-assign]
 
         _module_instrumented = False
         _original_anthropic_init = None

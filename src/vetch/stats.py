@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict, deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from math import sqrt
 from typing import Any, NamedTuple
@@ -38,6 +38,23 @@ class _RecentCall(NamedTuple):
     visible_output_chars: int | None = None
     finish_reason: str | None = None
     requested_max_tokens: int | None = None
+    error: bool = False
+    cache_read_tokens: int = 0
+    is_stream: bool = False
+    complete: bool = True
+    is_reasoning_model: bool = False
+    has_reasoning_tokens: bool = False
+
+
+def _count_trailing_errors(calls: Sequence[_RecentCall]) -> int:
+    """Return the number of consecutive error calls at the tail of the window."""
+    count = 0
+    for call in reversed(calls):
+        if call.error:
+            count += 1
+        else:
+            break
+    return count
 
 
 @dataclass
@@ -119,6 +136,25 @@ class SessionStats:
             and raw_requested_max_tokens > 0
             else None
         )
+        is_error = bool(event.get("error"))
+        raw_crt = event.get("cache_read_tokens")
+        cache_read_tokens = int(raw_crt) if isinstance(raw_crt, int) else 0
+        is_stream = bool(event.get("is_stream"))
+        complete = bool(event.get("complete", True))
+
+        # Reasoning model detection — lazy import to avoid circular dependency.
+        model_name = str(event.get("model") or "")
+        is_reasoning_model = False
+        has_reasoning_tokens = False
+        if model_name:
+            try:
+                from vetch.calculation import _is_reasoning_compute_model
+                is_reasoning_model = _is_reasoning_compute_model(model_name)
+            except Exception:
+                pass
+        reasoning_usage = (usage.get("reasoning") or {}) if isinstance(usage, dict) else {}
+        if isinstance(reasoning_usage, dict):
+            has_reasoning_tokens = int(reasoning_usage.get("output_tokens") or 0) > 0
 
         self.total_input_tokens += in_tok
         self.total_output_tokens += out_tok
@@ -135,7 +171,7 @@ class SessionStats:
         if in_tok > 0:
             self.input_token_counts[in_tok] += 1
 
-        # Rolling window for stall detection
+        # Rolling window for stall / error / stream / cache / reasoning detection
         self.recent_calls.append(
             _RecentCall(
                 out_tok,
@@ -144,6 +180,12 @@ class SessionStats:
                 visible_chars,
                 finish_reason,
                 requested_max_tokens,
+                is_error,
+                cache_read_tokens,
+                is_stream,
+                complete,
+                is_reasoning_model,
+                has_reasoning_tokens,
             ),
         )
 
@@ -255,7 +297,7 @@ class SessionStats:
         # Complements output_cap_hit_count (which requires requested_max_tokens
         # to be set); this works even when the user didn't set an explicit cap.
         max_tokens_finish_count = sum(
-            1 for c in recent if c.finish_reason == "max_tokens"
+            1 for c in recent if c.finish_reason in {"max_tokens", "length"}
         )
         max_tokens_finish_fraction = (
             max_tokens_finish_count / window_size if window_size else 0.0
@@ -288,6 +330,30 @@ class SessionStats:
             "recent_output_cap_count_window": output_cap_window,
             "recent_max_tokens_finish_count": max_tokens_finish_count,
             "recent_max_tokens_finish_fraction": round(max_tokens_finish_fraction, 4),
+            "recent_error_count": sum(1 for c in recent if c.error),
+            "recent_error_fraction": round(
+                sum(1 for c in recent if c.error) / window_size if window_size else 0.0,
+                4,
+            ),
+            "recent_consecutive_errors": _count_trailing_errors(recent),
+            # Cache miss detection: calls where no cache tokens were read
+            "recent_cache_miss_count": sum(1 for c in recent if c.cache_read_tokens == 0),
+            "recent_cache_miss_fraction": round(
+                sum(1 for c in recent if c.cache_read_tokens == 0) / window_size
+                if window_size else 0.0,
+                4,
+            ),
+            # Incomplete stream detection
+            "recent_stream_count": sum(1 for c in recent if c.is_stream),
+            "recent_stream_incomplete_count": sum(
+                1 for c in recent if c.is_stream and not c.complete
+            ),
+            # Reasoning model with no reasoning tokens
+            "recent_reasoning_model_count": sum(1 for c in recent if c.is_reasoning_model),
+            "recent_reasoning_missing_count": sum(
+                1 for c in recent
+                if c.is_reasoning_model and not c.has_reasoning_tokens and c.output_tokens > 20
+            ),
         }
 
 

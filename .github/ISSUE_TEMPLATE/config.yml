@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a bug
+    url: https://github.com/prismatic-labs/vetch/issues/new?template=bug_report.md
+    about: Found a bug in Vetch? Report it here.
+  - name: Feature request
+    url: https://github.com/prismatic-labs/vetch/issues/new?template=feature_request.md
+    about: Suggest an improvement or new feature.
