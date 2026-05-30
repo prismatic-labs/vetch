@@ -518,7 +518,7 @@ def _wrapped_generate(original: Any, model_obj: Any) -> Any:
             if is_stream:
                 # Wrap the stream to capture during iteration
                 return StreamWrapper(
-                    result, model_name, region=infer_vertex_region(model)
+                    result, model_name, region=infer_vertex_region(model_obj)
                 )
 
             # Non-streaming: capture immediately
@@ -556,7 +556,7 @@ def _wrapped_generate_async(original: Any, model_obj: Any) -> Any:
             if is_stream:
                 # Wrap the stream to capture during iteration
                 return AsyncStreamWrapper(
-                    result, model_name, region=infer_vertex_region(model)
+                    result, model_name, region=infer_vertex_region(model_obj)
                 )
 
             # Non-streaming: capture immediately
