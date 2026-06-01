@@ -18,13 +18,30 @@ export interface VetchImageUsage {
   output_tokens: number;
   total_tokens: number;
   image_count?: number;
+  total_pixels?: number;
+}
+
+export interface VetchAudioUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  input_seconds?: number;
+  output_seconds?: number;
+}
+
+export interface VetchVideoUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  input_seconds?: number;
+  output_seconds?: number;
 }
 
 export interface VetchUsage {
   text: VetchTextUsage;
   image: VetchImageUsage | null;
-  audio: null;
-  video: null;
+  audio: VetchAudioUsage | null;
+  video: VetchVideoUsage | null;
   reasoning: VetchTextUsage | null;
 }
 
@@ -114,8 +131,9 @@ export interface VetchEvent {
   tags: VetchTags | null;
   error: boolean;
   error_type: string | null;
+  retry_count: number | null;
 
-  tracking_disabled: false;
+  tracking_disabled: boolean;
   tracking_degraded: boolean;
   vetch_warnings: string[];
   usage_estimated: boolean;
@@ -169,12 +187,34 @@ export interface VetchThresholds {
   repairAttempts?: number;
   protocolVoidWindow?: number;
   protocolVoidMinOutputTokens?: number;
+  errorWindow?: number;
+  errorFraction?: number;
+  consecutiveErrors?: number;
+  streamWindow?: number;
+  streamIncompleteFraction?: number;
+  reasoningWindow?: number;
+  reasoningMissingFraction?: number;
+}
+
+export interface VetchBudgets {
+  energyWh?: number;
+  carbonG?: number;
+  costUsd?: number;
 }
 
 export interface VetchOptions {
+  /** Explicitly disable the middleware. Env kill switch also honors VETCH_DISABLED/VETCH_ENABLED. */
+  disabled?: boolean;
+  /** Opt in to release Easter eggs such as NAPLES-081. Disabled by default. */
+  easterEggs?: boolean;
+  /** Force provider label on events (e.g. `ollama` for OpenAI-compat local endpoints). */
+  providerOverride?: string;
   emitter?: VetchEmitter;
   onAdvisory?: (advisories: VetchAdvisory[], event: VetchEvent) => void | Promise<void>;
+  /** Warn-only callback when `budget_exceeded` is true on an event. */
+  onBudgetExceeded?: (event: VetchEvent) => void | Promise<void>;
   onEmitterError?: (error: unknown, event: VetchEvent) => void | Promise<void>;
+  /** When true (default), emitter/advisory failures do not break the model call. */
   failOpen?: boolean;
   debug?: boolean;
   emissionMode?: VetchEmissionMode;
@@ -187,6 +227,7 @@ export interface VetchOptions {
   attribution?: VetchAttribution | (() => VetchAttribution);
   region?: string;
   priceMultiplier?: number;
+  budgets?: VetchBudgets | (() => VetchBudgets);
   /** Tier-0 hardware coefficients; auto-loaded from ~/.vetch on Node when omitted. */
   energyOverride?: import("./calculation.js").EnergyOverride | null;
   protocol?: VetchProtocolProgress;
@@ -199,6 +240,9 @@ export interface VetchRequestMetadata {
   tags?: VetchTags;
   attribution?: VetchAttribution;
   protocol?: VetchProtocolProgress;
+  budgets?: VetchBudgets;
+  retryCount?: number;
+  providerOverride?: string;
 }
 
 export interface VetchStreamObservation {

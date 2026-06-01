@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 import { createVetchEvent } from "../dist/event.js";
 
-const event = createVetchEvent({
+const event = await createVetchEvent({
   operation: "generate",
   model: { provider: "openai", modelId: "gpt-4.1-mini" },
   params: {

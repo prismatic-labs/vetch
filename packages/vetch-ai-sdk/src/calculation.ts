@@ -4,8 +4,9 @@ import pricingJson from "./registry/pricing.json" with { type: "json" };
 import wueJson from "./registry/wue.json" with { type: "json" };
 import globalAveragesJson from "./sensing/global_averages.json" with { type: "json" };
 
-import { loadLocalCalibration } from "./local-calibration.js";
+import { canUseNodeCalibration } from "./node-capability.js";
 import type { VetchEvent, VetchSignalQuality, VetchUsage } from "./types.js";
+import type { LocalEnergyOverride } from "./local-calibration.js";
 
 const METHODOLOGY_VERSION = "1.2";
 const CACHE_READ_ENERGY_FACTOR = 0.15;
@@ -142,7 +143,21 @@ interface EnrichOptions {
   energyOverride?: EnergyOverride | null;
 }
 
-export function enrichVetchEvent(event: VetchEvent, options: EnrichOptions): VetchEvent {
+async function resolveEnergyOverride(
+  options: EnrichOptions,
+  event: VetchEvent,
+): Promise<EnergyOverride | null> {
+  if (options.energyOverride !== undefined) {
+    return options.energyOverride;
+  }
+  if (!canUseNodeCalibration()) {
+    return null;
+  }
+  const { loadLocalCalibration } = await import("./local-calibration.js");
+  return loadLocalCalibration(options.provider, event.model);
+}
+
+export async function enrichVetchEvent(event: VetchEvent, options: EnrichOptions): Promise<VetchEvent> {
   const resolved = resolveModel(event.model);
   event.model_known = resolved.known;
   event.energy_basis = event.energy_basis ?? null;
@@ -192,8 +207,7 @@ export function enrichVetchEvent(event: VetchEvent, options: EnrichOptions): Vet
   const cacheReadTokens = clampInt(event.cache_read_tokens);
   const cacheCreationTokens = clampInt(event.cache_creation_tokens);
   const priceMultiplier = options.priceMultiplier ?? 1.0;
-  const energyOverride =
-    options.energyOverride ?? loadLocalCalibration(options.provider, event.model);
+  const energyOverride = await resolveEnergyOverride(options, event);
 
   const nImages = clampInt(usage?.image?.image_count ?? 0);
   const imageInputTokens = clampInt(usage?.image?.input_tokens ?? 0);

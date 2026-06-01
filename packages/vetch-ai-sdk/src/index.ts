@@ -1,4 +1,10 @@
-export { createVetchSession, detectAdvisories } from "./advisories.js";
+export {
+  createIsolatedVetchSession,
+  createVetchSession,
+  detectAdvisories,
+  detectPerCallAdvisories,
+  detectSessionAdvisories,
+} from "./advisories.js";
 export { enrichVetchEvent, resolveModel } from "./calculation.js";
 export { loadLocalCalibration } from "./local-calibration.js";
 export { VETCH_VERSION } from "./version.js";
@@ -9,6 +15,7 @@ export { createVetchMiddleware, withVetch } from "./middleware.js";
 export type {
   VetchAdvisory,
   VetchAttribution,
+  VetchBudgets,
   VetchEmitter,
   VetchEmissionMode,
   VetchEvent,

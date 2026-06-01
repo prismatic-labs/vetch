@@ -12,7 +12,7 @@ Vetch detects stalled agents, RAG bloat, excessive generation, zombie LLM calls,
 
 - **[Live demo: kill a runaway agent](examples/circuit_breaker_demo.py)** — `vetch.set_stall_action("kill")` and watch
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
-- **[Vercel AI SDK (Next.js / Edge)](QUICKSTART-VERCEL.md)**
+- **[Vercel AI SDK (Next.js / Edge)](QUICKSTART-VERCEL.md)** — [`@prismatic-labs/vetch-ai-sdk`](packages/vetch-ai-sdk/) · [scope](docs/SCOPE-v0.8.0-vercel.md) · [npm publish](docs/NPM_PUBLISH.md)
 - **[Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
 - **[Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across 50 direct registry models
 
@@ -611,7 +611,7 @@ logging.getLogger("vetch").setLevel(logging.DEBUG)
 v0.8.0 ships two install surfaces:
 
 1. **Python (PyPI):** [`QUICKSTART.md`](QUICKSTART.md) — `pip install vetch`, `vetch.instrument()`, audits, stall circuit breaker.
-2. **Vercel AI SDK:** [`QUICKSTART-VERCEL.md`](QUICKSTART-VERCEL.md) — `@vetch/ai-sdk` middleware for AI SDK 6.x (monorepo install until npm publish).
+2. **Vercel AI SDK:** [`QUICKSTART-VERCEL.md`](QUICKSTART-VERCEL.md) — `@prismatic-labs/vetch-ai-sdk` for AI SDK 6.x ([publish guide](docs/NPM_PUBLISH.md), [Next.js example](packages/vetch-ai-sdk/examples/nextjs-app-router/README.md)).
 
 Registry parity check (when changing energy/pricing data): `python scripts/sync_ai_sdk_registries.py`
 

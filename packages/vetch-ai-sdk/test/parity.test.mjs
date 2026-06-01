@@ -9,6 +9,8 @@ import {
   createVetchMiddleware,
   createVetchSession,
   detectAdvisories,
+  detectPerCallAdvisories,
+  VETCH_VERSION,
   withVetch,
 } from "../dist/index.js";
 
@@ -66,7 +68,11 @@ function streamResult({ usage = basicUsage, text = "OK", finishReason = finishSt
   };
 }
 
-async function runGenerate(middleware, { sessionId, outputTokens = 10 }) {
+async function runGenerate(middleware, { sessionId, outputTokens = 10 } = {}) {
+  const vetch = { protocol: { expectedToolUse: true } };
+  if (sessionId !== undefined) {
+    vetch.attribution = { sessionId };
+  }
   await middleware.wrapGenerate({
     doGenerate: async () =>
       generateResult({
@@ -79,21 +85,21 @@ async function runGenerate(middleware, { sessionId, outputTokens = 10 }) {
       throw new Error("doStream should not be called");
     },
     params: {
-      providerOptions: {
-        vetch: {
-          attribution: { sessionId },
-          protocol: { expectedToolUse: true },
-        },
-      },
+      providerOptions: { vetch },
     },
     model: { provider: "openai", modelId: "gpt-4.1-mini" },
   });
 }
 
 describe("schema v2 calculation parity", () => {
+  it("keeps the exported VETCH_VERSION in sync with package.json", async () => {
+    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+    expect(VETCH_VERSION).toBe(pkg.version);
+  });
+
   it("matches the Python prepare_inference_metrics fixture for cache, reasoning, cost, carbon, and water", async () => {
     const fixture = await readFixture("python-gpt-41-mini-cache.json");
-    const event = createVetchEvent({
+    const event = await createVetchEvent({
       operation: "generate",
       model: { provider: "openai", modelId: "gpt-4.1-mini" },
       params: {
@@ -125,8 +131,8 @@ describe("schema v2 calculation parity", () => {
     expectEventFields(event, fixture.fields);
   });
 
-  it("marks model_known from registry resolution and uses fallback estimates for unknown models", () => {
-    const gatewayEvent = createVetchEvent({
+  it("marks model_known from registry resolution and uses fallback estimates for unknown models", async () => {
+    const gatewayEvent = await createVetchEvent({
       operation: "generate",
       model: { provider: "gateway", modelId: "openai/gpt-4.1-mini" },
       params: {},
@@ -140,7 +146,7 @@ describe("schema v2 calculation parity", () => {
     expect(gatewayEvent.model_known).toBe(true);
     expect(gatewayEvent.energy_source).toBe("registry");
 
-    const event = createVetchEvent({
+    const event = await createVetchEvent({
       operation: "generate",
       model: { provider: "unknown", modelId: "totally-unknown-model-xyz" },
       params: {},
@@ -162,8 +168,8 @@ describe("schema v2 calculation parity", () => {
     expect(event.vetch_warnings.some((warning) => warning.includes("not in registry"))).toBe(true);
   });
 
-  it("estimates usage locally from visible chars when provider usage is unavailable", () => {
-    const event = createVetchEvent({
+  it("estimates usage locally from visible chars when provider usage is unavailable", async () => {
+    const event = await createVetchEvent({
       operation: "generate",
       model: { provider: "openai", modelId: "gpt-4.1-mini" },
       params: {},
@@ -304,6 +310,138 @@ describe("AI SDK v6 middleware integration", () => {
 
     expect(created).toEqual(["session-a", "session-b", "session-a"]);
   });
+
+  it("honors VETCH_DISABLED without emitting events", async () => {
+    const previous = process.env.VETCH_DISABLED;
+    process.env.VETCH_DISABLED = "true";
+    try {
+      const events = [];
+      const model = withVetch(
+        new MockLanguageModelV3({
+          provider: "openai",
+          modelId: "gpt-4.1-mini",
+          doGenerate: generateResult(),
+        }),
+        {
+          emitter: (event) => events.push(event),
+          emissionMode: "await",
+        },
+      );
+      await generateText({ model, prompt: "Say OK" });
+      expect(events).toHaveLength(0);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.VETCH_DISABLED;
+      } else {
+        process.env.VETCH_DISABLED = previous;
+      }
+    }
+  });
+
+  it("honors the explicit disabled option without emitting events", async () => {
+    const events = [];
+    const model = withVetch(
+      new MockLanguageModelV3({
+        provider: "openai",
+        modelId: "gpt-4.1-mini",
+        doGenerate: generateResult(),
+      }),
+      {
+        disabled: true,
+        emitter: (event) => events.push(event),
+        emissionMode: "await",
+      },
+    );
+
+    const result = await generateText({ model, prompt: "Say OK" });
+
+    expect(result.text).toBe("OK");
+    expect(events).toHaveLength(0);
+  });
+
+  it("can opt in to the 0.8.1 Naples release Easter egg", async () => {
+    const events = [];
+    const model = withVetch(
+      new MockLanguageModelV3({
+        provider: "openai",
+        modelId: "gpt-4.1-mini",
+        doGenerate: generateResult(),
+      }),
+      {
+        easterEggs: true,
+        emitter: (event) => events.push(event),
+        emissionMode: "await",
+      },
+    );
+
+    await generateText({ model, prompt: "Say OK" });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].advisories).toContainEqual({
+      code: "NAPLES-081",
+      severity: "info",
+      title: "Release train 081",
+      description: "the advice is to get more pizza",
+    });
+  });
+
+  it("labels Ollama OpenAI-compat endpoints as provider ollama", async () => {
+    const event = await createVetchEvent({
+      operation: "generate",
+      model: {
+        provider: "openai",
+        modelId: "llama3.1:8b",
+        baseURL: "http://localhost:11434/v1",
+      },
+      params: {},
+      result: generateResult({ usage: usageWithReasoning }),
+      startTimeMs: Date.now(),
+      options: {},
+    });
+
+    expect(event.provider).toBe("ollama");
+  });
+
+  it("honors providerOptions.vetch.providerOverride", async () => {
+    const event = await createVetchEvent({
+      operation: "generate",
+      model: { provider: "openai", modelId: "gpt-4.1-mini" },
+      params: {
+        providerOptions: {
+          vetch: {
+            providerOverride: "custom-local",
+          },
+        },
+      },
+      result: generateResult({ usage: usageWithReasoning }),
+      startTimeMs: Date.now(),
+      options: {},
+    });
+
+    expect(event.provider).toBe("custom-local");
+  });
+
+  it("records budget metadata and budget_exceeded", async () => {
+    const event = await createVetchEvent({
+      operation: "generate",
+      model: { provider: "openai", modelId: "gpt-4.1-mini" },
+      params: {
+        providerOptions: {
+          vetch: {
+            budget: { cost_usd: 0.000001 },
+            retry_count: 2,
+          },
+        },
+      },
+      result: generateResult({ usage: usageWithReasoning }),
+      startTimeMs: Date.now(),
+      options: {},
+    });
+
+    expect(event.retry_count).toBe(2);
+    expect(event.budget_cost_usd).toBe(0.000001);
+    expect(event.budget_exceeded).toBe(true);
+  });
 });
 
 // Minimal VetchEvent shape for advisory unit tests
@@ -382,5 +520,66 @@ describe("session advisories", () => {
     const codes = detectAdvisories(last, events).map((a) => a.code);
     expect(codes).toContain("CACHE-001");
     expect(codes).not.toContain("CACHE-002");
+  });
+
+  it("ERROR-001 fires on repeated errors", () => {
+    const events = Array.from({ length: 5 }, () => makeEvent({ error: true, error_type: "ProviderError" }));
+    const codes = detectAdvisories(events.at(-1), events).map((a) => a.code);
+    expect(codes).toContain("ERROR-001");
+  });
+
+  it("STREAM-001 fires when recent streams are incomplete", () => {
+    const events = Array.from({ length: 5 }, () => makeEvent({ is_stream: true, complete: false }));
+    const codes = detectAdvisories(events.at(-1), events).map((a) => a.code);
+    expect(codes).toContain("STREAM-001");
+  });
+
+  it("BUDGET-001 fires when budget_exceeded is true", () => {
+    const event = makeEvent({ budget_exceeded: true, budget_cost_usd: 0.01 });
+    const codes = detectPerCallAdvisories(event).map((a) => a.code);
+    expect(codes).toContain("BUDGET-001");
+  });
+
+  it("STALL-001 does not fire across calls without sessionId", async () => {
+    const middleware = createVetchMiddleware({
+      emissionMode: "await",
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await runGenerate(middleware, { outputTokens: 1 });
+    }
+    const lastEvents = [];
+    const model = withVetch(
+      new MockLanguageModelV3({
+        provider: "openai",
+        modelId: "gpt-4.1-mini",
+        doGenerate: generateResult({
+          usage: {
+            inputTokens: { total: 20, noCache: 20, cacheRead: 0, cacheWrite: 0 },
+            outputTokens: { total: 1, text: 1, reasoning: 0 },
+          },
+        }),
+      }),
+      {
+        emitter: (event) => lastEvents.push(event),
+        emissionMode: "await",
+      },
+    );
+    await generateText({ model, prompt: "one more" });
+    const codes = lastEvents.at(-1)?.advisories.map((a) => a.code) ?? [];
+    expect(codes).not.toContain("STALL-001");
+  });
+
+  it("REASONING-001 fires when reasoning models report no reasoning tokens", () => {
+    const events = Array.from({ length: 3 }, () =>
+      makeEvent({
+        model: "o3-mini",
+        usage: {
+          text: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+          reasoning: null,
+        },
+      }),
+    );
+    const codes = detectAdvisories(events.at(-1), events).map((a) => a.code);
+    expect(codes).toContain("REASONING-001");
   });
 });

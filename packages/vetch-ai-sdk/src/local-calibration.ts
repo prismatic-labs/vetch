@@ -1,7 +1,3 @@
-import { readFileSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
 export interface LocalEnergyOverride {
   wh_per_1k_input: number;
   wh_per_1k_output: number;
@@ -13,7 +9,46 @@ export interface LocalEnergyOverride {
   intercept_wh?: number;
 }
 
-const CALIBRATION_DIR = join(homedir(), ".vetch", "calibrations");
+interface NodeBuiltins {
+  fs: {
+    existsSync(path: string): boolean;
+    readFileSync(path: string, encoding: "utf8"): string;
+  };
+  os: {
+    homedir(): string;
+  };
+  path: {
+    join(...parts: string[]): string;
+  };
+}
+
+function getBuiltin<T>(name: string): T | null {
+  const getBuiltinModule = (
+    globalThis as {
+      process?: {
+        getBuiltinModule?: (specifier: string) => unknown;
+      };
+    }
+  ).process?.getBuiltinModule;
+  if (typeof getBuiltinModule !== "function") {
+    return null;
+  }
+  try {
+    return getBuiltinModule(name) as T;
+  } catch {
+    return null;
+  }
+}
+
+function getNodeBuiltins(): NodeBuiltins | null {
+  const fs = getBuiltin<NodeBuiltins["fs"]>("node:fs");
+  const os = getBuiltin<NodeBuiltins["os"]>("node:os");
+  const path = getBuiltin<NodeBuiltins["path"]>("node:path");
+  if (!fs || !os || !path) {
+    return null;
+  }
+  return { fs, os, path };
+}
 
 function calibrationModelVariants(model: string): string[] {
   const variants: string[] = [];
@@ -44,13 +79,18 @@ function safeFileStem(model: string): string {
   return model.replace(/:/g, "_");
 }
 
-function readCalibrationFile(provider: string, model: string): LocalEnergyOverride | null {
-  const path = join(CALIBRATION_DIR, `${provider}_${safeFileStem(model)}.json`);
-  if (!existsSync(path)) {
+function readCalibrationFile(
+  builtins: NodeBuiltins,
+  calibrationDir: string,
+  provider: string,
+  model: string,
+): LocalEnergyOverride | null {
+  const filePath = builtins.path.join(calibrationDir, `${provider}_${safeFileStem(model)}.json`);
+  if (!builtins.fs.existsSync(filePath)) {
     return null;
   }
   try {
-    const data = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const data = JSON.parse(builtins.fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
     if (data.active === false) {
       return null;
     }
@@ -81,11 +121,13 @@ export function loadLocalCalibration(
   provider: string,
   model: string,
 ): LocalEnergyOverride | null {
-  if (typeof process === "undefined" || !CALIBRATION_DIR) {
+  const builtins = getNodeBuiltins();
+  if (builtins === null) {
     return null;
   }
+  const calibrationDir = builtins.path.join(builtins.os.homedir(), ".vetch", "calibrations");
   for (const variant of calibrationModelVariants(model)) {
-    const loaded = readCalibrationFile(provider, variant);
+    const loaded = readCalibrationFile(builtins, calibrationDir, provider, variant);
     if (loaded !== null) {
       return loaded;
     }

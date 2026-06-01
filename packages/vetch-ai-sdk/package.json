@@ -1,9 +1,42 @@
 {
-  "name": "@vetch/ai-sdk",
-  "version": "0.8.0",
-  "private": true,
+  "name": "@prismatic-labs/vetch-ai-sdk",
+  "version": "0.8.1",
+  "private": false,
+  "license": "Apache-2.0",
   "type": "module",
-  "description": "First-party Vetch middleware for Vercel AI SDK 6.x — schema v2 events, local energy/carbon/cost estimates, advisories, and Edge-safe emission.",
+  "description": "First-party Vetch middleware for Vercel AI SDK 6.x - schema v2 events, local energy/carbon/cost estimates, advisories, and Edge-compatible emission.",
+  "keywords": [
+    "vetch",
+    "ai-sdk",
+    "vercel-ai-sdk",
+    "ai",
+    "llm",
+    "middleware",
+    "observability",
+    "telemetry",
+    "llmops",
+    "finops",
+    "energy",
+    "carbon",
+    "cost",
+    "edge",
+    "openai",
+    "anthropic"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prismatic-labs/vetch.git",
+    "directory": "packages/vetch-ai-sdk"
+  },
+  "homepage": "https://github.com/prismatic-labs/vetch/tree/main/packages/vetch-ai-sdk#readme",
+  "bugs": "https://github.com/prismatic-labs/vetch/issues",
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -12,9 +45,12 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
+    "prebuild": "node scripts/write-version.mjs",
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "prepack": "npm run build",

@@ -1,6 +1,7 @@
 import type {
   VetchEvent,
   VetchAttribution,
+  VetchBudgets,
   VetchLanguageModel,
   VetchOptions,
   VetchProtocolProgress,
@@ -11,6 +12,8 @@ import type {
   VetchUsage,
 } from "./types.js";
 import { enrichVetchEvent, resolveModel } from "./calculation.js";
+import { readEnvBudgets } from "./env.js";
+import { resolveProviderLabel } from "./provider-label.js";
 import { VETCH_VERSION } from "./version.js";
 
 interface EventArgs {
@@ -24,9 +27,13 @@ interface EventArgs {
   error?: unknown;
 }
 
-export function createVetchEvent(args: EventArgs): VetchEvent {
-  const modelInfo = getModelInfo(args.model);
+export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
   const requestMetadata = getRequestMetadata(args.params);
+  const providerOverride = requestMetadata.providerOverride ?? args.options.providerOverride;
+  const modelInfo = getModelInfo(
+    args.model,
+    providerOverride === undefined ? {} : { providerOverride },
+  );
   const rawUsage = args.streamObservation?.usage ?? getObjectValue(args.result, "usage");
   const textUsage = normalizeTextUsage(rawUsage);
   const finishReason = normalizeFinishReason(
@@ -41,6 +48,10 @@ export function createVetchEvent(args: EventArgs): VetchEvent {
   const cacheReadTokens = getCacheReadTokens(rawUsage);
   const cacheCreationTokens = getCacheCreationTokens(rawUsage);
   const protocolProgress = mergeProtocol(args.options.protocol, requestMetadata.protocol);
+  const budgets = mergeBudgets(
+    mergeBudgets(readEnvBudgets(), resolveBudgets(args.options.budgets)),
+    requestMetadata.budgets,
+  );
   const rawFinishReason = normalizeRawFinishReason(
     args.streamObservation?.rawFinishReason ?? getObjectValue(args.result, "finishReason"),
   );
@@ -108,9 +119,10 @@ export function createVetchEvent(args: EventArgs): VetchEvent {
     tags: Object.keys(tags).length > 0 ? tags : null,
     error: args.operation === "error",
     error_type: error?.name ?? null,
+    retry_count: requestMetadata.retryCount ?? null,
 
     tracking_disabled: false,
-    tracking_degraded: true,
+    tracking_degraded: false,
     vetch_warnings: buildVetchWarnings(args),
     usage_estimated: false,
     usage_estimation_method: null,
@@ -157,7 +169,9 @@ export function createVetchEvent(args: EventArgs): VetchEvent {
   if (args.options.energyOverride !== undefined) {
     enrichOptions.energyOverride = args.options.energyOverride;
   }
-  return enrichVetchEvent(event, enrichOptions);
+  const enriched = await enrichVetchEvent(event, enrichOptions);
+  applyBudgets(enriched, budgets);
+  return enriched;
 }
 
 export function createStreamObservation(): VetchStreamObservation {
@@ -232,29 +246,45 @@ function buildVetchWarnings(args: EventArgs): string[] {
   return warnings;
 }
 
-function getModelInfo(model: unknown): { model: string; provider: string } {
+function getModelInfo(
+  model: unknown,
+  options: { providerOverride?: string },
+): { model: string; provider: string } {
+  let identity: { model: string; provider: string };
   if (typeof model === "string") {
     const [provider, ...rest] = model.split("/");
     if (rest.length > 0 && provider) {
-      return { provider, model: rest.join("/") };
+      identity = { provider, model: rest.join("/") };
+    } else {
+      identity = { provider: "unknown", model };
     }
-    return { provider: "unknown", model };
+  } else {
+    const obj = asRecord(model);
+    if (!obj) {
+      identity = { provider: "unknown", model: "unknown" };
+    } else {
+      const modelId = firstString(obj.modelId, obj.model, obj.id) ?? "unknown";
+      const provider = firstString(obj.provider, obj.providerId, obj.providerName) ?? "unknown";
+      if (isGatewayLikeProvider(provider)) {
+        const parsed = parseGatewayModelId(modelId);
+        identity = parsed ?? { provider, model: modelId };
+      } else {
+        identity = { provider, model: modelId };
+      }
+    }
   }
 
-  const obj = asRecord(model);
-  if (!obj) {
-    return { provider: "unknown", model: "unknown" };
+  const labelArgs: { provider: string; model: unknown; providerOverride?: string } = {
+    provider: identity.provider,
+    model,
+  };
+  if (options.providerOverride !== undefined) {
+    labelArgs.providerOverride = options.providerOverride;
   }
-
-  const modelId = firstString(obj.modelId, obj.model, obj.id) ?? "unknown";
-  const provider = firstString(obj.provider, obj.providerId, obj.providerName) ?? "unknown";
-  if (isGatewayLikeProvider(provider)) {
-    const parsed = parseGatewayModelId(modelId);
-    if (parsed) {
-      return parsed;
-    }
-  }
-  return { provider, model: modelId };
+  return {
+    model: identity.model,
+    provider: resolveProviderLabel(labelArgs),
+  };
 }
 
 const KNOWN_GATEWAY_PROVIDERS = new Set([
@@ -313,6 +343,21 @@ function getRequestMetadata(params: unknown): VetchRequestMetadata {
   const protocol = asProtocol(firstDefined(vetch.protocol, vetch.protocolProgress));
   if (protocol) {
     metadata.protocol = protocol;
+  }
+
+  const budgets = asBudgets(firstDefined(vetch.budgets, vetch.budget));
+  if (budgets) {
+    metadata.budgets = budgets;
+  }
+
+  const retryCount = firstNumberOrUndefined(vetch.retryCount, vetch.retry_count);
+  if (retryCount !== undefined) {
+    metadata.retryCount = retryCount;
+  }
+
+  const providerOverride = firstString(vetch.providerOverride, vetch.provider_override);
+  if (providerOverride) {
+    metadata.providerOverride = providerOverride;
   }
 
   return metadata;
@@ -385,24 +430,118 @@ function createUsage(
   imageCount: number,
 ): VetchUsage {
   const reasoningTokens = getReasoningTokens(rawUsage);
+  const imageUsage = normalizeImageUsage(rawUsage, imageCount);
+  const audioUsage = normalizeMediaUsage(rawUsage, "audio");
+  const videoUsage = normalizeMediaUsage(rawUsage, "video");
   return {
     text: textUsage,
-    image:
-      imageCount > 0 ?
-        {
-          input_tokens: 0,
-          output_tokens: 0,
-          total_tokens: 0,
-          image_count: imageCount,
-        } :
-        null,
-    audio: null,
-    video: null,
+    image: imageUsage,
+    audio: audioUsage,
+    video: videoUsage,
     reasoning:
       reasoningTokens > 0 ?
         { input_tokens: 0, output_tokens: reasoningTokens, total_tokens: reasoningTokens } :
         null,
   };
+}
+
+function normalizeImageUsage(rawUsage: unknown, imageCount: number): VetchUsage["image"] {
+  const obj = asRecord(rawUsage);
+  const image = asRecord(firstDefined(obj?.image, obj?.images, obj?.imageTokens));
+  const inputTokens = firstNumber(
+    image?.input_tokens,
+    image?.inputTokens,
+    image?.prompt_tokens,
+    image?.promptTokens,
+    obj?.image_input_tokens,
+    obj?.imageInputTokens,
+  );
+  const outputTokens = firstNumber(
+    image?.output_tokens,
+    image?.outputTokens,
+    image?.completion_tokens,
+    image?.completionTokens,
+    obj?.image_output_tokens,
+    obj?.imageOutputTokens,
+  );
+  const totalTokens =
+    firstNumberOrUndefined(image?.total_tokens, image?.totalTokens, obj?.image_total_tokens, obj?.imageTotalTokens) ??
+    inputTokens + outputTokens;
+  const count =
+    firstNumberOrUndefined(image?.image_count, image?.imageCount, obj?.image_count, obj?.imageCount) ??
+    imageCount;
+  const totalPixels = firstNumberOrUndefined(
+    image?.total_pixels,
+    image?.totalPixels,
+    obj?.image_total_pixels,
+    obj?.imageTotalPixels,
+  );
+  if (count <= 0 && inputTokens <= 0 && outputTokens <= 0 && totalTokens <= 0 && totalPixels === undefined) {
+    return null;
+  }
+  const usage: NonNullable<VetchUsage["image"]> = {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+  };
+  if (count > 0) {
+    usage.image_count = count;
+  }
+  if (totalPixels !== undefined) {
+    usage.total_pixels = totalPixels;
+  }
+  return usage;
+}
+
+function normalizeMediaUsage(rawUsage: unknown, key: "audio" | "video"): VetchUsage[typeof key] {
+  const obj = asRecord(rawUsage);
+  const media = asRecord(firstDefined(obj?.[key], obj?.[`${key}Tokens`]));
+  const inputTokens = firstNumber(
+    media?.input_tokens,
+    media?.inputTokens,
+    media?.prompt_tokens,
+    media?.promptTokens,
+    obj?.[`${key}_input_tokens`],
+    obj?.[`${key}InputTokens`],
+  );
+  const outputTokens = firstNumber(
+    media?.output_tokens,
+    media?.outputTokens,
+    media?.completion_tokens,
+    media?.completionTokens,
+    obj?.[`${key}_output_tokens`],
+    obj?.[`${key}OutputTokens`],
+  );
+  const totalTokens =
+    firstNumberOrUndefined(media?.total_tokens, media?.totalTokens, obj?.[`${key}_total_tokens`], obj?.[`${key}TotalTokens`]) ??
+    inputTokens + outputTokens;
+  const inputSeconds = firstNumberOrUndefined(
+    media?.input_seconds,
+    media?.inputSeconds,
+    obj?.[`${key}_input_seconds`],
+    obj?.[`${key}InputSeconds`],
+  );
+  const outputSeconds = firstNumberOrUndefined(
+    media?.output_seconds,
+    media?.outputSeconds,
+    obj?.[`${key}_output_seconds`],
+    obj?.[`${key}OutputSeconds`],
+  );
+  if (inputTokens <= 0 && outputTokens <= 0 && totalTokens <= 0 && inputSeconds === undefined && outputSeconds === undefined) {
+    return null;
+  }
+  const usage: NonNullable<VetchUsage[typeof key]> = {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+  };
+  if (inputSeconds !== undefined) {
+    usage.input_seconds = inputSeconds;
+  }
+  if (outputSeconds !== undefined) {
+    usage.output_seconds = outputSeconds;
+  }
+  return usage;
 }
 
 function countImagesInParams(params: unknown, depth = 0): number {
@@ -572,6 +711,68 @@ function resolveAttribution(attribution: VetchOptions["attribution"]): VetchAttr
     return {};
   }
   return sanitizeAttribution(typeof attribution === "function" ? attribution() : attribution);
+}
+
+function resolveBudgets(budgets: VetchOptions["budgets"]): VetchBudgets {
+  if (!budgets) {
+    return {};
+  }
+  return sanitizeBudgets(typeof budgets === "function" ? budgets() : budgets);
+}
+
+function mergeBudgets(base: VetchBudgets, extra?: VetchBudgets): VetchBudgets {
+  return sanitizeBudgets({ ...base, ...(extra ?? {}) });
+}
+
+function asBudgets(value: unknown): VetchBudgets | undefined {
+  const obj = asRecord(value);
+  if (!obj) {
+    return undefined;
+  }
+  const budgets: VetchBudgets = {};
+  assignBudgetField(budgets, "energyWh", obj.energyWh, obj.energy_wh, obj.energy);
+  assignBudgetField(budgets, "carbonG", obj.carbonG, obj.carbon_g, obj.carbon);
+  assignBudgetField(budgets, "costUsd", obj.costUsd, obj.cost_usd, obj.cost);
+  return Object.keys(budgets).length > 0 ? budgets : undefined;
+}
+
+function assignBudgetField(
+  target: VetchBudgets,
+  key: keyof VetchBudgets,
+  ...values: unknown[]
+): void {
+  const value = firstNumberOrUndefined(...values);
+  if (value !== undefined && value >= 0) {
+    Object.assign(target, { [key]: value });
+  }
+}
+
+function sanitizeBudgets(value: VetchBudgets): VetchBudgets {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, fieldValue]) =>
+      typeof fieldValue === "number" && Number.isFinite(fieldValue) && fieldValue >= 0,
+    ),
+  ) as VetchBudgets;
+}
+
+function applyBudgets(event: VetchEvent, budgets: VetchBudgets): void {
+  event.budget_energy_wh = budgets.energyWh ?? null;
+  event.budget_carbon_g = budgets.carbonG ?? null;
+  event.budget_cost_usd = budgets.costUsd ?? null;
+  const hasBudget = Object.keys(budgets).length > 0;
+  if (!hasBudget) {
+    event.budget_exceeded = null;
+    return;
+  }
+  event.budget_exceeded = (
+    exceedsBudget(event.estimated_energy_wh, budgets.energyWh) ||
+    exceedsBudget(event.estimated_carbon_g, budgets.carbonG) ||
+    exceedsBudget(event.estimated_cost_usd, budgets.costUsd)
+  );
+}
+
+function exceedsBudget(actual: number | null, budget: number | undefined): boolean {
+  return typeof actual === "number" && typeof budget === "number" && actual > budget;
 }
 
 function mergeAttribution(base: VetchAttribution, extra?: VetchAttribution): VetchAttribution {

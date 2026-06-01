@@ -5,9 +5,11 @@ import type {
   LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
 
-import { createVetchSession } from "./advisories.js";
+import { createIsolatedVetchSession, createVetchSession } from "./advisories.js";
+import { isVetchDisabledFromEnv } from "./env.js";
 import { noopEmitter } from "./emitter.js";
 import { createStreamObservation, createVetchEvent, observeStreamPart } from "./event.js";
+import { releaseEasterEggs } from "./release-easter-eggs.js";
 import type { VetchEvent, VetchLanguageModel, VetchOptions, VetchSession } from "./types.js";
 
 interface InternalOptions extends VetchOptions {
@@ -18,6 +20,9 @@ export function withVetch<TModel extends VetchLanguageModel>(
   model: TModel,
   options: VetchOptions = {},
 ): LanguageModelV3 {
+  if (isVetchDisabled(options)) {
+    return model;
+  }
   return wrapLanguageModel({
     model,
     middleware: createVetchMiddleware({ ...options, modelHint: model }),
@@ -25,6 +30,18 @@ export function withVetch<TModel extends VetchLanguageModel>(
 }
 
 export function createVetchMiddleware(options: InternalOptions = {}): LanguageModelV3Middleware {
+  if (isVetchDisabled(options)) {
+    return {
+      specificationVersion: "v3",
+      async wrapGenerate({ doGenerate }) {
+        return doGenerate();
+      },
+      async wrapStream({ doStream }) {
+        return doStream();
+      },
+    };
+  }
+
   const sessions = new ScopedSessionStore(options);
 
   return {
@@ -36,7 +53,7 @@ export function createVetchMiddleware(options: InternalOptions = {}): LanguageMo
       try {
         const result = await doGenerate();
         await recordAndEmit(
-          createVetchEvent({
+          await createVetchEvent({
             operation: "generate",
             model: modelHint,
             params,
@@ -50,7 +67,7 @@ export function createVetchMiddleware(options: InternalOptions = {}): LanguageMo
         return result;
       } catch (error) {
         await recordAndEmit(
-          createVetchEvent({
+          await createVetchEvent({
             operation: "error",
             model: modelHint,
             params,
@@ -81,7 +98,7 @@ export function createVetchMiddleware(options: InternalOptions = {}): LanguageMo
             observation.cancelled = true;
           }
           await recordAndEmit(
-            createVetchEvent({
+            await createVetchEvent({
               operation: "stream",
               model: modelHint,
               params,
@@ -116,7 +133,7 @@ export function createVetchMiddleware(options: InternalOptions = {}): LanguageMo
         return { ...rest, stream: observedStream };
       } catch (error) {
         await recordAndEmit(
-          createVetchEvent({
+          await createVetchEvent({
             operation: "error",
             model: modelHint,
             params,
@@ -155,6 +172,7 @@ async function recordAndEmit(
 class ScopedSessionStore {
   private readonly sessions = new Map<string, VetchSession>();
   private readonly maxSessionCount: number;
+  private warnedMissingSessionId = false;
 
   constructor(private readonly options: InternalOptions) {
     this.maxSessionCount = options.maxSessionCount ?? 256;
@@ -167,7 +185,16 @@ class ScopedSessionStore {
 
     const sessionId = event.session_id;
     if (!sessionId) {
-      return this.createSession("__ephemeral__");
+      if (this.options.debug && !this.warnedMissingSessionId) {
+        this.warnedMissingSessionId = true;
+        console.warn(
+          "Vetch: set providerOptions.vetch.attribution.sessionId for rolling advisories " +
+            "(STALL, CACHE, ERROR, STREAM, REASONING, PROTO-001). Without it, only per-call advisories run.",
+        );
+      }
+      return createIsolatedVetchSession(
+        this.options.thresholds === undefined ? {} : { thresholds: this.options.thresholds },
+      );
     }
 
     const existing = this.sessions.get(sessionId);
@@ -210,11 +237,14 @@ async function deliverEvent(
 ): Promise<void> {
   try {
     const advisories = session.record(event);
-    event.advisories = dedupeAdvisories(advisories);
+    event.advisories = dedupeAdvisories([...advisories, ...releaseEasterEggs(options)]);
     const emitter = options.emitter ?? noopEmitter;
     await withTimeout(Promise.resolve(emitter(event)), options.emitterTimeoutMs ?? 1000);
     if (event.advisories.length > 0) {
       await withTimeout(Promise.resolve(options.onAdvisory?.(event.advisories, event)), options.emitterTimeoutMs ?? 1000);
+    }
+    if (event.budget_exceeded === true) {
+      await withTimeout(Promise.resolve(options.onBudgetExceeded?.(event)), options.emitterTimeoutMs ?? 1000);
     }
   } catch (error) {
     await Promise.resolve(options.onEmitterError?.(error, event)).catch(() => undefined);
@@ -259,4 +289,8 @@ function dedupeAdvisories(advisories: VetchEvent["advisories"]): VetchEvent["adv
     seen.add(advisory.code);
     return true;
   });
+}
+
+function isVetchDisabled(options: Pick<VetchOptions, "disabled">): boolean {
+  return isVetchDisabledFromEnv() || options.disabled === true;
 }

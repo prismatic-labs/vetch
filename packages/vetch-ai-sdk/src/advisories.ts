@@ -9,6 +9,13 @@ const DEFAULT_THRESHOLDS: Required<VetchThresholds> = {
   repairAttempts: 2,
   protocolVoidWindow: 3,
   protocolVoidMinOutputTokens: 100,
+  errorWindow: 5,
+  errorFraction: 0.5,
+  consecutiveErrors: 3,
+  streamWindow: 5,
+  streamIncompleteFraction: 0.4,
+  reasoningWindow: 3,
+  reasoningMissingFraction: 0.8,
 };
 
 // Session-level advisory constants
@@ -40,15 +47,63 @@ class RollingVetchSession implements VetchSession {
   }
 }
 
+/** Per-call only — used when `attribution.sessionId` is not set (no cross-request bleed). */
+class IsolatedVetchSession implements VetchSession {
+  constructor(private readonly thresholds: Required<VetchThresholds>) {}
+
+  record(event: VetchEvent): VetchAdvisory[] {
+    return detectPerCallAdvisories(event, this.thresholds);
+  }
+
+  recentEvents(): readonly VetchEvent[] {
+    return [];
+  }
+}
+
+export function createIsolatedVetchSession(
+  options: Pick<VetchOptions, "thresholds"> = {},
+): VetchSession {
+  const thresholds = { ...DEFAULT_THRESHOLDS, ...(options.thresholds ?? {}) };
+  return new IsolatedVetchSession(thresholds);
+}
+
 export function detectAdvisories(
   event: VetchEvent,
   recentEvents: readonly VetchEvent[],
+  thresholds: Required<VetchThresholds> = DEFAULT_THRESHOLDS,
+): VetchAdvisory[] {
+  return [
+    ...detectPerCallAdvisories(event, thresholds),
+    ...detectSessionAdvisories(event, recentEvents, thresholds),
+  ];
+}
+
+export function detectPerCallAdvisories(
+  event: VetchEvent,
   thresholds: Required<VetchThresholds> = DEFAULT_THRESHOLDS,
 ): VetchAdvisory[] {
   const advisories: VetchAdvisory[] = [];
   const outputTokens = event.usage?.text.output_tokens ?? 0;
   const finishReason = event.finish_reason?.toLowerCase() ?? "";
   const protocol = event.protocol_progress;
+
+  if (event.budget_exceeded === true) {
+    advisories.push({
+      code: "BUDGET-001",
+      severity: "warning",
+      title: "Configured budget threshold exceeded",
+      description:
+        "This call exceeded a configured per-request cost, energy, or carbon threshold. The middleware does not block calls. For rolling session budgets, use Python Vetch set_budget() with session windows.",
+      evidence: {
+        budget_cost_usd: event.budget_cost_usd,
+        budget_energy_wh: event.budget_energy_wh,
+        budget_carbon_g: event.budget_carbon_g,
+        estimated_cost_usd: event.estimated_cost_usd,
+        estimated_energy_wh: event.estimated_energy_wh,
+        estimated_carbon_g: event.estimated_carbon_g,
+      },
+    });
+  }
 
   if (finishReason.includes("max") || finishReason.includes("length")) {
     advisories.push({
@@ -185,6 +240,87 @@ export function detectAdvisories(
     });
   }
 
+  return advisories;
+}
+
+export function detectSessionAdvisories(
+  event: VetchEvent,
+  recentEvents: readonly VetchEvent[],
+  thresholds: Required<VetchThresholds> = DEFAULT_THRESHOLDS,
+): VetchAdvisory[] {
+  const advisories: VetchAdvisory[] = [];
+  const outputTokens = event.usage?.text.output_tokens ?? 0;
+  const protocol = event.protocol_progress;
+
+  const recentErrors = recentEvents.slice(-thresholds.errorWindow);
+  const errorCount = recentErrors.filter((candidate) => candidate.error).length;
+  const consecutiveErrorCount = countTrailing(recentEvents, (candidate) => candidate.error);
+  if (
+    recentErrors.length >= thresholds.errorWindow &&
+    (
+      errorCount / recentErrors.length >= thresholds.errorFraction ||
+      consecutiveErrorCount >= thresholds.consecutiveErrors
+    )
+  ) {
+    advisories.push({
+      code: "ERROR-001",
+      severity: "warning",
+      title: "Repeated model-call errors",
+      description:
+        "Recent calls are failing often enough to suggest a retry storm, provider outage, or app-level error loop.",
+      evidence: {
+        window: recentErrors.length,
+        errorCount,
+        consecutiveErrors: consecutiveErrorCount,
+        lastErrorType: event.error_type,
+      },
+    });
+  }
+
+  const recentStreams = recentEvents
+    .filter((candidate) => candidate.is_stream)
+    .slice(-thresholds.streamWindow);
+  if (recentStreams.length >= thresholds.streamWindow) {
+    const incompleteCount = recentStreams.filter((candidate) => !candidate.complete).length;
+    if (incompleteCount / recentStreams.length >= thresholds.streamIncompleteFraction) {
+      advisories.push({
+        code: "STREAM-001",
+        severity: "warning",
+        title: "Incomplete stream burn",
+        description:
+          "Several recent streams ended without a normal finish. Cancelled or interrupted streams can still consume tokens and cost.",
+        evidence: {
+          window: recentStreams.length,
+          incompleteCount,
+          incompleteFraction: Math.round((incompleteCount / recentStreams.length) * 100) / 100,
+        },
+      });
+    }
+  }
+
+  const recentReasoningModels = recentEvents
+    .filter((candidate) => isReasoningModel(candidate.model))
+    .slice(-thresholds.reasoningWindow);
+  if (recentReasoningModels.length >= thresholds.reasoningWindow) {
+    const missingReasoningCount = recentReasoningModels.filter(
+      (candidate) => (candidate.usage?.reasoning?.output_tokens ?? 0) === 0,
+    ).length;
+    if (missingReasoningCount / recentReasoningModels.length >= thresholds.reasoningMissingFraction) {
+      advisories.push({
+        code: "REASONING-001",
+        severity: "info",
+        title: "Reasoning model returned no reasoning tokens",
+        description:
+          "A reasoning-capable model is repeatedly returning no reasoning-token telemetry. Check whether reasoning mode is engaged or whether a cheaper non-reasoning model would fit.",
+        evidence: {
+          window: recentReasoningModels.length,
+          missingReasoningCount,
+          model: event.model,
+        },
+      });
+    }
+  }
+
   const protocolVoidEvents = recentEvents
     .slice(-thresholds.protocolVoidWindow)
     .filter(
@@ -213,9 +349,6 @@ export function detectAdvisories(
     });
   }
 
-  // --- Session-level advisories (require rolling window) ---
-
-  // STALL-001: last N non-error calls all produced near-zero output
   const recentNonError = recentEvents.filter((e) => !e.error);
   if (recentNonError.length >= STALL_MIN_WINDOW) {
     const lastN = recentNonError.slice(-STALL_MIN_WINDOW);
@@ -277,4 +410,28 @@ export function detectAdvisories(
   }
 
   return advisories;
+}
+
+function countTrailing<T>(items: readonly T[], predicate: (item: T) => boolean): number {
+  let count = 0;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    if (!predicate(items[i]!)) {
+      break;
+    }
+    count += 1;
+  }
+  return count;
+}
+
+function isReasoningModel(model: string): boolean {
+  if (typeof model !== "string") {
+    return false;
+  }
+  const normalized = model.toLowerCase();
+  return (
+    /\bo[134](?:-|$)/.test(normalized) ||
+    normalized.includes("reasoning") ||
+    normalized.includes("thinking") ||
+    normalized.includes("deepseek-r1")
+  );
 }

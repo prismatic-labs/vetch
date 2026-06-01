@@ -25,7 +25,7 @@ observeStreamPart(
 assert.equal(observation.finished, true);
 assert.deepEqual(observation.usage, finishUsage);
 
-const event = createVetchEvent({
+const event = await createVetchEvent({
   operation: "stream",
   model: { provider: "openai", modelId: "gpt-4.1-mini" },
   params: { maxOutputTokens: 128 },
@@ -58,7 +58,7 @@ const cancelledObservation = createStreamObservation();
 observeStreamPart({ type: "text-delta", id: "t1", delta: "partial" }, cancelledObservation);
 cancelledObservation.cancelled = true;
 
-const cancelledEvent = createVetchEvent({
+const cancelledEvent = await createVetchEvent({
   operation: "stream",
   model: { provider: "openai", modelId: "gpt-4.1-mini" },
   params: {},

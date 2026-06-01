@@ -102,7 +102,7 @@ Meet engineers where they are. Waste detection should work across all major LLM 
 - ✅ Google GenAI SDK
 - ✅ All OpenAI-compatible endpoints (OpenRouter, Together.ai, Ollama, vLLM, TGI)
 - ✅ Native Ollama SDK instrumentation (`providers/ollama.py`) — added in v0.8.0
-- ✅ Vercel AI SDK middleware (`@vetch/ai-sdk`) — added in v0.8.0
+- ✅ Vercel AI SDK middleware (`@prismatic-labs/vetch-ai-sdk`) — added in v0.8.0
 - ✅ OpenTelemetry / OTLP export (Grafana, Datadog, Honeycomb)
 - ✅ MCP server for agent-native integrations
 - ✅ Background jobs via distributed session propagation

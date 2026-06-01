@@ -1,6 +1,6 @@
-# @vetch/ai-sdk
+# @prismatic-labs/vetch-ai-sdk
 
-First-party Vetch middleware for observing Vercel AI SDK 6.x calls with Vetch schema v2 events, local energy/carbon/water/cost estimates, usage/cache/reasoning telemetry, app-protocol advisories, and Edge-safe emission.
+First-party Vetch middleware for observing Vercel AI SDK 6.x calls with Vetch schema v2 events, local energy/carbon/water/cost estimates, usage/cache/reasoning telemetry, app-protocol advisories, and Edge-compatible emission.
 
 **Quickstart (install, Next.js, Edge):** [`QUICKSTART-VERCEL.md`](../../QUICKSTART-VERCEL.md) in the repo root.
 
@@ -10,7 +10,7 @@ This package lives in the Vetch repo and follows the Vetch release train, but it
 
 ```ts
 import { gateway, generateText } from "ai";
-import { createFetchEmitter, withVetch } from "@vetch/ai-sdk";
+import { createFetchEmitter, withVetch } from "@prismatic-labs/vetch-ai-sdk";
 
 const model = withVetch(gateway("openai/gpt-4.1-mini"), {
   emitter: createFetchEmitter({ endpoint: "https://example.com/vetch/events" }),
@@ -27,17 +27,25 @@ await generateText({
 - **Vetch schema v2 events** compatible with Python Vetch tooling (field names and nested usage)
 - **Usage, cache, reasoning, and tool telemetry** from AI SDK v6 `LanguageModelV3` responses and stream `finish` parts
 - **Local estimates** for energy, carbon, water, cost, cache savings, uncertainty bounds, tiers, and tracking quality using bundled Vetch registries
-- **App protocol advisories** (truncation, tool spin, expected-tool voids, and related workflow signals)
-- **Edge-safe emission** — no filesystem storage; fail-open by default; optional `waitUntil` for serverless
+- **Python-aligned and app-protocol advisories** (stall/cache/error/stream/reasoning/truncation plus tool/protocol workflow signals)
+- **Edge-compatible emission** - no filesystem I/O on Edge; `loadLocalCalibration` is dynamically imported on Node only; fail-open by default; optional `waitUntil` for serverless
 
-## Install (v0.8.0 monorepo)
+## Install
 
-The package is `private: true` until npm publish. From the Vetch repo:
+**npm:**
+
+```bash
+npm install @prismatic-labs/vetch-ai-sdk ai @ai-sdk/openai
+```
+
+**Monorepo path (before or without npm):**
 
 ```bash
 cd packages/vetch-ai-sdk && npm ci && npm run build
 npm install /absolute/path/to/vetch/packages/vetch-ai-sdk
 ```
+
+Publish: [`docs/NPM_PUBLISH.md`](../../docs/NPM_PUBLISH.md). Next.js reference: [`examples/nextjs-app-router`](examples/nextjs-app-router/README.md).
 
 `enrichVetchEvent` auto-loads Tier-0 coefficients from `~/.vetch/calibrations/` on Node.js (not Edge). Pass `energyOverride` explicitly on Edge or when you need custom coefficients.
 
@@ -101,8 +109,13 @@ await generateText({
 - `STRUCT-REPAIR-001`: app reported repeated schema or JSON repair attempts.
 - `POSTDONE-DECODE-001`: app reported that calls continued after terminal progress.
 - `EXPECTED-LENGTH-001`: a short, JSON, or tool-oriented step produced a long decode.
+- `ERROR-001`: repeated model-call errors in a rolling window.
+- `STREAM-001`: repeated incomplete or cancelled streams.
+- `REASONING-001`: reasoning-capable models returning no reasoning-token telemetry.
+- `STALL-001`, `CACHE-001`, `CACHE-002`: Python-aligned rolling session advisories for low-output stalls and cache opportunities.
+- `BUDGET-001`: configured per-request budget threshold exceeded (`budget_exceeded: true`).
 
-Rolling advisories are scoped by `attribution.sessionId` when supplied. Shared middleware instances can therefore be reused across requests without cross-request `PROTO-001` bleed. Calls without a session ID use an ephemeral advisory session.
+Rolling advisories (STALL, CACHE, ERROR, STREAM, REASONING, PROTO-001) require `attribution.sessionId`. Without it, only **per-call** advisories run so unrelated traffic cannot share one rolling window. Reuse one `withVetch` model across requests when each call sets `sessionId`.
 
 ## Streaming behavior
 
@@ -115,5 +128,9 @@ Rolling advisories are scoped by `attribution.sessionId` when supplied. Shared m
 - No SQLite or local filesystem storage, so the adapter can run in Edge runtimes.
 - No prompt, response text, tool arguments, or plaintext provider error messages are stored. It counts visible characters and tool events only.
 - Treat tags and attribution as metadata: pass non-sensitive values, or hash user/session identifiers before sending them.
+- `VETCH_DISABLED=true` or `VETCH_ENABLED=false` disables the middleware where `process.env` is available. You can also pass `disabled: true`.
+- `VETCH_BUDGET_COST_USD`, `VETCH_BUDGET_ENERGY_WH`, and `VETCH_BUDGET_CARBON_G` set per-call budget thresholds (Node). Use `onBudgetExceeded` for warn-only callbacks.
+- `VETCH_EASTER_EGGS=true` or `easterEggs: true` opts in to release Easter eggs; they are off by default.
+- Ollama OpenAI-compat endpoints (`localhost:11434`, `OLLAMA_HOST`) are labeled `provider: ollama` so Tier-0 calibrations match Python. Override with `providerOverride` or `providerOptions.vetch.providerOverride`.
 - Middleware telemetry fails open silently by default, so Vetch should not break or clutter a successful model call if an emitter fails. Use `debug: true` or `onEmitterError` while developing.
 - Emission runs in the background by default with a timeout. Use `emissionMode: "await"` when tests or local scripts need deterministic delivery, or pass `waitUntil` in Edge/serverless runtimes.

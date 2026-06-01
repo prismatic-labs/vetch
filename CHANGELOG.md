@@ -104,6 +104,25 @@ Both export paths (`otel.py` and `exporters/opentelemetry.py`) now emit
 `vetch.cache_cost_saving_usd` and `vetch.cache_carbon_saving_g` as span
 attributes alongside the existing `vetch.cache_energy_saving_wh`.
 
+## [0.8.1] - 2026-05-31
+
+### Added — `@prismatic-labs/vetch-ai-sdk` parity patch (081 margherita)
+
+Thin-crust release: same middleware oven, extra toppings aligned with Python.
+
+- **npm** ships as `@prismatic-labs/vetch-ai-sdk` (the `@vetch` scope was unavailable).
+- **Session advisories in TS**: ERROR-001, STREAM-001, REASONING-001 (rolling window with `sessionId`).
+- **Budget parity**: `retry_count`, per-call `budget_*` fields, `VETCH_BUDGET_COST_USD` / `ENERGY_WH` / `CARBON_G` env vars, `BUDGET-001` advisory (per-request; not Python session rollup), `onBudgetExceeded` callback.
+- **Session isolation**: rolling advisories require `attribution.sessionId`; calls without it only emit per-call advisories (no shared `__ephemeral__` bucket).
+- **Edge graph**: `loadLocalCalibration` is dynamically imported from `enrichVetchEvent` so the default middleware path does not statically bundle filesystem code.
+- **Ollama provider label**: `localhost:11434`, `OLLAMA_HOST`, or `providerOverride` — matches Python OpenAI-compat detection for Tier-0 calibrations.
+- **Naples release switch**: opt in with `easterEggs: true` or `VETCH_EASTER_EGGS=true` to emit `NAPLES-081`.
+- **Build**: `VETCH_VERSION` generated from `package.json` via `scripts/write-version.mjs`.
+
+### Documentation
+
+- Scope and quickstart tables updated for real TS capabilities (no longer list ERROR/STREAM/REASONING as Python-only).
+
 ## [0.8.0] - 2026-05-30
 
 ### Added — Apple Silicon Calibration Toolbox
@@ -134,7 +153,7 @@ internally consistent for relative comparisons on the same hardware; do not
 use them directly in $/kWh or gCO2e/kWh narratives without accounting for
 the measurement basis (`"not_wall_power": true` in the detail JSON).
 
-### Added — Vercel AI SDK Middleware (`@vetch/ai-sdk`)
+### Added — Vercel AI SDK Middleware (`@prismatic-labs/vetch-ai-sdk`)
 
 First-party Vetch middleware for Vercel AI SDK 6.x. Schema v2 events,
 local energy/carbon/cost estimates, advisories, and Edge-safe emission.
@@ -190,7 +209,7 @@ Three new advisories added to `advisory.py` alongside the existing nine:
 required by the above: `cache_read_tokens`, `is_stream`, `complete`,
 `is_reasoning_model`, `has_reasoning_tokens`.
 
-### Added — Session Advisories (`@vetch/ai-sdk`)
+### Added — Session Advisories (`@prismatic-labs/vetch-ai-sdk`)
 
 `detectAdvisories` in `advisories.ts` now includes three session-level
 checks (using the rolling 40-event window alongside existing per-call checks):
