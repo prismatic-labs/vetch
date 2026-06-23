@@ -14,7 +14,7 @@ Vetch detects stalled agents, RAG bloat, excessive generation, zombie LLM calls,
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
 - **[Vercel AI SDK (Next.js / Edge)](QUICKSTART-VERCEL.md)** — [`@prismatic-labs/vetch-ai-sdk`](packages/vetch-ai-sdk/) · [scope](docs/SCOPE-v0.8.0-vercel.md) · [npm publish](docs/NPM_PUBLISH.md)
 - **[Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**
-- **[Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across 50 direct registry models
+- **[Interactive Inference Calculator](https://prismatic-labs.github.io/vetch/calculator/)** — Compare energy, cost, and carbon across the bundled registry (130+ models). After editing `src/vetch/registry/energy.json` or `pricing.json`, run `python scripts/build_calculator.py` to refresh the page embed.
 
 ```python
 import vetch
@@ -26,6 +26,16 @@ vetch.set_stall_action("kill")  # or "warn", or "reroute"
 # high input similarity, the signature of a stuck loop — and raises
 # vetch.StallDetected before more money is wasted.
 ```
+
+## Capabilities
+
+- **Providers (auto-instrumented):** OpenAI, Anthropic, Google GenAI (`google-genai`), Google Vertex AI, Azure OpenAI, Ollama. `pip install vetch[openai]`, `vetch[anthropic]`, `vetch[genai]`, `vetch[vertexai]`, `vetch[ollama]`.
+- **Self-hosted / OpenAI-compatible:** vLLM, TGI, LM Studio, llama.cpp — via an OpenAI client with a custom `base_url` (classified automatically), or raw HTTP through `vetch.proxy` / the `vetch.wrap()` record API. See [Self-hosted and raw HTTP](#self-hosted-and-raw-http).
+- **Streaming:** input/output token instrumentation for sync and async streams, without buffering response content.
+- **Framework integrations:** LangChain and LlamaIndex callback handlers; first-party [Vercel AI SDK middleware](packages/vetch-ai-sdk/) (JS/TS).
+- **Control:** circuit breakers (stall detection → warn/kill/reroute) and warn-only budgets on cost/energy/carbon.
+- **Export & tooling:** OpenTelemetry / OTLP export (GenAI semantic conventions), an MCP server for agents, a CLI (`vetch estimate|compare|audit|calibrate`), and local GPU calibration.
+- **Metadata-only:** never reads prompt or completion text — only model, token counts, timing, and finish reason.
 
 ## The problem
 
@@ -190,16 +200,21 @@ with vetch.Session(
 
 Every wasteful call you prevent is money saved, tokens not burned, compute not consumed, and estimated emissions avoided. Vetch treats energy and carbon as first-class outputs alongside cost. The same stalled agent loop, bloated RAG context, or retry storm that burns budget also consumes unnecessary compute.
 
-Energy, carbon, and water figures should be interpreted with explicit uncertainty. Tier 1 empirical/provider benchmark estimates carry approximately ±20–50% uncertainty; Tier 3 estimates are order-of-magnitude directional figures. These numbers are useful for comparison, prioritization, and reduction decisions. They are not exact carbon certification, regulatory disclosure, or water accounting. Water estimates are especially facility-dependent and represent directional operational cooling demand unless you configure local measurements.
+Energy, carbon, and water figures should be interpreted with explicit uncertainty, and not all numbers are equal. There are three kinds:
 
-**Supported models with Tier 1 (±20–50%) data:**
-- **GPT-4o, GPT-4o-mini, GPT-4.1 family, GPT-4.5, o1, o3, o4-mini** — measured in Azure datacenters
-- **Claude 3.7 Sonnet** (standard + Extended Thinking) — measured in AWS datacenters
+- **Measured (Tier 0, ±10–20%)** — direct GPU power telemetry from a local calibration run (`vetch calibrate`). This is the only genuinely metered tier, and it only exists for self-hosted models you measure yourself.
+- **Inferred (Tier 1, ±20–50%)** — hosted-API models. These come from infrastructure-aware benchmarking, not power telemetry: hosted APIs (OpenAI, Anthropic, Google) expose no power meter, so figures are estimated from public API behaviour, provider environmental multipliers, and statistical hardware inference. Useful for comparison; not a measurement.
+- **Estimated fallback (Tier 3, order-of-magnitude)** — models with no benchmark, or a proxy/family match. Directional only.
+
+Every event carries `energy_tier`, `energy_uncertainty_pct`, and `model_match` (`exact`/`alias`/`prefix`/`family`/`fallback`) so you can tell measured from inferred from guessed. A `prefix` or `family` match is a proxy and is automatically downgraded to Tier 3, so a current-generation model that the bundled registry hasn't caught up to is flagged low-confidence rather than dressed up as exact. These numbers are useful for comparison, prioritization, and reduction decisions. They are not exact carbon certification, regulatory disclosure, or water accounting. Water estimates are especially facility-dependent.
+
+**Inferred (Tier 1) coverage includes:**
+- **GPT-4o, GPT-4o-mini, GPT-4.1 family, GPT-4.5, o1, o3, o4-mini**
+- **Claude 3.7 Sonnet** (standard + Extended Thinking)
 - **DeepSeek-R1, DeepSeek-V3** — reasoning and MoE benchmarks
 - **Llama 3.1 (8B, 70B, 405B), Llama 3.3 70B** — open-weight measurements
-- **21 Tier 1 measured entries; 50 direct energy registry entries total.** Unmeasured models use Tier 3 order-of-magnitude estimates.
 
-Source: [Jegham et al. (2025)](https://arxiv.org/abs/2505.09598) — first large-scale LLM energy measurements in commercial datacenters.
+The bundled registry holds 130+ models; run `vetch methodology` for the current per-model tier and provenance. The Tier 1 figures derive from [Jegham et al. (2025)](https://arxiv.org/abs/2505.09598) (infrastructure-aware benchmarking across ~30 commercial models). Open-weight / self-hosted figures can be cross-validated against direct-measurement work: [ML.ENERGY](https://ml.energy) (open data + Zeus toolkit), [Samsi et al. (2023)](https://arxiv.org/abs/2310.03003), and TokenPowerBench. Closed hosted-API models have no public power telemetry and stay inferred by necessity.
 
 Use these estimates as internal inputs for FinOps, engineering, and sustainability planning. For regulatory reporting or external claims, use independent verification and the methodology notes from `vetch methodology`.
 
@@ -515,6 +530,66 @@ On Apple Silicon, use `vetch calibrate-apple-silicon` for powermetrics-based har
 
 `data/calibrations.json` ships with community-contributed coefficients and is populated from accepted GitHub submissions. To share your calibration results, open a PR adding your `_apple_detail.json` output from `~/.vetch/calibrations/` to the `community/` directory.
 
+## Self-hosted and raw HTTP
+
+Self-hosted serving (vLLM, TGI, LM Studio, llama.cpp) is usually reached through the OpenAI SDK with a custom `base_url`, or via raw HTTP. Vetch handles both, and crucially **never bills a self-hosted or third-party endpoint at OpenAI's per-token rates.**
+
+**OpenAI SDK with a custom `base_url` (auto-classified):**
+
+```python
+import vetch
+from openai import OpenAI
+
+vetch.instrument()
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="x")  # local vLLM
+# Vetch classifies the endpoint from base_url:
+#   api.openai.com / *.openai.azure.com  -> "openai"        (OpenAI energy + list price)
+#   localhost / 127.0.0.1 / private IPs   -> "self-hosted"   (calibration energy, cost = 0)
+#   other public hosts (OpenRouter, ...)  -> "openai-compatible" (registry energy, cost = unknown)
+```
+
+A local model resolves its energy from a calibration (`vetch calibrate`) or the model registry, and reports cost `0` (you pay for the hardware, captured as energy). A public OpenAI-compatible host reports cost `unknown` rather than OpenAI's price. If a private host can't be detected, set `VETCH_SELF_HOSTED=true`.
+
+**Raw HTTP (no SDK to patch):**
+
+Raw HTTP requests bypass every SDK patch, so instrument them explicitly with the context-manager / record API:
+
+```python
+import vetch, httpx
+
+with vetch.wrap(region="us-east-1") as ctx:
+    resp = httpx.post("http://localhost:8000/v1/chat/completions", json={...}).json()
+    usage = resp["usage"]
+    ctx.capture(
+        model="llama-3-70b",
+        provider="self-hosted",
+        usage={"text": {
+            "input_tokens": usage["prompt_tokens"],
+            "output_tokens": usage["completion_tokens"],
+            "total_tokens": usage["total_tokens"],
+        }},
+    )
+# ctx.event has the energy/carbon/cost estimate
+```
+
+`vetch.proxy` is also available for wrapping a callable transparently. See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md).
+
+## Model coverage and resolution
+
+Vetch resolves a model name to a registry entry through a ladder, and each event records which rung matched in `model_match`:
+
+1. **`exact`** — the model ID is a registry key. Full confidence (entry's tier).
+2. **`alias`** — a curated equivalence (dated snapshots, `-latest`, `-preview`) → canonical key. Full confidence.
+3. **`prefix`** — an algorithmic shorten (`claude-sonnet-4-6-experimental` → `claude-sonnet-4-6`). Low confidence: **downgraded to Tier 3**.
+4. **`family`** — no name match, but the provider family is known; proxied to a conservative same-family representative (biased to the larger sibling so it never undercounts). Low confidence: **Tier 3**.
+5. **`fallback`** — fully unknown; generic conservative estimate.
+
+Matching is case-insensitive. If a current-generation model isn't in the bundled registry yet, you have three options:
+
+- **Add a row** — add `energy.json` (+ `pricing.json` with a verified price, + `aliases.json` for dated forms). See [src/vetch/registry/PROVENANCE.md](src/vetch/registry/PROVENANCE.md). Existing installs pick it up via the remote registry without upgrading.
+- **Calibrate** — `vetch calibrate --model <name> --provider <provider>` for a hardware-measured Tier 0 figure on self-hosted models.
+- **Override** — pass `energy_override` to `vetch.wrap()` for a one-off.
+
 ## Clean test isolation
 
 Remove instrumentation for clean test environments:
@@ -538,6 +613,7 @@ vetch.uninstrument()  # Restore original SDK methods
 | `VETCH_REGISTRY_REMOTE` | Set to `false` to disable remote registry updates |
 | `VETCH_REGISTRY_PATH` | Path to offline registry directory (air-gapped environments) |
 | `VETCH_REGISTRY_URL` | Custom remote registry URL |
+| `VETCH_SELF_HOSTED` | Set to `true` to force the self-hosted provider label (no per-token list price) when the endpoint host can't be auto-classified |
 | `ELECTRICITY_MAPS_API_KEY` | API key for live grid carbon intensity data |
 | `VETCH_CACHE_MODE` | Set to `memory-only` for serverless/Lambda environments |
 
@@ -555,7 +631,7 @@ vetch.uninstrument()  # Restore original SDK methods
 | Ollama | Supported | Native SDK (`vetch.providers.ollama`) or OpenAI-compat API (auto-detected) |
 | vLLM / TGI | Compatible | Uses OpenAI instrumentation (OpenAI-compatible API) |
 
-**OpenAI-compatible endpoints** (OpenRouter, Together.ai, Ollama, vLLM, TGI) work automatically with `vetch.instrument()` since they use the `openai` Python SDK under the hood.
+**OpenAI-compatible endpoints** (OpenRouter, Together.ai, Ollama, vLLM, TGI) work automatically with `vetch.instrument()` since they use the `openai` Python SDK under the hood. Vetch classifies them by `base_url` so they are **not** billed at OpenAI's per-token rates: private/local hosts are treated as self-hosted (cost `0`), other compatible hosts report cost `unknown`. See [Self-hosted and raw HTTP](#self-hosted-and-raw-http).
 
 **For local models (Ollama, vLLM, llama.cpp)**: See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md) for setup, GPU calibration, and TCO analysis.
 

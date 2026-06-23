@@ -186,6 +186,48 @@
     "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25
   },
+  "claude-sonnet-4-5": {
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-06-23"
+  },
+  "claude-sonnet-4-6": {
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-06-23"
+  },
+  "claude-opus-4-5": {
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.025,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-06-23"
+  },
+  "claude-opus-4-6": {
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.025,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-06-23"
+  },
+  "claude-opus-4-7": {
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.025,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-06-23"
+  },
+  "claude-opus-4-8": {
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.025,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-06-23"
+  },
   "claude-3.7-sonnet-thinking": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,
@@ -216,6 +258,33 @@
     "tier_threshold": 200000,
     "tier_multiplier_input": 2.0,
     "tier_multiplier_output": 1.5
+  },
+  "gemini-3-flash": {
+    "usd_per_1k_input": 0.0005,
+    "usd_per_1k_output": 0.003,
+    "cache_read_discount": 0.1,
+    "as_of": "2026-06-23"
+  },
+  "gemini-3.5-flash": {
+    "usd_per_1k_input": 0.0015,
+    "usd_per_1k_output": 0.009,
+    "cache_read_discount": 0.1,
+    "as_of": "2026-06-23"
+  },
+  "gemini-3.1-flash-lite": {
+    "usd_per_1k_input": 0.00025,
+    "usd_per_1k_output": 0.0015,
+    "cache_read_discount": 0.1,
+    "as_of": "2026-06-23"
+  },
+  "gemini-3.1-pro": {
+    "usd_per_1k_input": 0.002,
+    "usd_per_1k_output": 0.012,
+    "tier_threshold": 200000,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5,
+    "cache_read_discount": 0.1,
+    "as_of": "2026-06-23"
   },
   "llama-3-70b": {
     "usd_per_1k_input": 0.0,

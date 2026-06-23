@@ -661,6 +661,7 @@ class VetchContext:
         energy_source = metrics.energy_source
         energy_basis = metrics.energy_basis
         model_known = metrics.model_known
+        model_match = metrics.model_match
         carbon_g = metrics.carbon_g
         pue = metrics.pue
         pue_tier = metrics.pue_tier
@@ -744,6 +745,7 @@ class VetchContext:
             model=model,
             provider=provider,
             model_known=model_known,
+            model_match=model_match,
             multimodal=multimodal,
             usage=usage,
             accumulated_chars=accumulated_chars if is_stream else None,

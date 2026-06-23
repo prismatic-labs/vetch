@@ -5,10 +5,10 @@ import wueJson from "./registry/wue.json" with { type: "json" };
 import globalAveragesJson from "./sensing/global_averages.json" with { type: "json" };
 
 import { canUseNodeCalibration } from "./node-capability.js";
-import type { VetchEvent, VetchSignalQuality, VetchUsage } from "./types.js";
+import type { VetchEvent, VetchModelMatch, VetchSignalQuality, VetchUsage } from "./types.js";
 import type { LocalEnergyOverride } from "./local-calibration.js";
 
-const METHODOLOGY_VERSION = "1.2";
+const METHODOLOGY_VERSION = "1.3";
 const CACHE_READ_ENERGY_FACTOR = 0.15;
 const PROMPT_LENGTH_SHORT_THRESHOLD = 1000;
 const PROMPT_LENGTH_MEDIUM_THRESHOLD = 5000;
@@ -19,6 +19,17 @@ const TIER_UNCERTAINTY_PCT: Record<number, number> = {
   2: 100,
   3: 1000,
 };
+
+// Provider labels for endpoints that do not bill OpenAI/vendor list prices.
+// Mirrors Python calculation.py _SELF_HOSTED_PROVIDERS / _UNKNOWN_PRICE_PROVIDERS.
+const SELF_HOSTED_PROVIDERS = new Set(["self-hosted", "ollama"]);
+const UNKNOWN_PRICE_PROVIDERS = new Set(["openai-compatible"]);
+
+// Threshold for the tracking-degradation score (mirrors Python
+// TRACKING_DEGRADED_THRESHOLD). Fires for unknown models, prefix/family proxies,
+// estimated usage, and missing usage; healthy calls stay clean. Score maxes at
+// 2.0 — do not set >= 2.0 (old value 2.5 made the flag unreachable).
+const TRACKING_DEGRADED_THRESHOLD = 1.0;
 
 const DEFAULT_PUE = 1.2;
 const PROVIDER_PUE: Record<string, number> = {
@@ -158,8 +169,9 @@ async function resolveEnergyOverride(
 }
 
 export async function enrichVetchEvent(event: VetchEvent, options: EnrichOptions): Promise<VetchEvent> {
-  const resolved = resolveModel(event.model);
+  const resolved = resolveModelMatch(event.model);
   event.model_known = resolved.known;
+  event.model_match = resolved.precision;
   event.energy_basis = event.energy_basis ?? null;
 
   let usage = event.usage;
@@ -267,32 +279,50 @@ export async function enrichVetchEvent(event: VetchEvent, options: EnrichOptions
     event.cache_carbon_saving_g = Math.max(0, baselineCarbon - event.estimated_carbon_g);
   }
 
-  const cost = calculateCost(
-    inputTokens,
-    energyOutputTokens,
-    event.model,
-    cacheReadTokens,
-    cacheCreationTokens,
-  );
-  event.estimated_cost_usd = cost.totalCost * priceMultiplier;
-  event.estimated_cost_input_usd = cost.inputCost * priceMultiplier;
-  event.estimated_cost_output_usd = cost.outputCost * priceMultiplier;
-  event.estimated_cost_cache_write_usd = cost.cacheWriteCost * priceMultiplier;
-  event.estimated_cost_cache_read_usd = cost.cacheReadCost * priceMultiplier;
-  event.billing_tier = priceMultiplier === 1.0 ? cost.billingTier : `${cost.billingTier}×${priceMultiplier}`;
-
-  if (cacheReadTokens > 0) {
-    const uncachedCost = calculateCost(
+  if (SELF_HOSTED_PROVIDERS.has(options.provider)) {
+    // Self-hosted: no per-token API charge (you pay hardware, captured as energy).
+    event.estimated_cost_usd = 0;
+    event.estimated_cost_input_usd = 0;
+    event.estimated_cost_output_usd = 0;
+    event.estimated_cost_cache_write_usd = 0;
+    event.estimated_cost_cache_read_usd = 0;
+    event.billing_tier = "self-hosted";
+  } else if (UNKNOWN_PRICE_PROVIDERS.has(options.provider)) {
+    // OpenAI-compatible third-party endpoint: don't apply OpenAI's price; leave unknown.
+    event.estimated_cost_usd = null;
+    event.estimated_cost_input_usd = null;
+    event.estimated_cost_output_usd = null;
+    event.estimated_cost_cache_write_usd = null;
+    event.estimated_cost_cache_read_usd = null;
+    event.billing_tier = "unknown";
+  } else {
+    const cost = calculateCost(
       inputTokens,
       energyOutputTokens,
       event.model,
-      0,
+      cacheReadTokens,
       cacheCreationTokens,
-    ).totalCost;
-    event.cache_cost_saving_usd = Math.max(
-      0,
-      uncachedCost * priceMultiplier - event.estimated_cost_usd,
     );
+    event.estimated_cost_usd = cost.totalCost * priceMultiplier;
+    event.estimated_cost_input_usd = cost.inputCost * priceMultiplier;
+    event.estimated_cost_output_usd = cost.outputCost * priceMultiplier;
+    event.estimated_cost_cache_write_usd = cost.cacheWriteCost * priceMultiplier;
+    event.estimated_cost_cache_read_usd = cost.cacheReadCost * priceMultiplier;
+    event.billing_tier = priceMultiplier === 1.0 ? cost.billingTier : `${cost.billingTier}×${priceMultiplier}`;
+
+    if (cacheReadTokens > 0 && event.estimated_cost_usd !== null) {
+      const uncachedCost = calculateCost(
+        inputTokens,
+        energyOutputTokens,
+        event.model,
+        0,
+        cacheCreationTokens,
+      ).totalCost;
+      event.cache_cost_saving_usd = Math.max(
+        0,
+        uncachedCost * priceMultiplier - event.estimated_cost_usd,
+      );
+    }
   }
 
   const bounds = confidenceBounds(event.estimated_energy_wh, event.energy_uncertainty_pct);
@@ -308,6 +338,7 @@ export async function enrichVetchEvent(event: VetchEvent, options: EnrichOptions
     pueTier: carbon.pueTier,
     signalQuality: grid.signalQuality,
     usageEstimated: event.usage_estimated,
+    modelMatch: resolved.precision,
   });
 
   event.vetch_warnings = event.vetch_warnings.filter(
@@ -317,28 +348,119 @@ export async function enrichVetchEvent(event: VetchEvent, options: EnrichOptions
   return event;
 }
 
-export function resolveModel(model: string): { resolvedModel: string; known: boolean } {
-  if (model in ENERGY) {
-    return { resolvedModel: model, known: true };
+export interface ModelMatch {
+  resolvedModel: string;
+  known: boolean;
+  precision: VetchModelMatch;
+}
+
+// Deterministic, conservative per-family fallback. Mirrors Python
+// calculation.py::_FAMILY_FALLBACK. Bias to the larger (higher-energy) sibling
+// when the sub-tier is ambiguous, so a proxy never silently undercounts.
+const FAMILY_FALLBACK: Record<string, { large: string; small: string; default: string }> = {
+  openai: { large: "gpt-4o", small: "gpt-4o-mini", default: "gpt-4o" },
+  anthropic: { large: "claude-opus-4-6", small: "claude-haiku-4-5", default: "claude-sonnet-4-6" },
+  google: { large: "gemini-3.1-pro", small: "gemini-3-flash", default: "gemini-3.1-pro" },
+  aws: { large: "llama-3-70b", small: "llama-3.1-8b", default: "llama-3-70b" },
+  deepseek: { large: "deepseek-r1", small: "deepseek-v3", default: "deepseek-r1" },
+};
+
+const FAMILY_LARGE_HINTS = new Set(["pro", "ultra", "opus", "max", "large"]);
+const FAMILY_SMALL_HINTS = new Set([
+  "flash", "lite", "nano", "mini", "haiku", "small", "tiny",
+]);
+const PARAM_SIZE_RE = /(?<!\d)(\d+(?:\.\d+)?)\s*b(?![a-z0-9])/g;
+const FAMILY_LARGE_PARAM_B = 30;
+const FAMILY_SMALL_PARAM_B = 15;
+
+function inferFamilyProvider(modelLower: string): string | null {
+  if (["gpt-", "o1", "o3", "o4", "text-davinci", "text-embedding"].some((p) => modelLower.startsWith(p))) {
+    return "openai";
   }
-  const alias = ALIASES[model];
+  if (modelLower.startsWith("claude-")) {
+    return "anthropic";
+  }
+  if (["gemini-", "gemma-", "palm-"].some((p) => modelLower.includes(p))) {
+    return "google";
+  }
+  if (modelLower.startsWith("llama-") || modelLower.startsWith("mixtral-")) {
+    return "aws";
+  }
+  if (modelLower.startsWith("deepseek-")) {
+    return "deepseek";
+  }
+  return null;
+}
+
+function classifyFamilySubtier(modelLower: string): "large" | "small" | "default" {
+  const tokens = new Set(modelLower.split(/[-_.]+/));
+  const sizes = [...modelLower.matchAll(PARAM_SIZE_RE)].map((m) => parseFloat(m[1]!));
+  const maxSize = sizes.length > 0 ? Math.max(...sizes) : null;
+
+  if ([...tokens].some((t) => FAMILY_LARGE_HINTS.has(t)) ||
+      (maxSize !== null && maxSize >= FAMILY_LARGE_PARAM_B)) {
+    return "large";
+  }
+  if ([...tokens].some((t) => FAMILY_SMALL_HINTS.has(t)) ||
+      (maxSize !== null && maxSize <= FAMILY_SMALL_PARAM_B)) {
+    return "small";
+  }
+  return "default";
+}
+
+function familyFallback(modelLower: string): ModelMatch | null {
+  const provider = inferFamilyProvider(modelLower);
+  const family = provider ? FAMILY_FALLBACK[provider] : undefined;
+  if (!family) {
+    return null;
+  }
+  const target = family[classifyFamilySubtier(modelLower)];
+  if (!(target in ENERGY)) {
+    return null;
+  }
+  return { resolvedModel: target, known: true, precision: "family" };
+}
+
+/** Resolve a model to a registry entry with match precision. Case-insensitive.
+ * Mirrors Python calculation.py::resolve_model_match. */
+export function resolveModelMatch(model: string): ModelMatch {
+  if (typeof model !== "string") {
+    return { resolvedModel: String(model), known: false, precision: "fallback" };
+  }
+  const modelLower = model.toLowerCase();
+
+  if (modelLower in ENERGY) {
+    return { resolvedModel: modelLower, known: true, precision: "exact" };
+  }
+  const alias = ALIASES[modelLower];
   if (alias && alias in ENERGY) {
-    return { resolvedModel: alias, known: true };
+    return { resolvedModel: alias, known: true, precision: "alias" };
   }
 
-  const parts = model.split("-");
+  const parts = modelLower.split("-");
   for (let i = parts.length - 1; i > 0; i -= 1) {
     const prefix = parts.slice(0, i).join("-");
     if (prefix in ENERGY) {
-      return { resolvedModel: prefix, known: true };
+      return { resolvedModel: prefix, known: true, precision: "prefix" };
     }
     const prefixAlias = ALIASES[prefix];
     if (prefixAlias && prefixAlias in ENERGY) {
-      return { resolvedModel: prefixAlias, known: true };
+      return { resolvedModel: prefixAlias, known: true, precision: "prefix" };
     }
   }
 
-  return { resolvedModel: model, known: false };
+  const family = familyFallback(modelLower);
+  if (family) {
+    return family;
+  }
+
+  return { resolvedModel: model, known: false, precision: "fallback" };
+}
+
+/** Thin back-compat wrapper over resolveModelMatch. */
+export function resolveModel(model: string): { resolvedModel: string; known: boolean } {
+  const match = resolveModelMatch(model);
+  return { resolvedModel: match.resolvedModel, known: match.known };
 }
 
 function effectiveTextInputTokens(
@@ -369,7 +491,7 @@ function calculateEnergy(
 ): EnergyResult {
   const inTokens = Math.max(0, inputTokens);
   const outTokens = Math.max(0, outputTokens);
-  const resolved = resolveModel(model);
+  const resolved = resolveModelMatch(model);
 
   let whIn: number;
   let whOut: number;
@@ -442,6 +564,14 @@ function calculateEnergy(
     }
     tier = entry.tier ?? 3;
     source = "registry";
+
+    // A prefix/family proxy is not the same model as the entry it matched, so it
+    // must not inherit a measured (tier 0/1) confidence. Floor to Tier 3.
+    if ((resolved.precision === "prefix" || resolved.precision === "family") && tier < 3) {
+      tier = 3;
+      basis = `${basis ?? ""} [Proxy match (${resolved.precision}): '${model}' is not an ` +
+        "exact registry entry; confidence downgraded to Tier 3.]";
+    }
   } else {
     whIn = 1.4;
     whOut = 4.2;
@@ -668,6 +798,7 @@ function isTrackingDegraded(args: {
   pueTier: number;
   signalQuality: VetchSignalQuality;
   usageEstimated: boolean;
+  modelMatch: VetchModelMatch;
 }): boolean {
   const gridQualityScore: Record<VetchSignalQuality, number> = {
     live: 0,
@@ -680,8 +811,10 @@ function isTrackingDegraded(args: {
     (args.energyTier / 3) * 0.6 +
     (args.pueTier / 3) * 0.2 +
     (gridQualityScore[args.signalQuality] / 3) * 0.2 +
-    (args.usageEstimated ? 0.4 : 0);
-  return score > 2.5;
+    (args.usageEstimated ? 0.4 : 0) +
+    // A prefix/family proxy is a lower-confidence model match.
+    (args.modelMatch === "prefix" || args.modelMatch === "family" ? 0.4 : 0);
+  return score > TRACKING_DEGRADED_THRESHOLD;
 }
 
 function confidenceBounds(value: number | null, uncertaintyPct: number | null): { p5: number | null; p95: number | null } {

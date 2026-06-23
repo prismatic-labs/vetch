@@ -98,6 +98,7 @@ def attach_to_otel_span(event: InferenceEvent) -> bool:
         span.set_attribute("vetch.provider", event.get("provider", "unknown"))
         span.set_attribute("vetch.region", event.get("region") or "unknown")
         span.set_attribute("vetch.signal_quality", event.get("signal_quality", "unknown"))
+        span.set_attribute("vetch.model_match", event.get("model_match", "fallback"))
 
         # Attach energy tier for confidence
         span.set_attribute("vetch.energy_tier", event.get("energy_tier", 3))
@@ -329,6 +330,7 @@ def _export_event_sync(event: InferenceEvent) -> bool:
             span.set_attribute("vetch.cost_usd", cost)
             span.set_attribute("vetch.energy_tier", event.get("energy_tier", 3))
             span.set_attribute("vetch.signal_quality", event.get("signal_quality", "unknown"))
+            span.set_attribute("vetch.model_match", event.get("model_match", "fallback"))
             span.set_attribute("vetch.region", event.get("region") or "unknown")
 
             # Token counts

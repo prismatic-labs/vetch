@@ -416,3 +416,26 @@ class TestEmbeddingsExtraction:
             assert ctx.captured_call.is_embedding is True
             assert ctx.captured_call.error is True
             assert ctx.captured_call.error_type == "ValueError"
+
+    def test_embeddings_uses_inferred_provider(self) -> None:
+        """A self-hosted embeddings endpoint must not be labelled 'openai'."""
+        from vetch.providers.openai import _after_embeddings_create
+
+        with TrackingContext(region="us-east-1") as ctx:
+            usage = MockUsage(prompt=100, completion=0, total=100)
+            response = MockResponse(model="bge-large", usage=usage)
+
+            _after_embeddings_create(response, _vetch_provider="self-hosted")
+
+            assert ctx.captured_call is not None
+            assert ctx.captured_call.provider == "self-hosted"
+
+    def test_embeddings_error_uses_inferred_provider(self) -> None:
+        """Embeddings error capture honours the inferred provider."""
+        from vetch.providers.openai import _on_embeddings_error
+
+        with TrackingContext(region="us-east-1") as ctx:
+            _on_embeddings_error(ValueError("boom"), _vetch_provider="openai-compatible")
+
+            assert ctx.captured_call is not None
+            assert ctx.captured_call.provider == "openai-compatible"

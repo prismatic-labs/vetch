@@ -11,12 +11,28 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 logger = logging.getLogger(__name__)
 
-METHODOLOGY_VERSION = "1.2"
+METHODOLOGY_VERSION = "1.3"
+
+# Provider labels for endpoints that do not bill OpenAI/vendor list prices.
+# Self-hosted: no per-token API charge (cost is a definite 0; you pay hardware,
+# captured via energy). Unknown-price: a third-party OpenAI-compatible endpoint
+# whose pricing we don't track (leave cost unknown rather than apply OpenAI's).
+_SELF_HOSTED_PROVIDERS = frozenset({"self-hosted", "ollama"})
+_UNKNOWN_PRICE_PROVIDERS = frozenset({"openai-compatible"})
+
+# Threshold for the tracking-degradation score (see prepare_inference_metrics).
+# Calibrated so the flag means "Vetch had to compensate for degraded tracking
+# inputs" — it fires for unknown models, prefix/family proxies, estimated usage,
+# and missing usage, while a healthy call (exact match, real usage, even an
+# honest Tier-3 model) stays clean. The score maxes at 2.0; do not set >= 2.0 or
+# the flag becomes unreachable (the bug this replaced: old threshold was 2.5).
+TRACKING_DEGRADED_THRESHOLD = 1.0
 
 # Registry paths
 _REGISTRY_DIR = Path(__file__).parent / "registry"
@@ -214,8 +230,154 @@ def _get_local_calibration(provider: str, model: str) -> Any:
     return _calibration_cache[key]
 
 
+MatchPrecision = Literal["exact", "alias", "prefix", "family", "fallback"]
+
+
+class ModelMatch(NamedTuple):
+    """Result of resolving a model name against the registry.
+
+    Attributes:
+        name: The resolved registry key (or the original model on no match).
+        known: True if the name resolved to a registry entry (any precision
+            except ``fallback``).
+        precision: How the match was made. ``exact`` and ``alias`` are
+            high-confidence (the entry's tier is trusted as-is); ``prefix`` and
+            ``family`` are low-confidence proxies (the reported tier is floored
+            to 3 by ``calculate_energy``); ``fallback`` means no match at all.
+    """
+
+    name: str
+    known: bool
+    precision: MatchPrecision
+
+
+# Deterministic, conservative per-family fallback. When an unknown model can be
+# attributed to a provider family but matches no entry, proxy to a representative
+# row of that family rather than the provider-agnostic generic fallback. Each
+# family declares a large and small representative; the unknown ID is classified
+# by tier keyword (see _FAMILY_LARGE_HINTS / _FAMILY_SMALL_HINTS). When the class
+# is ambiguous we bias to the larger (higher-energy) row so the fallback never
+# silently undercounts energy. All targets must exist in energy.json.
+_FAMILY_FALLBACK: dict[str, dict[str, str]] = {
+    "openai": {"large": "gpt-4o", "small": "gpt-4o-mini", "default": "gpt-4o"},
+    "anthropic": {
+        "large": "claude-opus-4-6",
+        "small": "claude-haiku-4-5",
+        "default": "claude-sonnet-4-6",
+    },
+    "google": {
+        "large": "gemini-3.1-pro",
+        "small": "gemini-3-flash",
+        "default": "gemini-3.1-pro",
+    },
+    "aws": {"large": "llama-3-70b", "small": "llama-3.1-8b", "default": "llama-3-70b"},
+    "deepseek": {"large": "deepseek-r1", "small": "deepseek-v3", "default": "deepseek-r1"},
+}
+
+# Alpha tier hints, matched against hyphen/dot-split tokens (not raw substrings,
+# so "mini" doesn't match inside an unrelated word). Parameter sizes ("31b") are
+# parsed numerically instead, because substring matching mis-fires ("31b"
+# contains "1b"). Large >= 30B, small <= 15B; the ambiguous middle biases large.
+_FAMILY_LARGE_HINTS = frozenset({"pro", "ultra", "opus", "max", "large"})
+_FAMILY_SMALL_HINTS = frozenset(
+    {"flash", "lite", "nano", "mini", "haiku", "small", "tiny"}
+)
+_PARAM_SIZE_RE = re.compile(r"(?<!\d)(\d+(?:\.\d+)?)\s*b(?![a-z0-9])")
+_FAMILY_LARGE_PARAM_B = 30.0
+_FAMILY_SMALL_PARAM_B = 15.0
+
+
+def _classify_family_subtier(model_lower: str) -> str:
+    """Classify an unknown model as 'large' / 'small' / 'default' (conservative).
+
+    Bias to 'large' (higher energy) whenever the class is ambiguous, so a family
+    proxy never silently undercounts.
+    """
+    tokens = set(re.split(r"[-_.]+", model_lower))
+    sizes = [float(m) for m in _PARAM_SIZE_RE.findall(model_lower)]
+    max_size = max(sizes) if sizes else None
+
+    if tokens & _FAMILY_LARGE_HINTS or (max_size is not None and max_size >= _FAMILY_LARGE_PARAM_B):
+        return "large"
+    if tokens & _FAMILY_SMALL_HINTS or (max_size is not None and max_size <= _FAMILY_SMALL_PARAM_B):
+        return "small"
+    return "default"
+
+
+def _family_fallback(model_lower: str) -> ModelMatch | None:
+    """Proxy an unknown model to a conservative same-family representative."""
+    provider = _infer_provider_from_model(model_lower)
+    family = _FAMILY_FALLBACK.get(provider or "")
+    if family is None:
+        return None
+    target = family[_classify_family_subtier(model_lower)]
+    # Guard against a missing/failed registry load: never claim a proxy is known
+    # if the target row isn't actually present (falls through to generic fallback).
+    if _ENERGY is None or target not in _ENERGY:
+        return None
+    return ModelMatch(target, True, "family")
+
+
+def resolve_model_match(model: str) -> ModelMatch:
+    """Resolve a model name to a registry entry, with match precision.
+
+    Resolution order: exact key, curated alias, algorithmic prefix shorten,
+    deterministic family fallback, then no match. Matching is case-insensitive;
+    the returned ``name`` preserves the canonical registry key's casing.
+
+    Args:
+        model: Original model name from SDK.
+
+    Returns:
+        A :class:`ModelMatch`.
+    """
+    _load_registry()
+    assert _ENERGY is not None
+    assert _ALIASES is not None
+
+    # Tolerate non-string model identifiers (degraded/mocked paths) rather than
+    # crashing the resolver; treat them as unknown.
+    if not isinstance(model, str):
+        return ModelMatch(model, False, "fallback")
+
+    model_lower = model.lower()
+
+    # 1. Direct match (case-insensitive; registry keys are lowercase)
+    if model_lower in _ENERGY:
+        return ModelMatch(model_lower, True, "exact")
+
+    # 2. Alias match (curated, high-confidence equivalence)
+    if model_lower in _ALIASES:
+        resolved = _ALIASES[model_lower]
+        if resolved in _ENERGY:
+            return ModelMatch(resolved, True, "alias")
+
+    # 3. Prefix matching (gpt-4-0613 -> gpt-4): low-confidence proxy
+    parts = model_lower.split("-")
+    for i in range(len(parts) - 1, 0, -1):
+        prefix = "-".join(parts[:i])
+        if prefix in _ENERGY:
+            return ModelMatch(prefix, True, "prefix")
+        if prefix in _ALIASES:
+            resolved = _ALIASES[prefix]
+            if resolved in _ENERGY:
+                return ModelMatch(resolved, True, "prefix")
+
+    # 4. Deterministic family fallback before the generic one
+    family_match = _family_fallback(model_lower)
+    if family_match is not None:
+        return family_match
+
+    return ModelMatch(model, False, "fallback")
+
+
 def resolve_model(model: str) -> tuple[str, bool]:
     """Resolve a model name to a registry entry, handling aliases.
+
+    Thin back-compat wrapper over :func:`resolve_model_match`. Note that a
+    family-fallback proxy reports ``known=True`` here (it resolved to a real
+    entry); callers needing the precision distinction should use
+    :func:`resolve_model_match`.
 
     Args:
         model: Original model name from SDK.
@@ -223,33 +385,8 @@ def resolve_model(model: str) -> tuple[str, bool]:
     Returns:
         Tuple of (resolved_model_name, is_known).
     """
-    _load_registry()
-    assert _ENERGY is not None
-    assert _ALIASES is not None
-
-    # 1. Direct match
-    if model in _ENERGY:
-        return model, True
-
-    # 2. Alias match
-    if model in _ALIASES:
-        resolved = _ALIASES[model]
-        if resolved in _ENERGY:
-            return resolved, True
-
-    # 3. Prefix matching (gpt-4-0613 -> gpt-4)
-    # Try progressively shorter prefixes split by hyphens
-    parts = model.split("-")
-    for i in range(len(parts) - 1, 0, -1):
-        prefix = "-".join(parts[:i])
-        if prefix in _ENERGY:
-            return prefix, True
-        if prefix in _ALIASES:
-            resolved = _ALIASES[prefix]
-            if resolved in _ENERGY:
-                return resolved, True
-
-    return model, False
+    m = resolve_model_match(model)
+    return m.name, m.known
 
 
 def get_conservative_energy() -> dict[str, Any]:
@@ -466,6 +603,7 @@ def calculate_energy(
     cache_read_tokens: int = 0,
     n_images: int = 0,
     image_input_tokens: int = 0,
+    _match: ModelMatch | None = None,
 ) -> tuple[float, int, int, str, str, bool]:
     """Calculate energy consumption in Watt-hours.
 
@@ -494,6 +632,10 @@ def calculate_energy(
     # Clamp negative tokens to 0
     in_tokens = max(0, input_tokens)
     out_tokens = max(0, output_tokens)
+
+    # Resolve once; callers (prepare_inference_metrics) may pass a precomputed
+    # match to avoid resolving the same model name twice.
+    match = _match if _match is not None else resolve_model_match(model)
 
     if energy_override:
         wh_in = energy_override["wh_per_1k_input"]
@@ -537,10 +679,10 @@ def calculate_energy(
 
         uncertainty_pct = get_uncertainty_pct(tier)
         # Check if model is known in registry anyway for informational purposes
-        _, known = resolve_model(model)
+        known = match.known
         return energy_wh, tier, uncertainty_pct, source, basis, known
 
-    resolved_model, known = resolve_model(model)
+    resolved_model, known = match.name, match.known
     _load_registry()
     assert _ENERGY is not None
 
@@ -578,6 +720,17 @@ def calculate_energy(
 
         tier = entry["tier"]
         source = "registry"
+
+        # A prefix/family proxy is not the same model as the entry it matched,
+        # so it must not inherit a measured (tier 0/1) confidence it didn't earn.
+        # Floor the reported tier to 3 (order-of-magnitude) for proxy matches;
+        # exact/alias matches keep the entry's real tier.
+        if match.precision in ("prefix", "family") and tier < 3:
+            tier = 3
+            basis = (
+                f"{basis} [Proxy match ({match.precision}): '{model}' is not an "
+                f"exact registry entry; confidence downgraded to Tier 3.]"
+            )
     else:
         entry = get_conservative_energy()
         wh_in = entry["wh_per_1k_input"]
@@ -618,6 +771,7 @@ PROVIDER_PUE: dict[str, float] = {
     "aws": 1.15,         # AWS (2024 global average)
     "anthropic": 1.15,   # Anthropic uses AWS
     "bedrock": 1.15,     # AWS Bedrock
+    "deepseek": 1.27,    # DeepSeek own servers (Jegham et al.)
 }
 
 # Documentation sources for transparency
@@ -629,7 +783,17 @@ PROVIDER_PUE_SOURCES: dict[str, str] = {
     "aws": "AWS Sustainability Report 2024",
     "anthropic": "AWS Sustainability Report 2024 (AWS-backed)",
     "bedrock": "AWS Sustainability Report 2024",
+    "deepseek": "Jegham et al. (2025) DeepSeek datacenter PUE",
 }
+
+
+def infer_provider_for_model(model: str) -> str | None:
+    """Infer cloud provider from a model name (public API for tooling).
+
+    Returns:
+        Provider key for PUE/WUE lookup, or None if unknown.
+    """
+    return _infer_provider_from_model(model)
 
 
 def _infer_provider_from_model(model: str) -> str | None:
@@ -655,6 +819,14 @@ def _infer_provider_from_model(model: str) -> str | None:
     # Google models
     if any(prefix in model_lower for prefix in ["gemini-", "gemma-", "palm-"]):
         return "google"
+
+    # Open-weight models commonly served on AWS (Meta Llama, Mixtral)
+    if model_lower.startswith(("llama-", "mixtral-")):
+        return "aws"
+
+    # DeepSeek models (DeepSeek own infrastructure)
+    if model_lower.startswith("deepseek-"):
+        return "deepseek"
 
     # Unknown
     return None
@@ -1060,12 +1232,12 @@ def calculate_cost(
         >>> calculate_cost(1000, 500, "gpt-4o")
         (0.0125, 0.005, 0.0075, 0.0, 0.0, 'list')
 
-        >>> # Tiered model (Gemini 2.5 Pro): 200k input, 1k output
-        >>> # Input: 128k @ $1.25/M + 72k @ $2.50/M = $0.16 + $0.18 = $0.34
-        >>> # Output: 1k @ $10/M = $0.01
-        >>> # Total: $0.35
-        >>> calculate_cost(200000, 1000, "gemini-2.5-pro")
-        (0.35, 0.34, 0.01, 0.0, 0.0, 'list')
+        >>> # Tiered model (Gemini 2.5 Pro): 300k input, 1k output (threshold pricing)
+        >>> # Input: 300k @ $2.50/M (base × 2.0 over 200k threshold) = $0.75
+        >>> # Output: 1k @ $10/M (under threshold) = $0.01
+        >>> # Total: $0.76
+        >>> calculate_cost(300000, 1000, "gemini-2.5-pro")
+        (0.76, 0.75, 0.01, 0.0, 0.0, 'list')
     """
     resolved_model, known = resolve_model(model)
     _load_registry()
@@ -1144,6 +1316,7 @@ class InferenceMetrics:
         "energy_source",
         "energy_basis",
         "model_known",
+        "model_match",
         "carbon_g",
         "pue",
         "pue_tier",
@@ -1177,6 +1350,7 @@ class InferenceMetrics:
         self.energy_source: str = "registry"
         self.energy_basis: str | None = None
         self.model_known: bool = False
+        self.model_match: MatchPrecision = "fallback"
         self.carbon_g: float | None = None
         self.pue: float | None = None
         self.pue_tier: int = 3
@@ -1358,6 +1532,11 @@ def prepare_inference_metrics(
                 )
 
             _cache_tokens = int(cache_read_tokens) if cache_read_tokens else 0
+            # Resolve once and reuse for both the energy calc and the event field.
+            match = resolve_model_match(model)
+            # Record how the model name was resolved so downstream can flag
+            # prefix/family proxies as low-confidence (see ModelMatch).
+            metrics.model_match = match.precision
             (
                 metrics.energy_wh,
                 metrics.energy_tier,
@@ -1373,6 +1552,7 @@ def prepare_inference_metrics(
                 cache_read_tokens=_cache_tokens,
                 n_images=n_images,
                 image_input_tokens=image_input_tokens,
+                _match=match,
             )
 
             baseline_energy_wh: float | None = None
@@ -1428,20 +1608,36 @@ def prepare_inference_metrics(
                         baseline_carbon_g - metrics.carbon_g,
                     )
 
-            (
-                metrics.cost_usd,
-                metrics.cost_in_usd,
-                metrics.cost_out_usd,
-                metrics.cost_cache_write_usd,
-                metrics.cost_cache_read_usd,
-                metrics.billing_tier,
-            ) = calculate_cost(
-                in_tokens,
-                out_tokens,
-                model,
-                cache_read_tokens=cache_read_tokens,
-                cache_creation_tokens=cache_creation_tokens,
-            )
+            if provider in _SELF_HOSTED_PROVIDERS:
+                # A self-hosted model has no per-token API price (you pay for the
+                # hardware, captured via energy), so cost is a definite 0.
+                metrics.cost_usd = 0.0
+                metrics.cost_in_usd = 0.0
+                metrics.cost_out_usd = 0.0
+                metrics.billing_tier = "self-hosted"
+            elif provider in _UNKNOWN_PRICE_PROVIDERS:
+                # An OpenAI-compatible third-party endpoint (vLLM/TGI on a public
+                # host, OpenRouter, Together, ...) does NOT bill OpenAI's rates.
+                # We don't know its price, so leave cost unknown rather than wrong.
+                metrics.cost_usd = None
+                metrics.cost_in_usd = None
+                metrics.cost_out_usd = None
+                metrics.billing_tier = "unknown"
+            else:
+                (
+                    metrics.cost_usd,
+                    metrics.cost_in_usd,
+                    metrics.cost_out_usd,
+                    metrics.cost_cache_write_usd,
+                    metrics.cost_cache_read_usd,
+                    metrics.billing_tier,
+                ) = calculate_cost(
+                    in_tokens,
+                    out_tokens,
+                    model,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_creation_tokens=cache_creation_tokens,
+                )
 
             # Apply price multiplier
             if price_multiplier != 1.0 and metrics.cost_usd is not None:
@@ -1487,8 +1683,11 @@ def prepare_inference_metrics(
         + (metrics.pue_tier / 3.0) * 0.2
         + (grid_quality_score.get(metrics.signal_quality, 3.0) / 3.0) * 0.2
         + (0.4 if metrics.usage_estimated else 0.0)
+        # A prefix/family proxy is a lower-confidence model match than an exact
+        # or curated-alias hit, so it adds to the degradation score.
+        + (0.4 if metrics.model_match in ("prefix", "family") else 0.0)
     )
-    metrics.tracking_degraded = score > 2.5
+    metrics.tracking_degraded = score > TRACKING_DEGRADED_THRESHOLD
 
     # 5. Request fingerprint for deduplication
     if usage and usage.get("text"):

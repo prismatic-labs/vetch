@@ -390,6 +390,66 @@
     "quantization": "bf16",
     "basis": "Estimated. Claude Sonnet 4 (distinct from Claude 3.5 Sonnet). No Jegham measurement. Proxied from Claude 3.5 Sonnet values (similar architecture class and pricing). Tier 3 ±1000%."
   },
+  "claude-sonnet-4-5": {
+    "wh_per_1k_input": 0.11,
+    "wh_per_1k_output": 0.33,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 70,
+    "active_params_b": 70,
+    "quantization": "bf16",
+    "basis": "Estimated. Claude Sonnet 4.5. No published energy figures or Jegham measurement. Proxied from claude-sonnet-4 (same Sonnet class). Efficiency direction vs Sonnet 4 is uncertain. Tier 3 ±1000%."
+  },
+  "claude-sonnet-4-6": {
+    "wh_per_1k_input": 0.11,
+    "wh_per_1k_output": 0.33,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 70,
+    "active_params_b": 70,
+    "quantization": "bf16",
+    "basis": "Estimated. Claude Sonnet 4.6 (claude-sonnet-4-6). No published energy figures or Jegham measurement. Proxied from claude-sonnet-4 (same Sonnet class). Efficiency direction vs Sonnet 4 is uncertain. Tier 3 ±1000%."
+  },
+  "claude-opus-4-5": {
+    "wh_per_1k_input": 0.32,
+    "wh_per_1k_output": 0.92,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 175,
+    "active_params_b": 175,
+    "quantization": "bf16",
+    "basis": "Estimated. Claude Opus 4.5. No published energy figures or Jegham measurement. Proxied from claude-3-opus (nearest Opus-class entry). Tier 3 ±1000%."
+  },
+  "claude-opus-4-6": {
+    "wh_per_1k_input": 0.32,
+    "wh_per_1k_output": 0.92,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 175,
+    "active_params_b": 175,
+    "quantization": "bf16",
+    "basis": "Estimated. Claude Opus 4.6. No published energy figures or Jegham measurement. Proxied from claude-3-opus (nearest Opus-class entry). Tier 3 ±1000%."
+  },
+  "claude-opus-4-7": {
+    "wh_per_1k_input": 0.32,
+    "wh_per_1k_output": 0.92,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 175,
+    "active_params_b": 175,
+    "quantization": "bf16",
+    "basis": "Estimated. Claude Opus 4.7. No published energy figures or Jegham measurement. Proxied from claude-3-opus (nearest Opus-class entry). Tier 3 ±1000%."
+  },
+  "claude-opus-4-8": {
+    "wh_per_1k_input": 0.32,
+    "wh_per_1k_output": 0.92,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 175,
+    "active_params_b": 175,
+    "quantization": "bf16",
+    "basis": "Estimated. Claude Opus 4.8. No published energy figures or Jegham measurement. Proxied from claude-3-opus (nearest Opus-class entry). Tier 3 ±1000%."
+  },
   "claude-3.7-sonnet-thinking": {
     "tier": 1,
     "prompt_length": {
@@ -455,6 +515,46 @@
     "active_params_b": 100,
     "quantization": "bf16",
     "basis": "Estimated. No published energy figures or Jegham measurement for Gemini 2.5 Pro. Value proxied from Gemini 1.5 Pro (same frontier MoE tier). Efficiency direction vs 1.5 Pro is uncertain. Tier 3 ±1000%."
+  },
+  "gemini-3-flash": {
+    "wh_per_1k_input": 0.068,
+    "wh_per_1k_output": 0.205,
+    "tier": 3,
+    "architecture": "moe",
+    "total_params_b": 100,
+    "active_params_b": 25,
+    "quantization": "bf16",
+    "basis": "Estimated. No published energy figures or Jegham measurement for Gemini 3 Flash. Proxied from gemini-2.5-flash (nearest Flash-class entry). Google reports large year-over-year efficiency gains for Gemini, so this proxy may overstate; direction uncertain. Tier 3 ±1000%."
+  },
+  "gemini-3.5-flash": {
+    "wh_per_1k_input": 0.068,
+    "wh_per_1k_output": 0.205,
+    "tier": 3,
+    "architecture": "moe",
+    "total_params_b": 100,
+    "active_params_b": 25,
+    "quantization": "bf16",
+    "basis": "Estimated. No published energy figures or Jegham measurement for Gemini 3.5 Flash. Proxied from gemini-2.5-flash (nearest Flash-class entry). Direction uncertain. Tier 3 ±1000%."
+  },
+  "gemini-3.1-flash-lite": {
+    "wh_per_1k_input": 0.034,
+    "wh_per_1k_output": 0.103,
+    "tier": 3,
+    "architecture": "moe",
+    "total_params_b": 50,
+    "active_params_b": 12,
+    "quantization": "bf16",
+    "basis": "Estimated. No published energy figures or Jegham measurement for Gemini 3.1 Flash-Lite. Proxied from gemini-2.5-flash scaled down ~0.5x for the lighter Lite class. Direction uncertain. Tier 3 ±1000%."
+  },
+  "gemini-3.1-pro": {
+    "wh_per_1k_input": 0.21,
+    "wh_per_1k_output": 0.63,
+    "tier": 3,
+    "architecture": "moe",
+    "total_params_b": 500,
+    "active_params_b": 100,
+    "quantization": "bf16",
+    "basis": "Estimated. No published energy figures or Jegham measurement for Gemini 3.1 Pro. Proxied from gemini-2.5-pro (same frontier MoE Pro tier). Direction uncertain. Tier 3 ±1000%."
   },
   "llama-3-70b": {
     "wh_per_1k_input": 0.12,

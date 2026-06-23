@@ -148,7 +148,8 @@ class TestProviderDetection:
             ("o4-mini", "openai"),
             ("claude-3.7-sonnet", "anthropic"),
             ("gemini-2.5-pro", "google"),
-            ("llama-3.1-70b", None),
+            ("llama-3.1-70b", "aws"),
+            ("deepseek-r1", "deepseek"),
         ],
     )
     def test_infer_provider(self, model: str, expected: str | None) -> None:

@@ -11,7 +11,7 @@ import type {
   VetchTextUsage,
   VetchUsage,
 } from "./types.js";
-import { enrichVetchEvent, resolveModel } from "./calculation.js";
+import { enrichVetchEvent, resolveModelMatch } from "./calculation.js";
 import { readEnvBudgets } from "./env.js";
 import { resolveProviderLabel } from "./provider-label.js";
 import { VETCH_VERSION } from "./version.js";
@@ -34,6 +34,7 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
     args.model,
     providerOverride === undefined ? {} : { providerOverride },
   );
+  const modelMatch = resolveModelMatch(modelInfo.model);
   const rawUsage = args.streamObservation?.usage ?? getObjectValue(args.result, "usage");
   const textUsage = normalizeTextUsage(rawUsage);
   const finishReason = normalizeFinishReason(
@@ -70,7 +71,8 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
 
     model: modelInfo.model,
     provider: modelInfo.provider,
-    model_known: resolveModel(modelInfo.model).known,
+    model_known: modelMatch.known,
+    model_match: modelMatch.precision,
     multimodal: hasMultimodalInputs(args.params),
 
     usage: textUsage ?

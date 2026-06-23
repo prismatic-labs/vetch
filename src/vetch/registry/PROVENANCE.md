@@ -139,6 +139,34 @@ From Aglin et al. (2026), arXiv:2603.20224 — "Beyond Test-Time Compute Strateg
 
 **Registry implication:** Vetch currently has no mechanism to track whether a reasoning strategy (CoT prompt, extended thinking, majority voting) was used. `vetch.thinking_mode` (added v0.2.4) covers the Extended Thinking case explicitly. General CoT via prompt engineering remains invisible to the SDK.
 
+## Registry freshness process
+
+The registry drifts behind reality every time a provider ships a model. When a new
+frontier model appears:
+
+1. **Energy** — add an `energy.json` row. If no direct measurement or Jegham entry
+   exists, proxy from the nearest same-class prior-gen sibling (Pro→Pro, Flash→Flash,
+   Opus→Opus) at **tier 3**, and say so in the `basis` string ("No published energy
+   figures or Jegham measurement... proxied from... Tier 3 ±1000%"). When in doubt,
+   proxy from the *higher*-energy sibling — never silently undercount.
+2. **Pricing** — add a `pricing.json` row with **verified** numbers from the provider's
+   official pricing page, plus an `as_of` date. Never proxy or invent a price.
+3. **Aliases** — add the dated / `-preview` / `-latest` forms to `aliases.json`,
+   pointing at the canonical (suffix-free) key.
+
+`scripts/check_registry_freshness.py` (run in CI) enforces energy↔pricing parity and
+flags priced rows whose `as_of` is over a year old.
+
+**v0.9.0 rows (verified 2026-06-23):** Gemini `3-flash` ($0.50/$3.00), `3.5-flash`
+($1.50/$9.00), `3.1-flash-lite` ($0.25/$1.50), `3.1-pro` ($2/$12, 2x input >200k)
+from ai.google.dev/gemini-api/docs/pricing; Claude `sonnet-4-5`/`sonnet-4-6`
+($3/$15) and `opus-4-5`/`-4-6`/`-4-7`/`-4-8` ($5/$25) from the official Anthropic
+pricing page (platform.claude.com), which lists Opus 4.5 through 4.8 at the same
+$5/$25 rate. Energy for all is Tier-3 proxy (no measurement exists). Open-weight / self-hosted rows can
+be cross-validated against the direct-measurement sources below (ML.ENERGY, Samsi,
+TokenPowerBench); closed hosted-API models have no public power telemetry and stay
+inferred/Tier 3 by necessity.
+
 ## References
 
 *   Pope, R. et al. (2022). "Efficiently Scaling Transformer Inference." MLSys 2023. arXiv:2211.05102
@@ -146,3 +174,6 @@ From Aglin et al. (2026), arXiv:2603.20224 — "Beyond Test-Time Compute Strateg
 *   Jegham, N. et al. (2025). "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference." arXiv:2505.09598 (current: v6, revised 2025-11-24)
 *   Uptime Institute (2023). Global Data Center Survey.
 *   Aglin, G. et al. (2026). "Beyond Test-Time Compute Strategies: Advocating Energy-per-Token in LLM Inference." arXiv:2603.20224
+*   Samsi, S. et al. (2023). "From Words to Watts: Benchmarking the Energy Costs of Large Language Model Inference." arXiv:2310.03003 (direct GPU power measurement, open models)
+*   Chung, J.-W. et al. (2025). "The ML.ENERGY Benchmark: Toward Automated Inference Energy Measurement and Optimization." arXiv:2505.06371 (open data + Zeus toolkit; direct power metering of open-weight models)
+*   TokenPowerBench (2025). "Benchmarking the Power Consumption of LLM Inference." arXiv:2512.03024

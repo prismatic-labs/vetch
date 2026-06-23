@@ -5,7 +5,8 @@ export {
   detectPerCallAdvisories,
   detectSessionAdvisories,
 } from "./advisories.js";
-export { enrichVetchEvent, resolveModel } from "./calculation.js";
+export { enrichVetchEvent, resolveModel, resolveModelMatch } from "./calculation.js";
+export { inferProviderFromBaseUrl } from "./provider-label.js";
 export { loadLocalCalibration } from "./local-calibration.js";
 export { VETCH_VERSION } from "./version.js";
 export type { EnergyOverride } from "./calculation.js";
@@ -20,6 +21,7 @@ export type {
   VetchEmissionMode,
   VetchEvent,
   VetchLanguageModel,
+  VetchModelMatch,
   VetchOperation,
   VetchOptions,
   VetchProtocolProgress,

@@ -117,6 +117,18 @@ await generateText({
 
 Rolling advisories (STALL, CACHE, ERROR, STREAM, REASONING, PROTO-001) require `attribution.sessionId`. Without it, only **per-call** advisories run so unrelated traffic cannot share one rolling window. Reuse one `withVetch` model across requests when each call sets `sessionId`.
 
+## Model coverage and self-hosted cost
+
+Every event carries `model_match`, recording how the model name resolved against the bundled registry: `exact`, `alias` (curated dated/`-latest`/`-preview` equivalence), `prefix` (algorithmic shorten), `family` (conservative same-family proxy), or `fallback` (unknown). Matching is case-insensitive. `prefix` and `family` are proxies, so their `energy_tier` is floored to 3 (order-of-magnitude) — a current-gen model the registry hasn't caught up to is flagged low-confidence rather than presented as exact. This mirrors the Python SDK.
+
+Cost is routed by the endpoint, so a non-OpenAI endpoint is never billed OpenAI's per-token rates. Vetch classifies the model's `baseURL`:
+
+- **Official OpenAI / Azure** → list pricing (`billing_tier: "list"`).
+- **Self-hosted / Ollama** (loopback, RFC-1918 private hosts, `:11434`, `OLLAMA_HOST`, or `VETCH_SELF_HOSTED=true`) → `estimated_cost_usd: 0`, `billing_tier: "self-hosted"` (you pay for hardware, captured as energy).
+- **Other OpenAI-compatible hosts** (vLLM/TGI on a public host, OpenRouter, Together, …) → `estimated_cost_usd: null`, `billing_tier: "unknown"` (energy is still estimated from the model registry).
+
+A non-OpenAI AI-SDK provider (Google, Anthropic) is not reclassified from its `baseURL` alone, so its pricing is preserved. Use `providerOverride` to force a label.
+
 ## Streaming behavior
 
 - Events emit **once** when a stream is consumed to completion (`TransformStream.flush`), including full usage from the v6 `finish` part (cache, reasoning, and text totals).

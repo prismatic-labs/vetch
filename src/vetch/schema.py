@@ -108,6 +108,10 @@ class InferenceEvent(TypedDict, total=False):
     model: str
     provider: str
     model_known: bool
+    # How the model name resolved against the registry (v0.9.0):
+    # "exact"/"alias" are high-confidence; "prefix"/"family" are low-confidence
+    # proxies (energy_tier is floored to 3 for these); "fallback" = no match.
+    model_match: Literal["exact", "alias", "prefix", "family", "fallback"]
     multimodal: bool  # True if request includes non-text modalities (image/audio/video)
 
     # Usage
@@ -125,7 +129,10 @@ class InferenceEvent(TypedDict, total=False):
     # Actual discounted cost paid for cache-read tokens, not the saving.
     # See cache_cost_saving_usd for the difference vs. uncached input price.
     estimated_cost_cache_read_usd: Union[float, None]
-    billing_tier: str  # Always "list" for v1
+    # "list" = public list pricing; "self-hosted" = no per-token API charge
+    # (cost 0); "unknown" = OpenAI-compatible third-party endpoint whose price
+    # we don't track (cost null). See prepare_inference_metrics cost routing.
+    billing_tier: str
 
     # Signal quality
     signal_quality: Literal["live", "delayed", "blind", "unknown"]

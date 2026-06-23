@@ -247,6 +247,10 @@ def export_event_as_span(
         if energy_tier is not None:
             span.set_attribute("vetch.tier", energy_tier)
 
+        model_match = event.get("model_match")
+        if model_match is not None:
+            span.set_attribute("vetch.model_match", model_match)
+
         # Cache-related attributes
         if "cache_read_tokens" in event and event["cache_read_tokens"]:
             span.set_attribute("vetch.cache.read_tokens", event["cache_read_tokens"])

@@ -185,11 +185,23 @@ class _WeakAsyncChatWrapper:
 class _WeakEmbeddingsWrapper:
     """Wrapper for sync embeddings.create with weak reference."""
 
-    __slots__ = ("_embeddings_ref", "_originals_dict", "vetch_patched", "_vetch_original")
+    __slots__ = (
+        "_embeddings_ref",
+        "_originals_dict",
+        "_provider",
+        "vetch_patched",
+        "_vetch_original",
+    )
 
-    def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
+    def __init__(
+        self,
+        embeddings: Any,
+        originals_dict: WeakKeyDictionary[Any, Any],
+        provider: str = "openai",
+    ) -> None:
         self._embeddings_ref = weakref.ref(embeddings)
         self._originals_dict = originals_dict
+        self._provider = provider
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         embeddings = self._embeddings_ref()
@@ -200,22 +212,34 @@ class _WeakEmbeddingsWrapper:
 
         try:
             result = original(embeddings, *args, **kwargs)
-            _after_embeddings_create(result, *args, **kwargs)
+            _after_embeddings_create(result, *args, _vetch_provider=self._provider, **kwargs)
             return result
 
         except Exception as e:
-            _on_embeddings_error(e)
+            _on_embeddings_error(e, _vetch_provider=self._provider)
             raise
 
 
 class _WeakAsyncEmbeddingsWrapper:
     """Async wrapper for embeddings.create with weak reference."""
 
-    __slots__ = ("_embeddings_ref", "_originals_dict", "vetch_patched", "_vetch_original")
+    __slots__ = (
+        "_embeddings_ref",
+        "_originals_dict",
+        "_provider",
+        "vetch_patched",
+        "_vetch_original",
+    )
 
-    def __init__(self, embeddings: Any, originals_dict: WeakKeyDictionary[Any, Any]) -> None:
+    def __init__(
+        self,
+        embeddings: Any,
+        originals_dict: WeakKeyDictionary[Any, Any],
+        provider: str = "openai",
+    ) -> None:
         self._embeddings_ref = weakref.ref(embeddings)
         self._originals_dict = originals_dict
+        self._provider = provider
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         embeddings = self._embeddings_ref()
@@ -226,11 +250,11 @@ class _WeakAsyncEmbeddingsWrapper:
 
         try:
             result = await original(embeddings, *args, **kwargs)
-            _after_embeddings_create(result, *args, **kwargs)
+            _after_embeddings_create(result, *args, _vetch_provider=self._provider, **kwargs)
             return result
 
         except Exception as e:
-            _on_embeddings_error(e)
+            _on_embeddings_error(e, _vetch_provider=self._provider)
             raise
 
 
@@ -417,27 +441,72 @@ def infer_region_from_base_url(base_url: str | None) -> str | None:
     return None
 
 
-def _infer_openai_provider(base_url: str | None) -> str:
-    """Infer the actual provider label from base_url or environment variables.
+# Official OpenAI / Azure-OpenAI hosts. Anything pointed here uses OpenAI energy
+# and list pricing. A proxy/gateway that forwards to real OpenAI but presents a
+# different host is, by design, treated as openai-compatible (cost left unknown)
+# rather than silently billed OpenAI rates — opt back in with VETCH_SELF_HOSTED
+# unset and a recognised host, or set the provider explicitly.
+_OPENAI_OFFICIAL_HOST_SUFFIXES = (
+    "api.openai.com",
+    "openai.azure.com",
+    "api.cognitive.microsoft.com",
+)
 
-    Returns "ollama" when the client is pointed at a local Ollama OpenAI-compat
-    endpoint (localhost:11434 or the OLLAMA_HOST env var), so that Vetch uses
-    Ollama calibrations instead of OpenAI calibrations.
+
+def _is_private_host(host: str) -> bool:
+    """True for loopback / .local / RFC-1918 private hosts (self-hosted)."""
+    host = host.strip("[]")  # strip IPv6 brackets
+    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local"):
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        return False
+
+
+def _infer_openai_provider(base_url: str | None) -> str:
+    """Classify an OpenAI-SDK client by its base_url into a provider label.
+
+    Four buckets:
+
+    - ``"openai"`` — official OpenAI or Azure-OpenAI, or no base_url. OpenAI
+      energy + list pricing.
+    - ``"ollama"`` — local Ollama OpenAI-compat endpoint (``OLLAMA_HOST`` or
+      ``:11434``). Ollama calibrations apply.
+    - ``"self-hosted"`` — loopback / private-network / ``VETCH_SELF_HOSTED`` host.
+      Calibration energy; no per-token list price (you pay for the hardware).
+    - ``"openai-compatible"`` — any other non-OpenAI host (vLLM/TGI/LM Studio on a
+      public host, or an aggregator like OpenRouter/Together/Groq). Energy is
+      resolved from the model registry, but OpenAI list pricing is **not**
+      applied — cost is left unknown rather than wrong.
     """
     import os
+    from urllib.parse import urlparse
 
-    ollama_host = os.environ.get("OLLAMA_HOST", "")
-    if ollama_host:
+    if os.environ.get("OLLAMA_HOST"):
         return "ollama"
+    if os.environ.get("VETCH_SELF_HOSTED", "").lower() in ("1", "true", "yes"):
+        return "self-hosted"
 
     if base_url is None:
         return "openai"
 
-    base_url_lower = base_url.lower()
-    if "localhost:11434" in base_url_lower or "127.0.0.1:11434" in base_url_lower:
+    host = (urlparse(base_url).hostname or "").lower()
+    if not host:
+        return "openai"
+
+    if any(host == s or host.endswith("." + s) for s in _OPENAI_OFFICIAL_HOST_SUFFIXES):
+        return "openai"
+
+    if ":11434" in base_url or host == "ollama":
         return "ollama"
 
-    return "openai"
+    if _is_private_host(host):
+        return "self-hosted"
+
+    return "openai-compatible"
 
 
 def _after_create(
@@ -497,15 +566,19 @@ def _on_create_error(error: BaseException, provider: str = "openai") -> None:
             )
 
 
-def _after_embeddings_create(result: Any, *args: Any, **kwargs: Any) -> None:
+def _after_embeddings_create(
+    result: Any, *args: Any, _vetch_provider: str = "openai", **kwargs: Any
+) -> None:
     """Hook called after embeddings.create.
 
     Captures metadata from the embeddings response into the active context.
+    Uses the provider inferred from the client's base_url so a self-hosted /
+    OpenAI-compatible embedding endpoint is not billed OpenAI's list price.
     """
     from vetch.wrapper import auto_context_for_instrumented_call
 
     # Auto-create context if needed, or use existing manual wrap() context
-    with auto_context_for_instrumented_call("openai"):
+    with auto_context_for_instrumented_call(_vetch_provider):
         usage = extract_embeddings_usage(result)
         model = extract_model(result)
 
@@ -513,7 +586,7 @@ def _after_embeddings_create(result: Any, *args: Any, **kwargs: Any) -> None:
         if ctx is not None:
             ctx.capture(
                 model=model,
-                provider="openai",
+                provider=_vetch_provider,
                 usage=usage,
                 is_stream=False,
                 is_embedding=True,  # Mark as embedding request
@@ -521,17 +594,17 @@ def _after_embeddings_create(result: Any, *args: Any, **kwargs: Any) -> None:
             )
 
 
-def _on_embeddings_error(error: BaseException) -> None:
+def _on_embeddings_error(error: BaseException, _vetch_provider: str = "openai") -> None:
     """Hook called when embeddings.create fails."""
     from vetch.wrapper import auto_context_for_instrumented_call
 
     # Auto-create context if needed, or use existing manual wrap() context
-    with auto_context_for_instrumented_call("openai"):
+    with auto_context_for_instrumented_call(_vetch_provider):
         ctx = get_active_context()
         if ctx is not None:
             ctx.capture(
                 model="unknown",
-                provider="openai",
+                provider=_vetch_provider,
                 error=True,
                 error_type=type(error).__name__,
                 is_embedding=True,
@@ -791,104 +864,6 @@ class AsyncStreamWrapper(StreamWrapper):
                 pass
 
 
-def _wrapped_create(original: Any) -> Any:
-    """Create wrapped version of chat.completions.create.
-
-    Args:
-        original: The original create method.
-
-    Returns:
-        Wrapped method that captures metadata.
-    """
-    # Handle async function
-    if inspect.iscoroutinefunction(original):
-        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            is_stream = kwargs.get("stream", False)
-            if is_stream and "stream_options" not in kwargs:
-                kwargs["stream_options"] = {"include_usage": True}
-            try:
-                result = await original(*args, **kwargs)
-                if is_stream:
-                    model_hint = kwargs.get("model", "unknown")
-                    return AsyncStreamWrapper(result, model_hint=model_hint)
-                _after_create(result, *args, **kwargs)
-                return result
-            except Exception as e:
-                _on_create_error(e)
-                raise
-
-        async_wrapper.vetch_patched = True # type: ignore[attr-defined]
-        async_wrapper._vetch_original = original # type: ignore[attr-defined]
-        return async_wrapper
-
-    # Handle sync function
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        is_stream = kwargs.get("stream", False)
-        if is_stream:
-            kwargs.setdefault("stream_options", {}).setdefault("include_usage", True)
-
-        try:
-            result = original(*args, **kwargs)
-
-            if is_stream:
-                # Wrap the stream to capture during iteration
-                model_hint = kwargs.get("model", "unknown")
-                return StreamWrapper(result, model_hint=model_hint)
-
-            # Non-streaming: capture immediately
-            _after_create(result, *args, **kwargs)
-            return result
-
-        except Exception as e:
-            _on_create_error(e)
-            raise
-
-    wrapper.vetch_patched = True  # type: ignore[attr-defined]
-    wrapper._vetch_original = original  # type: ignore[attr-defined]
-
-    return wrapper
-
-
-def _wrapped_embeddings_create(original: Any) -> Any:
-    """Create wrapped version of embeddings.create.
-
-    Args:
-        original: The original embeddings create method.
-
-    Returns:
-        Wrapped method that captures metadata.
-    """
-    # Handle async function
-    if inspect.iscoroutinefunction(original):
-        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            try:
-                result = await original(*args, **kwargs)
-                _after_embeddings_create(result, *args, **kwargs)
-                return result
-            except Exception as e:
-                _on_embeddings_error(e)
-                raise
-
-        async_wrapper.vetch_patched = True  # type: ignore[attr-defined]
-        async_wrapper._vetch_original = original  # type: ignore[attr-defined]
-        return async_wrapper
-
-    # Handle sync function
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        try:
-            result = original(*args, **kwargs)
-            _after_embeddings_create(result, *args, **kwargs)
-            return result
-        except Exception as e:
-            _on_embeddings_error(e)
-            raise
-
-    wrapper.vetch_patched = True  # type: ignore[attr-defined]
-    wrapper._vetch_original = original  # type: ignore[attr-defined]
-
-    return wrapper
-
-
 def patch_openai_client(client: Any) -> bool:
     """Patch an OpenAI client instance.
 
@@ -990,9 +965,13 @@ def patch_openai_client(client: Any) -> bool:
                         # Apply patch using weak reference wrapper to avoid GC cycles
                         emb_wrapper: Any
                         if inspect.iscoroutinefunction(embeddings_create):
-                            emb_wrapper = _WeakAsyncEmbeddingsWrapper(embeddings, _client_originals)
+                            emb_wrapper = _WeakAsyncEmbeddingsWrapper(
+                                embeddings, _client_originals, provider=inferred_provider
+                            )
                         else:
-                            emb_wrapper = _WeakEmbeddingsWrapper(embeddings, _client_originals)
+                            emb_wrapper = _WeakEmbeddingsWrapper(
+                                embeddings, _client_originals, provider=inferred_provider
+                            )
 
                         emb_wrapper.vetch_patched = True
                         emb_wrapper._vetch_original = _client_originals[embeddings]

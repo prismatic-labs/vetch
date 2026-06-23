@@ -359,7 +359,9 @@ describe("AI SDK v6 middleware integration", () => {
     expect(events).toHaveLength(0);
   });
 
-  it("can opt in to the 0.8.1 Naples release Easter egg", async () => {
+  it("retires the 0.8.1 Naples release Easter egg on later versions", async () => {
+    // The NAPLES-081 egg is gated to VETCH_VERSION === "0.8.1"; on 0.9.0+ it is
+    // dormant. The event still emits, just without the release advisory.
     const events = [];
     const model = withVetch(
       new MockLanguageModelV3({
@@ -377,12 +379,8 @@ describe("AI SDK v6 middleware integration", () => {
     await generateText({ model, prompt: "Say OK" });
 
     expect(events).toHaveLength(1);
-    expect(events[0].advisories).toContainEqual({
-      code: "NAPLES-081",
-      severity: "info",
-      title: "Release train 081",
-      description: "the advice is to get more pizza",
-    });
+    const codes = (events[0].advisories ?? []).map((a) => a.code);
+    expect(codes).not.toContain("NAPLES-081");
   });
 
   it("labels Ollama OpenAI-compat endpoints as provider ollama", async () => {

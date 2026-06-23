@@ -2,11 +2,13 @@ import { isTruthyEnv, readEnv } from "./env.js";
 import type { VetchAdvisory, VetchOptions } from "./types.js";
 import { VETCH_VERSION } from "./version.js";
 
-/** Opt-in release advisories (e.g. NAPLES-081 on v0.8.1). Off by default. */
+/** Opt-in release advisories (e.g. NAPLES-081 on v0.8.1). Off by default.
+ * Each egg is pinned to its release version; on other versions it is dormant. */
 export function releaseEasterEggs(
   options: Pick<VetchOptions, "easterEggs">,
 ): VetchAdvisory[] {
-  if (VETCH_VERSION !== "0.8.1") {
+  const version: string = VETCH_VERSION;
+  if (version !== "0.8.1") {
     return [];
   }
   if (options.easterEggs !== true && !isTruthyEnv(readEnv("VETCH_EASTER_EGGS"))) {

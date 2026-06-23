@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.8.0"
+version = "0.9.0"
 description = "Inference waste control for production LLM systems. Detect stalled agents, RAG bloat, and runaway inference — then stop them automatically."
 readme = "README.md"
 license = "Apache-2.0"
@@ -12,7 +12,11 @@ requires-python = ">=3.9"
 authors = [
     { name = "Prismatic Labs", email = "marco@prismaticlabs.ai" }
 ]
-keywords = ["llm", "energy", "carbon", "observability", "openai", "vertexai", "anthropic"]
+keywords = [
+    "llm", "energy", "carbon", "cost", "observability", "opentelemetry",
+    "openai", "anthropic", "google", "gemini", "vertexai",
+    "ollama", "self-hosted", "vllm", "gpu", "finops", "sustainability",
+]
 
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -37,9 +41,12 @@ Repository = "https://github.com/prismatic-labs/vetch.git"
 Issues = "https://github.com/prismatic-labs/vetch/issues"
 
 [project.optional-dependencies]
+# Provider SDKs (uniform, first-class extras: pip install vetch[<provider>])
 openai = ["openai>=1.0,<2.0"]
+anthropic = ["anthropic>=0.18"]
 vertexai = ["google-cloud-aiplatform>=1.0"]
 genai = ["google-genai>=0.1.0"]  # Google GenAI SDK
+ollama = ["ollama>=0.1"]
 tiktoken = ["tiktoken>=0.5.0"]  # Accurate token counting for OpenAI models
 calibrate = ["nvidia-ml-py3"]  # Hardware power sensing for NVIDIA GPUs
 apple-silicon = ["numpy>=1.24"]  # Apple Silicon energy calibration via powermetrics

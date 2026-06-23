@@ -5,6 +5,88 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-06-23
+
+Registry freshness, honest match precision, and correct self-hosted cost
+accounting. `METHODOLOGY_VERSION` → `1.3`. Schema stays v2 (the new field is
+additive). Pre-1.0: the uncertainty change below can widen reported bounds for
+models that previously prefix-matched a measured row — review dashboards/alerts.
+
+### Added — Registry rows for current-generation models
+
+- **Gemini 3.x**: `gemini-3-flash`, `gemini-3.5-flash`, `gemini-3.1-flash-lite`,
+  `gemini-3.1-pro` (tiered >200k), with `-preview`/`-latest` aliases. Energy is
+  Tier-3, proxied from the nearest 2.5-class sibling (no empirical measurement
+  exists); **pricing is verified** against the official Google pricing page.
+- **Current Claude**: `claude-sonnet-4-5`, `claude-sonnet-4-6`,
+  `claude-opus-4-5/4-6/4-7/4-8`, with dated/`-latest` aliases. Energy proxied
+  from `claude-sonnet-4` / `claude-3-opus`; pricing verified against the official
+  Anthropic pricing page. Each new pricing row carries an `as_of` date.
+- Ships via the remote registry, so existing installs gain coverage without an
+  upgrade. New `scripts/check_registry_freshness.py` (in CI) enforces
+  energy↔pricing parity and flags pricing rows older than a year.
+
+### Added — `model_match` on `InferenceEvent` (schema v2, additive)
+
+- New field: `"exact" | "alias" | "prefix" | "family" | "fallback"`, exported as
+  the `vetch.model_match` OpenTelemetry attribute. Lets downstream tell an exact
+  hit from a proxy.
+
+### Changed — Resolver hardening (`resolve_model_match`)
+
+- **Case-insensitive** matching (e.g. `GPT-4O`, `Gemma-4-31b-it` now resolve).
+- **Deterministic, conservative family fallback**: an unknown model in a known
+  provider family is proxied to a representative same-family row, biased to the
+  larger (higher-energy) sibling so it never silently undercounts.
+- **Proxy matches no longer masquerade as exact**: `prefix`/`family` matches are
+  floored to Tier 3 uncertainty even when the matched row is Tier 1.
+- `resolve_model()` is retained as a thin `(name, known)` back-compat wrapper.
+
+### Changed — Self-hosted / OpenAI-compatible cost accounting
+
+- The OpenAI provider classifies `base_url` into `openai` / `ollama` /
+  `self-hosted` / `openai-compatible`. A non-OpenAI endpoint is **no longer
+  billed OpenAI's per-token rates**: self-hosted/local reports cost `0` (you pay
+  for hardware, captured as energy); other compatible hosts report cost
+  `unknown`. `VETCH_SELF_HOSTED=true` forces the self-hosted label.
+
+### Fixed — `tracking_degraded` now actually fires
+
+The degradation-score threshold was `2.5`, but the score maxes at `2.0`, so
+`tracking_degraded` was always `false` (dead). Recalibrated the threshold to
+`1.0` (both SDKs) so the flag means what it says: it fires for unknown models,
+prefix/family proxies, estimated usage, and missing usage, while a healthy call
+(exact match, real usage, even an honest Tier-3 model) stays clean. The Python
+proxy weight added above feeds this. **Behavioral**: events that were silently
+`false` will now correctly report `true`; downstream filters/alerts on
+`tracking_degraded` should expect to see it populated.
+
+### Packaging
+
+- Description/README precision corrected: distinguishes **measured** (Tier 0 GPU
+  telemetry) from **inferred** (hosted-API, including Jegham Tier 1) from
+  **fallback**; the "measured in Azure/AWS datacenters" wording is fixed (Jegham
+  is infrastructure-aware modeling, not power metering).
+- Keywords expanded (google, gemini, opentelemetry, ollama, self-hosted, vllm,
+  cost, gpu, finops, sustainability). `anthropic` and `ollama` are now first-class
+  install extras. New README sections: Capabilities, Self-hosted and raw HTTP,
+  Model coverage and resolution.
+
+### JS/TS SDK (`@prismatic-labs/vetch-ai-sdk` 0.9.0)
+
+Ported to parity with the Python SDK:
+
+- `resolveModelMatch()` with the same precision tiers, case-insensitive matching,
+  conservative family fallback (same current-gen targets), and the prefix/family
+  Tier-3 energy floor. `resolveModel()` kept as a back-compat wrapper.
+- `model_match` added to `VetchEvent` and populated on every event.
+- Cost routing: a `base_url`-classified self-hosted/Ollama endpoint reports cost 0
+  (`billing_tier: "self-hosted"`); an OpenAI-compatible third-party host reports
+  cost `null` (`billing_tier: "unknown"`); official OpenAI/Azure keeps list pricing.
+  `provider-label` classification mirrors Python, with a guard so a Google/Anthropic
+  AI-SDK provider is not reclassified from its own `baseURL` alone.
+- Registry rows (Gemini 3.x, current Claude) ship via the synced TS registry copy.
+
 ## [0.7.0] - 2026-05-28
 
 ### Added — Savings & Intervention Accounting

@@ -3,6 +3,7 @@ import type { LanguageModelV3 } from "@ai-sdk/provider";
 export type VetchSeverity = "info" | "warning" | "critical";
 export type VetchOperation = "generate" | "stream" | "error";
 export type VetchSignalQuality = "live" | "delayed" | "blind" | "unknown";
+export type VetchModelMatch = "exact" | "alias" | "prefix" | "family" | "fallback";
 export type VetchTags = Record<string, string>;
 
 export type VetchLanguageModel = LanguageModelV3;
@@ -85,6 +86,10 @@ export interface VetchEvent {
   model: string;
   provider: string;
   model_known: boolean;
+  // How the model name resolved against the registry. "exact"/"alias" are
+  // high-confidence; "prefix"/"family" are low-confidence proxies (energy_tier
+  // floored to 3); "fallback" = no match. Mirrors Python InferenceEvent.
+  model_match: VetchModelMatch;
   multimodal: boolean;
 
   usage: VetchUsage | null;
