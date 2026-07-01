@@ -73,6 +73,20 @@ def _capture_after(
             visible_chars = len(text)
         elif text is not None and hasattr(text, "content"):
             visible_chars = len(str(getattr(text, "content", "")))
+    cap_kwargs: dict[str, Any] = {}
+    if not error:
+        from vetch.capabilities import (
+            extract_openai_compat_tools_invoked,
+            merge_capability_capture,
+        )
+
+        invoked, tool_count = extract_openai_compat_tools_invoked(response)
+        cap_kwargs = merge_capability_capture(
+            tools_invoked=invoked,
+            tool_call_count=tool_count,
+        )
+    if ctx.attribution_model:
+        model = ctx.attribution_model
     ctx.capture(
         model=model,
         provider="ollama",
@@ -80,6 +94,7 @@ def _capture_after(
         accumulated_chars=visible_chars,
         complete=not error,
         error=error,
+        **cap_kwargs,
     )
 
 
@@ -87,6 +102,9 @@ def _wrap_call(original: Any, method_name: str) -> Any:
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         model = str(kwargs.get("model") or (args[0] if args else "unknown"))
         with auto_context_for_instrumented_call("ollama", model=model):
+            from vetch.capabilities import stage_request_tools
+
+            stage_request_tools("ollama", kwargs)
             start = time.monotonic()
             try:
                 response = original(self, *args, **kwargs)

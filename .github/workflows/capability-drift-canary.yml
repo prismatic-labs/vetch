@@ -1,0 +1,51 @@
+name: Capability drift canary
+
+# Runs the capability extraction suite against the LATEST unpinned provider SDKs
+# so a breaking upstream response-shape change surfaces here, not in a customer's
+# telemetry. The real-object sentinels in test_capability_live_shapes.py are the
+# drift detectors; the mock-based contract tests guard the extraction logic.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # daily 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install vetch + test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,dev]"
+
+      - name: Install LATEST provider SDKs (unpinned — this is the point)
+        run: |
+          pip install --upgrade openai anthropic google-genai ollama
+          echo "Resolved provider SDK versions:"
+          pip show openai anthropic google-genai ollama | grep -E "^(Name|Version):"
+
+      - name: Capability extraction + drift sentinels
+        run: |
+          pytest -v --no-cov \
+            tests/test_capability_live_shapes.py \
+            tests/test_capabilities.py \
+            tests/test_capability_contract.py \
+            tests/test_capability_properties.py
+
+      - name: Note on failure
+        if: failure()
+        run: |
+          echo "::warning::Capability drift canary failed. A provider SDK likely"
+          echo "::warning::changed its tool response shape. Inspect the failing"
+          echo "::warning::sentinel and update the extractor in src/vetch/capabilities.py."

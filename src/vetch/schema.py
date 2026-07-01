@@ -20,6 +20,13 @@ from typing import Literal, TypedDict, Union
 SCHEMA_VERSION = "2"
 
 
+class CapabilityRef(TypedDict):
+    """A named capability offered or invoked during inference."""
+
+    name: str
+    kind: Literal["function", "builtin", "model", "agent"]
+
+
 class TextUsage(TypedDict):
     """Token usage for text modality."""
 
@@ -172,6 +179,13 @@ class InferenceEvent(TypedDict, total=False):
     visible_output_chars: Union[int, None]  # Output character count; no text stored
     finish_reason: Union[str, None]  # Provider finish status, e.g. stop/length
     requested_max_tokens: Union[int, None]  # Caller-requested output cap if available
+
+    # Capability observability (v0.10.0)
+    tools_offered: Union[list[CapabilityRef], None]
+    tools_invoked: Union[list[CapabilityRef], None]
+    tool_call_count: Union[int, None]
+    capabilities_invoked: Union[list[CapabilityRef], None]
+    tool_schema_tokens: Union[dict[str, int], None]
 
     # Attribution
     tags: Union[dict[str, str], None]

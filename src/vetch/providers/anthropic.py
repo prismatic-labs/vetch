@@ -59,8 +59,15 @@ class _WeakMessagesWrapper:
         # Pass the messages instance explicitly when original has no __self__.
         bound_args = args if hasattr(original, "__self__") else (messages, *args)
 
+        from vetch.capabilities import stage_request_tools
+
+        stage_request_tools("anthropic", kwargs)
+        ctx = get_active_context()
+
         # v0.4.0: Stall circuit breaker.
-        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+        rerouted, original_model = apply_stall_action(kwargs, ctx)
+        if rerouted and original_model and ctx is not None:
+            ctx.attribution_model = original_model
 
         is_stream = kwargs.get("stream", False)
         thinking_param = kwargs.get("thinking", {})
@@ -121,8 +128,15 @@ class _WeakAsyncMessagesWrapper:
         original = self._originals_dict[messages]
         bound_args = args if hasattr(original, "__self__") else (messages, *args)
 
+        from vetch.capabilities import stage_request_tools
+
+        stage_request_tools("anthropic", kwargs)
+        ctx = get_active_context()
+
         # v0.4.0: Stall circuit breaker.
-        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+        rerouted, original_model = apply_stall_action(kwargs, ctx)
+        if rerouted and original_model and ctx is not None:
+            ctx.attribution_model = original_model
 
         is_stream = kwargs.get("stream", False)
         thinking_param = kwargs.get("thinking", {})
@@ -269,6 +283,19 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
 
         ctx = get_active_context()
         if ctx is not None:
+            if ctx.attribution_model:
+                model = ctx.attribution_model
+
+            from vetch.capabilities import (
+                extract_anthropic_tools_invoked,
+                merge_capability_capture,
+            )
+
+            invoked, tool_count = extract_anthropic_tools_invoked(result)
+            cap_kwargs = merge_capability_capture(
+                tools_invoked=invoked,
+                tool_call_count=tool_count,
+            )
             ctx.capture(
                 model=model,
                 provider="anthropic",
@@ -279,6 +306,7 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
                 cache_creation_tokens=cache_create,
                 visible_output_chars=visible_chars,
                 finish_reason=finish_reason,
+                **cap_kwargs,
             )
 
 
@@ -326,6 +354,7 @@ class StreamWrapper:
         self._error_type: str | None = None
         self._stop_reason: str | None = None
         self._captured = False
+        self._stream_tool_names: list[str] = []
 
         # Tier 1: tiktoken buffered counting (~100-char buffer reduces encode() call frequency)
         from vetch.calculation import _get_tiktoken_encoding
@@ -362,6 +391,10 @@ class StreamWrapper:
         # Anthropic chunks are events: message_start, content_block_delta, message_delta, etc.
 
         event_type = getattr(chunk, "type", "")
+
+        from vetch.capabilities import accumulate_anthropic_stream_tool_use
+
+        accumulate_anthropic_stream_tool_use(self._stream_tool_names, chunk)
 
         if event_type == "message_start":
             msg = getattr(chunk, "message", None)
@@ -454,10 +487,25 @@ class StreamWrapper:
 
         ctx = get_active_context()
 
+        from vetch.capabilities import finalize_anthropic_stream_tools, merge_capability_capture
+
+        invoked, tool_count = finalize_anthropic_stream_tools(
+            self._stream_tool_names,
+            complete=self._complete,
+            error=self._error,
+        )
+        cap_kwargs = merge_capability_capture(
+            tools_invoked=invoked,
+            tool_call_count=tool_count,
+        )
+        model = self._model
+        if ctx is not None and ctx.attribution_model:
+            model = ctx.attribution_model
+
         if ctx is not None:
             # Manual wrap() is active — capture to it; it emits on exit
             ctx.capture(
-                model=self._model,
+                model=model,
                 provider="anthropic",
                 usage=final_usage,  # type: ignore[arg-type]
                 is_stream=True,
@@ -471,6 +519,7 @@ class StreamWrapper:
                 accumulated_tik_tokens=self._tik_token_count,
                 content_type_hint=content_type_hint,
                 finish_reason=self._stop_reason,
+                **cap_kwargs,
             )
             return
 
@@ -478,8 +527,11 @@ class StreamWrapper:
         with auto_context_for_instrumented_call("anthropic"):
             ctx = get_active_context()
             if ctx is not None:
+                model = self._model
+                if ctx.attribution_model:
+                    model = ctx.attribution_model
                 ctx.capture(
-                    model=self._model,
+                    model=model,
                     provider="anthropic",
                     usage=final_usage,  # type: ignore[arg-type]
                     is_stream=True,
@@ -493,6 +545,7 @@ class StreamWrapper:
                     accumulated_tik_tokens=self._tik_token_count,
                     content_type_hint=content_type_hint,
                     finish_reason=self._stop_reason,
+                    **cap_kwargs,
                 )
         # auto-context exits here → event emitted
 

@@ -69,9 +69,16 @@ class _WeakChatWrapper:
 
         original = self._originals_dict[completions]
 
+        from vetch.capabilities import stage_request_tools
+
+        stage_request_tools(self._provider, kwargs)
+        ctx = get_active_context()
+
         # v0.4.0: Stall circuit breaker. May raise StallDetected for "kill"
         # action or mutate kwargs["model"] for "reroute" action.
-        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+        rerouted, original_model = apply_stall_action(kwargs, ctx)
+        if rerouted and original_model and ctx is not None:
+            ctx.attribution_model = original_model
 
         is_stream = kwargs.get("stream", False)
 
@@ -138,8 +145,15 @@ class _WeakAsyncChatWrapper:
 
         original = self._originals_dict[completions]
 
+        from vetch.capabilities import stage_request_tools
+
+        stage_request_tools(self._provider, kwargs)
+        ctx = get_active_context()
+
         # v0.4.0: Stall circuit breaker.
-        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+        rerouted, original_model = apply_stall_action(kwargs, ctx)
+        if rerouted and original_model and ctx is not None:
+            ctx.attribution_model = original_model
 
         is_stream = kwargs.get("stream", False)
 
@@ -533,9 +547,22 @@ def _after_create(
         model = extract_model(result)
         visible_chars, finish_reason = extract_response_diagnostics(result)
 
+        from vetch.capabilities import (
+            extract_openai_tools_invoked,
+            merge_capability_capture,
+        )
+
+        invoked, tool_count = extract_openai_tools_invoked(result)
+        cap_kwargs = merge_capability_capture(
+            tools_invoked=invoked,
+            tool_call_count=tool_count,
+        )
+
         # Get active context (either auto-created or manual wrap())
         ctx = get_active_context()
         if ctx is not None:
+            if ctx.attribution_model:
+                model = ctx.attribution_model
             ctx.capture(
                 model=model,
                 provider=_vetch_provider,
@@ -547,6 +574,7 @@ def _after_create(
                 visible_output_chars=visible_chars,
                 finish_reason=finish_reason,
                 requested_max_tokens=_requested_max_tokens(kwargs),
+                **cap_kwargs,
             )
 
 
@@ -651,6 +679,7 @@ class StreamWrapper:
         self._cjk_ideograph_chars = 0  # \u4e00-\u9fff
         self._hangul_chars = 0  # \uac00-\ud7a3
         self._script_sample_chars = 0  # chars seen during sampling window
+        self._stream_tool_calls: dict[int, dict[str, str]] = {}
 
     def __iter__(self) -> StreamWrapper:
         """Return self as iterator."""
@@ -713,6 +742,10 @@ class StreamWrapper:
                                     self._hangul_chars += 1
                             self._script_sample_chars += len(content)
 
+        from vetch.capabilities import accumulate_openai_stream_tool_call
+
+        accumulate_openai_stream_tool_call(self._stream_tool_calls, chunk)
+
         # Check for usage in chunk (OpenAI includes in final chunk with stream_options)
         usage = getattr(chunk, "usage", None)
         if usage:
@@ -758,10 +791,25 @@ class StreamWrapper:
 
         ctx = get_active_context()
 
+        from vetch.capabilities import finalize_openai_stream_tools, merge_capability_capture
+
+        invoked, tool_count = finalize_openai_stream_tools(
+            self._stream_tool_calls,
+            complete=self._complete,
+            error=self._error,
+        )
+        cap_kwargs = merge_capability_capture(
+            tools_invoked=invoked,
+            tool_call_count=tool_count,
+        )
+        model = self._model
+        if ctx is not None and ctx.attribution_model:
+            model = ctx.attribution_model
+
         if ctx is not None:
             # Manual wrap() is active — capture to it; it emits on exit
             ctx.capture(
-                model=self._model,
+                model=model,
                 provider=self._provider,
                 usage=self._final_usage,
                 is_stream=True,
@@ -774,6 +822,7 @@ class StreamWrapper:
                 accumulated_tik_tokens=self._tik_token_count,
                 content_type_hint=content_type_hint,
                 visible_output_chars=self._accumulated_chars,
+                **cap_kwargs,
             )
             return
 
@@ -781,8 +830,11 @@ class StreamWrapper:
         with auto_context_for_instrumented_call(self._provider):
             ctx = get_active_context()
             if ctx is not None:
+                model = self._model
+                if ctx.attribution_model:
+                    model = ctx.attribution_model
                 ctx.capture(
-                    model=self._model,
+                    model=model,
                     provider=self._provider,
                     usage=self._final_usage,
                     is_stream=True,
@@ -795,6 +847,7 @@ class StreamWrapper:
                     accumulated_tik_tokens=self._tik_token_count,
                     content_type_hint=content_type_hint,
                     visible_output_chars=self._accumulated_chars,
+                    **cap_kwargs,
                 )
         # auto-context exits here → event emitted
 

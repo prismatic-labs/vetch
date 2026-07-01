@@ -533,6 +533,39 @@ Now that you're tracking local inference:
 
 ---
 
+## Capability observability (agent frameworks)
+
+When your agent framework does not pass `tools=` through a patched provider client
+(LangGraph, CrewAI, OpenAI Agents SDK, etc.), supply tool metadata manually via
+`capture()`:
+
+```python
+import vetch
+
+with vetch.wrap() as ctx:
+    response = my_agent.run(...)
+    ctx.capture(
+        model="gpt-4o",
+        provider="openai",
+        usage={"text": {"input_tokens": 1200, "output_tokens": 80, "total_tokens": 1280}},
+        tools_offered=[
+            {"name": "get_weather", "kind": "function"},
+            {"name": "refund_order", "kind": "function"},
+        ],
+        tools_invoked=[{"name": "get_weather", "kind": "function"}],
+        tool_call_count=1,
+    )
+
+summary = vetch.get_session_stats().summary()
+print(summary["function_tools_never_called"])
+print(summary["wasted_tool_schema_cost_usd"])  # cache-aware directional estimate
+```
+
+Note: Vetch's `mcp/` server (`vetch-mcp`) is a FinOps calculator, not instrumentation
+of your agent's MCP tool roster — use `capture()` for that path.
+
+---
+
 ## Troubleshooting
 
 **Ollama not responding:**

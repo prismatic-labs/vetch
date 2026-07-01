@@ -518,6 +518,25 @@ _ADVISORY_SPECS: dict[str, AdvisorySpec] = {
         ),
         confidence=_reasoning1_confidence,
     ),
+    "TOOL-DEAD-001": AdvisorySpec(
+        recommended_action=(
+            "Remove unused tools from the agent manifest or route them behind "
+            "conditional registration so dead schemas are not re-transmitted every turn."
+        ),
+        automation_guidance=(
+            "Report-only. Tool lists are application-specific; confirm tools are "
+            "genuinely unused before removing them."
+        ),
+        evidence=_summary_evidence(
+            "total_requests",
+            "function_tools_never_called",
+            "wasted_tool_schema_tokens",
+            "wasted_tool_schema_cost_per_request_usd",
+            "wasted_tool_schema_session_cost_usd",
+            "dead_tool_offer_request_count",
+        ),
+        confidence=lambda stats: "medium",
+    ),
 }
 
 
@@ -979,6 +998,34 @@ def generate_advisories(stats: SessionStats) -> list[Advisory]:
                 "non-reasoning variant to reduce cost."
             ),
             request_count=reasoning_missing_count,
+        ))
+
+    # 15. Dead function tools (offered but never invoked)
+    never_called = summary.get("function_tools_never_called") or []
+    wasted_cost = float(summary.get("wasted_tool_schema_session_cost_usd") or 0.0)
+    wasted_per_request = float(summary.get("wasted_tool_schema_cost_per_request_usd") or 0.0)
+    retransmit_count = int(summary.get("dead_tool_offer_request_count") or 0)
+    min_requests = int(_threshold(stats, "TOOL-DEAD-001", "min_requests", 10))
+    min_offered = int(_threshold(stats, "TOOL-DEAD-001", "min_offered_tools", 1))
+    if (
+        stats.total_requests >= min_requests
+        and len(never_called) >= min_offered
+        and wasted_cost > 0
+    ):
+        advisories.append(Advisory(
+            code="TOOL-DEAD-001",
+            severity="INFO",
+            title="Dead Function Tools Detected",
+            description=(
+                f"{len(never_called)} function tool(s) were offered but never invoked "
+                f"this session ({', '.join(never_called[:5])}"
+                f"{'...' if len(never_called) > 5 else ''}). "
+                f"Estimated cache-aware session schema cost: ${wasted_cost:.4f} "
+                f"(${wasted_per_request:.4f}/request × {retransmit_count} requests; "
+                "directional estimate)."
+            ),
+            potential_savings_usd=wasted_cost,
+            request_count=stats.total_requests,
         ))
 
     return advisories

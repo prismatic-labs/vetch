@@ -84,6 +84,8 @@ Vetch analyzes every inference call for behavioral patterns that indicate waste:
 | `ATTRIBUTION-001` | Unattributed spend | Required tags missing from calls | ⚠️ Partial — infrastructure only |
 | `RETRY-001` | Retry storm | Burst of repeated failed or near-identical calls | 🔜 Planned (`retry_count` field available; detector not yet wired) |
 | `PREMIUM-001` | Large model rightsizing candidate | Stable tagged workflow mostly uses a premium model and has cheaper eval candidates | ✅ Implemented — audit-only |
+| `TOOL-DEAD-001` | Dead function tools | Tools offered on many requests but never invoked; reports `wasted_tool_schema_session_cost_usd` | ✅ Implemented |
+| `CAP-001` | Declared capabilities silent | Expected `kind:name` routes never fired in audit window | ✅ Implemented — audit-only |
 
 Full taxonomy with detection signals, false positives, and recommended actions: [docs/inference-waste-taxonomy.md](docs/inference-waste-taxonomy.md)
 
@@ -363,6 +365,35 @@ with vetch.Session.from_headers(task_headers) as worker_session:
         response = client.chat.completions.create(...)
 ```
 
+### Tool and capability observability (v0.10.0)
+
+Vetch records which function tools were offered vs invoked on every call, derives model capabilities from a registry map (Kind C), and rolls up dead-tool schema waste with a cache-aware cost estimate.
+
+```python
+import vetch
+
+vetch.configure_capabilities(
+    expected=["model:image", "model:embedding"],  # audit manifest for CAP-001
+)
+
+with vetch.wrap() as ctx:
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        tools=[{"type": "function", "function": {"name": "search", ...}}],
+        ...
+    )
+
+summary = vetch.get_session_stats().summary()
+print(summary["function_tools_never_called"])
+print(summary["wasted_tool_schema_cost_per_request_usd"])  # one transmission
+print(summary["wasted_tool_schema_session_cost_usd"])      # × requests with dead tools
+print(summary["declared_capabilities_silent"])
+```
+
+**Cost semantics:** `wasted_tool_schema_tokens` is the per-request footprint of never-called tools. `wasted_tool_schema_cost_per_request_usd` applies the session’s cache-aware input rate once. `wasted_tool_schema_session_cost_usd` (and `wasted_tool_schema_cost_usd`) multiply by `dead_tool_offer_request_count`. Fully cached sessions report `$0` with a note in `wasted_tool_schema_cost_note` and per-event `vetch_warnings`.
+
+**Audit:** `vetch audit --expected-capabilities model:image,model:embedding` runs CAP-001 over stored events. TOOL-DEAD-001 is included when events carry `tools_offered` / `tool_schema_tokens`.
+
 ## Budget alerts
 
 Set spending thresholds with automatic alerting:
@@ -493,6 +524,8 @@ The audit reads locally stored metadata, runs advisory detection, computes per-t
 - **TRUNC-001** — repeated `finish_reason=max_tokens` or `length`, often causing cut-off JSON, tool calls, or answers
 - **ERROR-001** — error storm: ≥3 consecutive errors or ≥40% error rate in the recent window
 - **CACHE-002** — repetition pattern with no cache reads observed (caching available but not active)
+- **TOOL-DEAD-001** — function tools offered repeatedly but never invoked; reports session schema waste
+- **CAP-001** — declared capabilities silent across the audit window (requires `--expected-capabilities`)
 
 **Lower-level Python API** (for programmatic access or custom reporting):
 

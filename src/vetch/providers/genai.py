@@ -238,9 +238,13 @@ class _WeakMethodWrapper:
             rerouted = False
             original_model: str | None = None
             if "generate_content" in self._method_name:
-                rerouted, original_model = apply_stall_action(
-                    kwargs, get_active_context()
-                )
+                from vetch.capabilities import stage_request_tools
+
+                stage_request_tools("google_genai", kwargs)
+                ctx = get_active_context()
+                rerouted, original_model = apply_stall_action(kwargs, ctx)
+                if rerouted and original_model and ctx is not None:
+                    ctx.attribution_model = original_model
 
             try:
                 if isinstance(original, tuple):
@@ -277,12 +281,25 @@ class _WeakMethodWrapper:
 
             ctx = get_active_context()
             if ctx is not None:
+                from vetch.capabilities import (
+                    extract_genai_tools_invoked,
+                    merge_capability_capture,
+                )
+
+                invoked, tool_count = extract_genai_tools_invoked(response)
+                cap_kwargs = merge_capability_capture(
+                    tools_invoked=invoked,
+                    tool_call_count=tool_count,
+                )
+                if ctx.attribution_model:
+                    model = ctx.attribution_model
                 ctx.capture(
                     model=model,
                     provider="google_genai",
                     usage=usage,
                     cache_read_tokens=cache_read,
                     cache_creation_tokens=cache_create,
+                    **cap_kwargs,
                 )
 
             return response
@@ -315,9 +332,13 @@ class _WeakAsyncMethodWrapper:
             rerouted = False
             original_model: str | None = None
             if "generate_content" in self._method_name:
-                rerouted, original_model = apply_stall_action(
-                    kwargs, get_active_context()
-                )
+                from vetch.capabilities import stage_request_tools
+
+                stage_request_tools("google_genai", kwargs)
+                ctx = get_active_context()
+                rerouted, original_model = apply_stall_action(kwargs, ctx)
+                if rerouted and original_model and ctx is not None:
+                    ctx.attribution_model = original_model
 
             try:
                 if isinstance(original, tuple):
@@ -353,12 +374,25 @@ class _WeakAsyncMethodWrapper:
 
             ctx = get_active_context()
             if ctx is not None:
+                from vetch.capabilities import (
+                    extract_genai_tools_invoked,
+                    merge_capability_capture,
+                )
+
+                invoked, tool_count = extract_genai_tools_invoked(response)
+                cap_kwargs = merge_capability_capture(
+                    tools_invoked=invoked,
+                    tool_call_count=tool_count,
+                )
+                if ctx.attribution_model:
+                    model = ctx.attribution_model
                 ctx.capture(
                     model=model,
                     provider="google_genai",
                     usage=usage,
                     cache_read_tokens=cache_read,
                     cache_creation_tokens=cache_create,
+                    **cap_kwargs,
                 )
 
             return response

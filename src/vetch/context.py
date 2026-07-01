@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from vetch.schema import EnergyOverride, Usage
+    from vetch.schema import CapabilityRef, EnergyOverride, Usage
 
 # Active tracking context stack
 _active_context: ContextVar[TrackingContext | None] = ContextVar(
@@ -51,6 +51,11 @@ class CapturedCall:
     visible_output_chars: int | None = None
     finish_reason: str | None = None
     requested_max_tokens: int | None = None
+    tools_offered: list[CapabilityRef] | None = None
+    tools_invoked: list[CapabilityRef] | None = None
+    tool_call_count: int | None = None
+    capabilities_invoked: list[CapabilityRef] | None = None
+    tool_schema_tokens: dict[str, int] | None = None
 
 
 @dataclass
@@ -72,6 +77,11 @@ class TrackingContext:
 
     # Token for context restoration
     _token: Token[TrackingContext | None] | None = field(default=None, repr=False)
+
+    # Staged before stall reroute (provider wrappers)
+    pending_tools_offered: list[CapabilityRef] | None = field(default=None, repr=False)
+    pending_tool_schema_tokens: dict[str, int] | None = field(default=None, repr=False)
+    attribution_model: str | None = field(default=None, repr=False)
 
     def __enter__(self) -> TrackingContext:
         """Enter context and set as active."""
@@ -123,6 +133,11 @@ class TrackingContext:
         visible_output_chars: int | None = None,
         finish_reason: str | None = None,
         requested_max_tokens: int | None = None,
+        tools_offered: list[CapabilityRef] | None = None,
+        tools_invoked: list[CapabilityRef] | None = None,
+        tool_call_count: int | None = None,
+        capabilities_invoked: list[CapabilityRef] | None = None,
+        tool_schema_tokens: dict[str, int] | None = None,
     ) -> None:
         """Capture metadata from an LLM call.
 
@@ -161,6 +176,11 @@ class TrackingContext:
             visible_output_chars=visible_output_chars,
             finish_reason=finish_reason,
             requested_max_tokens=requested_max_tokens,
+            tools_offered=tools_offered,
+            tools_invoked=tools_invoked,
+            tool_call_count=tool_call_count,
+            capabilities_invoked=capabilities_invoked,
+            tool_schema_tokens=tool_schema_tokens,
         )
 
 

@@ -125,6 +125,10 @@ def attach_to_otel_span(event: InferenceEvent) -> bool:
         if cache_hit is not None:
             span.set_attribute("vetch.cache_read_tokens", cache_hit)
 
+        from vetch.capabilities import set_otel_capability_attributes
+
+        set_otel_capability_attributes(span, event)
+
         return True
 
     except Exception as e:

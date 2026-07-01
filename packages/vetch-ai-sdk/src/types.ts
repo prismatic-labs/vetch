@@ -4,6 +4,13 @@ export type VetchSeverity = "info" | "warning" | "critical";
 export type VetchOperation = "generate" | "stream" | "error";
 export type VetchSignalQuality = "live" | "delayed" | "blind" | "unknown";
 export type VetchModelMatch = "exact" | "alias" | "prefix" | "family" | "fallback";
+export type VetchCapabilityKind = "function" | "builtin" | "model" | "agent";
+
+export interface VetchCapabilityRef {
+  name: string;
+  kind: VetchCapabilityKind;
+}
+
 export type VetchTags = Record<string, string>;
 
 export type VetchLanguageModel = LanguageModelV3;
@@ -162,6 +169,10 @@ export interface VetchEvent {
   parent_span_id: string | null;
   request_fingerprint: string | null;
 
+  tools_offered: VetchCapabilityRef[] | null;
+  tools_invoked: VetchCapabilityRef[] | null;
+  capabilities_invoked: VetchCapabilityRef[] | null;
+
   ai_sdk_operation: VetchOperation;
   raw_finish_reason?: unknown;
   tool_call_count: number;
@@ -262,4 +273,6 @@ export interface VetchStreamObservation {
   visibleOutputChars: number;
   toolCallCount: number;
   toolResultCount: number;
+  /** Tool names observed from stream `tool-call` parts (raw order, may repeat). */
+  toolNamesInvoked: string[];
 }

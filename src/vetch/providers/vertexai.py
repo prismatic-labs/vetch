@@ -83,7 +83,13 @@ class _WeakGenerateWrapper:
         # v0.4.0: Stall circuit breaker. Vertex AI binds the model name to
         # the GenerativeModel instance (not kwargs), so "reroute" degrades to
         # a no-op with a warning. "kill"/"warn"/"log" all work normally.
-        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+        from vetch.capabilities import stage_request_tools
+
+        stage_request_tools("vertexai", kwargs)
+        ctx = get_active_context()
+        rerouted, original_model = apply_stall_action(kwargs, ctx)
+        if rerouted and original_model and ctx is not None:
+            ctx.attribution_model = original_model
 
         is_stream = kwargs.get("stream", False)
 
@@ -136,7 +142,13 @@ class _WeakGenerateAsyncWrapper:
         model_name = extract_model(model)
 
         # v0.4.0: Stall circuit breaker.
-        rerouted, original_model = apply_stall_action(kwargs, get_active_context())
+        from vetch.capabilities import stage_request_tools
+
+        stage_request_tools("vertexai", kwargs)
+        ctx = get_active_context()
+        rerouted, original_model = apply_stall_action(kwargs, ctx)
+        if rerouted and original_model and ctx is not None:
+            ctx.attribution_model = original_model
 
         is_stream = kwargs.get("stream", False)
 
@@ -272,12 +284,25 @@ def _after_generate(result: Any, model_obj: Any, *args: Any, **kwargs: Any) -> N
 
         ctx = get_active_context()
         if ctx is not None:
+            from vetch.capabilities import (
+                extract_genai_tools_invoked,
+                merge_capability_capture,
+            )
+
+            invoked, tool_count = extract_genai_tools_invoked(result)
+            cap_kwargs = merge_capability_capture(
+                tools_invoked=invoked,
+                tool_call_count=tool_count,
+            )
+            if ctx.attribution_model:
+                model = ctx.attribution_model
             ctx.capture(
                 model=model,
                 provider="vertexai",
                 usage=usage,
                 is_stream=False,
                 complete=True,
+                **cap_kwargs,
             )
 
 

@@ -13,6 +13,7 @@ export type { EnergyOverride } from "./calculation.js";
 export { consoleJsonEmitter, createFetchEmitter, noopEmitter } from "./emitter.js";
 export type { FetchEmitterOptions } from "./emitter.js";
 export { createVetchMiddleware, withVetch } from "./middleware.js";
+export { extractToolsInvoked, extractToolsOffered } from "./event.js";
 export type {
   VetchAdvisory,
   VetchAttribution,

@@ -93,6 +93,9 @@ __all__ = [
     "VetchInterrupt",
     # v0.6.0: Configurable advisory thresholds + push callbacks
     "set_advisory_thresholds",
+    "configure_capabilities",
+    "set_expected_capabilities",
+    "set_model_capability_map",
     "on_advisory",
 ]
 
@@ -694,6 +697,18 @@ def __getattr__(name: str) -> object:
         from vetch.config import set_advisory_thresholds
 
         return set_advisory_thresholds
+    if name == "configure_capabilities":
+        from vetch.capabilities import configure_capabilities
+
+        return configure_capabilities
+    if name == "set_expected_capabilities":
+        from vetch.capabilities import set_expected_capabilities
+
+        return set_expected_capabilities
+    if name == "set_model_capability_map":
+        from vetch.capabilities import set_model_capability_map
+
+        return set_model_capability_map
     if name == "on_advisory":
         from vetch.stats import on_advisory
 

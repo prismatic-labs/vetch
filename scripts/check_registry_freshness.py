@@ -72,6 +72,23 @@ def check_staleness() -> list[str]:
     return warnings
 
 
+def check_model_capabilities() -> list[str]:
+    path = REGISTRY / "model_capabilities.json"
+    if not path.exists():
+        return ["model_capabilities.json is missing"]
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        return [f"model_capabilities.json is invalid JSON: {exc}"]
+    errors = []
+    for key, value in data.items():
+        if str(key).startswith("_"):
+            continue
+        if not isinstance(value, str) or not value:
+            errors.append(f"model_capabilities.json '{key}' must be a non-empty string")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -81,7 +98,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    errors = check_parity() + check_alias_targets()
+    errors = check_parity() + check_alias_targets() + check_model_capabilities()
     warnings = check_staleness()
 
     for w in warnings:

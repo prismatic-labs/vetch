@@ -23,7 +23,13 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from vetch import __version__
 from vetch.context import TrackingContext, get_active_context
 from vetch.emitter import emit_event
-from vetch.schema import SCHEMA_VERSION, InferenceEvent, Usage, validate_energy_override
+from vetch.schema import (
+    SCHEMA_VERSION,
+    CapabilityRef,
+    InferenceEvent,
+    Usage,
+    validate_energy_override,
+)
 
 if TYPE_CHECKING:
     from vetch.schema import EnergyOverride
@@ -594,6 +600,7 @@ class VetchContext:
         provider = "unknown"
         usage: Usage | None = None
         is_stream = False
+        is_embedding = False
         accumulated_chars = 0
         accumulated_tik_tokens = 0
         content_type_hint = "en"
@@ -604,6 +611,11 @@ class VetchContext:
         visible_output_chars: int | None = None
         finish_reason: str | None = None
         requested_max_tokens: int | None = None
+        tools_offered: list[CapabilityRef] | None = None
+        tools_invoked: list[CapabilityRef] | None = None
+        tool_call_count: int | None = None
+        capabilities_invoked: list[CapabilityRef] | None = None
+        tool_schema_tokens: dict[str, int] | None = None
 
         if captured is not None:
             model = captured.model
@@ -621,6 +633,14 @@ class VetchContext:
             visible_output_chars = captured.visible_output_chars
             finish_reason = captured.finish_reason
             requested_max_tokens = captured.requested_max_tokens
+            tools_offered = captured.tools_offered
+            tools_invoked = captured.tools_invoked
+            tool_call_count = captured.tool_call_count
+            capabilities_invoked = captured.capabilities_invoked
+            tool_schema_tokens = captured.tool_schema_tokens
+
+            if self._tracking_ctx is not None and self._tracking_ctx.attribution_model:
+                model = self._tracking_ctx.attribution_model
 
             # Override error info from captured call if present
             if captured.error:
@@ -690,6 +710,18 @@ class VetchContext:
         all_warnings = list(metrics.warnings)
         if captured and captured.warnings:
             all_warnings.extend(captured.warnings)
+        from vetch.capabilities import capability_fully_cached_warning
+
+        cap_warning = capability_fully_cached_warning(
+            {
+                "tools_offered": tools_offered,
+                "tools_invoked": tools_invoked,
+                "usage": usage,
+                "cache_read_tokens": cache_read_tokens,
+            }
+        )
+        if cap_warning:
+            all_warnings.append(cap_warning)
 
         # Detect multimodal requests (image/audio/video)
         multimodal = False
@@ -735,6 +767,15 @@ class VetchContext:
             band = carbon_g * (energy_uncertainty_pct / 100.0)
             carbon_p5_g = max(carbon_g - band, 0.0)
             carbon_p95_g = carbon_g + band
+
+        if capabilities_invoked is None:
+            from vetch.capabilities import derive_capabilities_invoked
+
+            capabilities_invoked = derive_capabilities_invoked(
+                is_embedding=is_embedding,
+                usage=cast("dict[str, Any]", usage) if usage else None,
+                model=model,
+            )
 
         # Build event
         self._event = InferenceEvent(
@@ -790,6 +831,11 @@ class VetchContext:
             visible_output_chars=visible_output_chars,
             finish_reason=finish_reason,
             requested_max_tokens=requested_max_tokens,
+            tools_offered=tools_offered,
+            tools_invoked=tools_invoked,
+            tool_call_count=tool_call_count,
+            capabilities_invoked=capabilities_invoked,
+            tool_schema_tokens=tool_schema_tokens,
             tags=self.tags,
             error=error,
             error_type=error_type,
@@ -868,7 +914,7 @@ class VetchContext:
         except Exception:
             pass
 
-        # Try to attach to active OTel span
+        # Try to attach to active OTel span (transport cap applied in otel layer)
         try:
             from vetch.otel import attach_to_otel_span
 

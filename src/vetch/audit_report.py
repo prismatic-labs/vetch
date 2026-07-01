@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
@@ -117,8 +118,13 @@ def build_audit_report(
     model: str | None = None,
     tags: dict[str, str] | None = None,
     tag_keys: tuple[str, ...] = DEFAULT_TAG_KEYS,
+    expected_capabilities: Sequence[str] | None = None,
 ) -> AuditReport:
     """Build an audit report from locally stored events."""
+    if expected_capabilities is not None:
+        from vetch.capabilities import set_expected_capabilities
+
+        set_expected_capabilities(list(expected_capabilities))
     events = query_events(start=start, end=end, model=model, tags=tags)
     aggregate_summary = query_daily_usage(
         start=start,
@@ -268,6 +274,7 @@ def _build_findings(
             findings.append(_finding_from_advisory(advisory, stats, scope, window_days))
 
     findings.extend(_build_premium_findings(events))
+    findings.extend(_build_cap_findings(events, window_days))
 
     findings.sort(
         key=lambda f: (
@@ -302,6 +309,60 @@ def _build_findings(
         deduped.append(f)
 
     return deduped[:MAX_FINDINGS]
+
+
+def _build_cap_findings(
+    events: list[dict[str, Any]],
+    window_days: float,
+) -> list[AuditFinding]:
+    """Windowed CAP-001: declared capabilities silent across stored events."""
+    from vetch.capabilities import get_expected_capabilities
+
+    expected = get_expected_capabilities()
+    if not expected or not events:
+        return []
+
+    invoked: set[str] = set()
+    for event in events:
+        caps = event.get("capabilities_invoked") or []
+        if not isinstance(caps, list):
+            continue
+        for ref in caps:
+            if isinstance(ref, dict):
+                kind = ref.get("kind")
+                name = ref.get("name")
+                if isinstance(kind, str) and isinstance(name, str):
+                    invoked.add(f"{kind}:{name}")
+
+    silent = [cap for cap in expected if cap not in invoked]
+    if not silent:
+        return []
+
+    return [
+        AuditFinding(
+            code="CAP-001",
+            severity="WARNING",
+            scope="all",
+            title="Declared Capabilities Silent",
+            description=(
+                f"Declared capabilities silent across the audit window "
+                f"({len(events)} events, {window_days:.1f} days): "
+                f"{', '.join(silent)}"
+            ),
+            request_count=len(events),
+            evidence={"declared_capabilities_silent": silent, "invoked": sorted(invoked)},
+            confidence="medium",
+            observed_avoidable_cost_usd=None,
+            projected_monthly_avoidable_cost_usd=None,
+            recommended_action=(
+                "Verify wiring for silent capability routes or remove them from "
+                "expected_capabilities if they are optional."
+            ),
+            automation_guidance="Report-only; requires manifest at audit time.",
+            security_signal=False,
+            security_refs=(),
+        )
+    ]
 
 
 def _build_premium_findings(events: list[dict[str, Any]]) -> list[AuditFinding]:

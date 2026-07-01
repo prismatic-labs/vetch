@@ -1,0 +1,16 @@
+{
+  "_comment": "Model id -> Kind C capability name. See PROVENANCE.md.",
+  "gpt-image-1": "image",
+  "dall-e-3": "image",
+  "dall-e-2": "image",
+  "tts-1": "audio",
+  "tts-1-hd": "audio",
+  "whisper-1": "transcription",
+  "text-embedding-3-small": "embedding",
+  "text-embedding-3-large": "embedding",
+  "text-embedding-ada-002": "embedding",
+  "imagen-3.0-generate-001": "image",
+  "imagen-3.0-fast-generate-001": "image",
+  "veo-2.0-generate-001": "video",
+  "gemini-2.5-flash-preview-tts": "audio"
+}

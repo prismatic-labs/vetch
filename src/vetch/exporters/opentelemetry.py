@@ -268,6 +268,10 @@ def export_event_as_span(
         if cache_carbon_saving is not None:
             span.set_attribute("vetch.cache_carbon_saving_g", float(cache_carbon_saving))
 
+        from vetch.capabilities import set_otel_capability_attributes
+
+        set_otel_capability_attributes(span, event)
+
         logger.debug(f"Exported vetch event to OpenTelemetry span: {span_name}")
 
 

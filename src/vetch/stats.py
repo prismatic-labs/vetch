@@ -68,6 +68,18 @@ class SessionStats:
     total_carbon_g: float = 0.0
     total_water_ml: float = 0.0
     total_cost_usd: float = 0.0
+    total_effective_input_usd: float = 0.0
+    total_billable_input_tokens: int = 0
+
+    # Capability observability (v0.10.0)
+    function_tools_offered: set[str] = field(default_factory=set)
+    function_tools_invoked: set[str] = field(default_factory=set)
+    capabilities_invoked: set[tuple[str, str]] = field(default_factory=set)
+    capability_invocation_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    tool_schema_tokens: dict[str, int] = field(default_factory=dict)
+    tool_call_events: int = 0
+    dead_tool_offer_requests: int = 0
+    _capability_names_bounded: bool = field(default=False, repr=False)
 
     # For pattern detection
     input_token_counts: dict[int, int] = field(default_factory=lambda: defaultdict(int))
@@ -162,6 +174,13 @@ class SessionStats:
         self.total_carbon_g += (event.get("estimated_carbon_g") or 0.0)
         self.total_cost_usd += call_cost
 
+        cost_in = float(event.get("estimated_cost_input_usd") or 0.0)
+        cost_cache_read = float(event.get("estimated_cost_cache_read_usd") or 0.0)
+        self.total_effective_input_usd += max(0.0, cost_in - cost_cache_read)
+        self.total_billable_input_tokens += max(0, in_tok - cache_read_tokens)
+
+        self._accumulate_capability_fields(event)
+
         # Water: wrapper emits liters, MCP tools emit ml — accept both.
         water_ml = event.get("estimated_water_ml") or 0.0
         water_l = event.get("estimated_water_l") or 0.0
@@ -192,6 +211,147 @@ class SessionStats:
         model = event.get("model")
         if model:
             self.models_used.add(model)
+
+    def _capability_cardinality_limit(self) -> int:
+        from vetch.config import get_tag_cardinality_limit
+
+        return get_tag_cardinality_limit()
+
+    def _accumulate_capability_fields(self, event: Mapping[str, Any]) -> None:
+        from vetch.capabilities import get_expected_capabilities
+
+        limit = self._capability_cardinality_limit()
+        warnings_needed = False
+
+        offered = event.get("tools_offered")
+        if isinstance(offered, list):
+            for ref in offered:
+                if not isinstance(ref, dict):
+                    continue
+                name = ref.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                if (
+                    len(self.function_tools_offered) >= limit
+                    and name not in self.function_tools_offered
+                ):
+                    warnings_needed = True
+                    self._capability_names_bounded = True
+                    continue
+                self.function_tools_offered.add(name)
+
+        invoked = event.get("tools_invoked")
+        if isinstance(invoked, list):
+            for ref in invoked:
+                if not isinstance(ref, dict):
+                    continue
+                name = ref.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                if (
+                    len(self.function_tools_invoked) >= limit
+                    and name not in self.function_tools_invoked
+                ):
+                    warnings_needed = True
+                    self._capability_names_bounded = True
+                    continue
+                self.function_tools_invoked.add(name)
+
+        raw_count = event.get("tool_call_count")
+        if isinstance(raw_count, int) and raw_count > 0:
+            self.tool_call_events += 1
+
+        caps = event.get("capabilities_invoked")
+        if isinstance(caps, list):
+            for ref in caps:
+                if not isinstance(ref, dict):
+                    continue
+                kind = ref.get("kind")
+                name = ref.get("name")
+                if not isinstance(kind, str) or not isinstance(name, str):
+                    continue
+                key = (kind, name)
+                if len(self.capabilities_invoked) >= limit and key not in self.capabilities_invoked:
+                    warnings_needed = True
+                    self._capability_names_bounded = True
+                    continue
+                self.capabilities_invoked.add(key)
+                cap_key = f"{kind}:{name}"
+                self.capability_invocation_counts[cap_key] += 1
+
+        schema_tokens = event.get("tool_schema_tokens")
+        if isinstance(schema_tokens, dict):
+            for name, tokens in schema_tokens.items():
+                if not isinstance(name, str):
+                    continue
+                if name not in self.tool_schema_tokens and isinstance(tokens, int):
+                    self.tool_schema_tokens[name] = tokens
+
+        if isinstance(offered, list) and offered:
+            offered_names = {
+                ref.get("name")
+                for ref in offered
+                if isinstance(ref, dict) and isinstance(ref.get("name"), str) and ref["name"]
+            }
+            invoked_names = {
+                ref.get("name")
+                for ref in (invoked if isinstance(invoked, list) else [])
+                if isinstance(ref, dict) and isinstance(ref.get("name"), str) and ref["name"]
+            }
+            if offered_names - invoked_names:
+                self.dead_tool_offer_requests += 1
+
+        if warnings_needed and not getattr(self, "_capability_bound_warned", False):
+            object.__setattr__(self, "_capability_bound_warned", True)
+
+        _ = get_expected_capabilities()
+
+    def _capability_summary(self) -> dict[str, Any]:
+        from vetch.capabilities import get_expected_capabilities
+
+        never_called = sorted(self.function_tools_offered - self.function_tools_invoked)
+        wasted_tokens = sum(
+            self.tool_schema_tokens.get(name, 0) for name in never_called
+        )
+        if self.total_billable_input_tokens > 0:
+            session_input_rate = (
+                self.total_effective_input_usd / self.total_billable_input_tokens
+            )
+            wasted_cost_per_request = wasted_tokens * session_input_rate
+        else:
+            wasted_cost_per_request = 0.0
+
+        retransmit_count = self.dead_tool_offer_requests
+        wasted_cost_session = wasted_cost_per_request * retransmit_count
+
+        expected = get_expected_capabilities()
+        invoked_keys = {f"{k}:{n}" for k, n in self.capabilities_invoked}
+        declared_silent = sorted(
+            cap for cap in expected if cap not in invoked_keys
+        )
+
+        tool_call_event_rate = (
+            self.tool_call_events / self.total_requests if self.total_requests else 0.0
+        )
+
+        result: dict[str, Any] = {
+            "function_tools_never_called": never_called,
+            "wasted_tool_schema_tokens": wasted_tokens,
+            "wasted_tool_schema_cost_per_request_usd": round(wasted_cost_per_request, 6),
+            "wasted_tool_schema_session_cost_usd": round(wasted_cost_session, 6),
+            "wasted_tool_schema_cost_usd": round(wasted_cost_session, 6),
+            "dead_tool_offer_request_count": retransmit_count,
+            "declared_capabilities_silent": declared_silent,
+            "capability_invocation_counts": dict(self.capability_invocation_counts),
+            "tool_call_event_rate": round(tool_call_event_rate, 4),
+        }
+        if self.total_billable_input_tokens == 0 and wasted_tokens > 0:
+            result["wasted_tool_schema_cost_note"] = (
+                "fully_cached_session: billable_input_tokens=0, session cost reported as $0"
+            )
+        if self._capability_names_bounded:
+            result["capability_cardinality_bounded"] = True
+        return result
 
     def summary(self) -> dict[str, Any]:
         with self._lock:  # type: ignore[attr-defined]
@@ -309,6 +469,7 @@ class SessionStats:
             "total_output_tokens": self.total_output_tokens,
             "total_water_ml": self.total_water_ml,
             "average_input_output_ratio": ratio,
+            **self._capability_summary(),
             "recent_avg_output_tokens": recent_avg,
             "recent_output_token_cv": round(recent_output_cv, 4),
             "recent_low_output_threshold": stall_low_output_threshold,

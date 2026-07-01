@@ -379,6 +379,53 @@ vetch.require_tags(["feature", "customer"])
 
 ---
 
+## TOOL-DEAD-001 — Dead function tools
+
+**Status:** ✅ Implemented (v0.10.0)
+
+**Definition:** The session repeatedly offers function-tool schemas that are never invoked. Tool definitions are re-transmitted as input tokens on every request; dead tools inflate prompt size and cost without contributing to outcomes.
+
+**Signal:**
+- `function_tools_never_called` non-empty across ≥N requests (default 10)
+- `wasted_tool_schema_tokens` > 0 (per-request footprint of never-called tools)
+- `wasted_tool_schema_session_cost_usd` > 0 (per-request cost × `dead_tool_offer_request_count`)
+
+**Severity:** `INFO`
+
+**Why it matters:** Agent manifests often accumulate tools “just in case.” Each unused schema is paid-for input on every turn — often multiplied across dozens of agent steps.
+
+**Recommended actions:**
+- Remove unused tools from the manifest or register them conditionally
+- Use `session.summary()` or `vetch audit` to quantify `wasted_tool_schema_session_cost_usd`
+- For fully cached prefixes, check `vetch_warnings` for `fully_cached_session` notes
+
+**False positives:** Tools offered for rare edge cases that legitimately never fire in the audit window; multi-agent setups where different tools serve different sub-workflows.
+
+---
+
+## CAP-001 — Declared capabilities silent
+
+**Status:** ✅ Implemented (v0.10.0, audit-only)
+
+**Definition:** The application declared expected capabilities (via `set_expected_capabilities()` or `vetch audit --expected-capabilities`) but none of those routes fired during the audit window.
+
+**Signal:**
+- `declared_capabilities_silent` non-empty when compared against `capabilities_invoked` across stored events
+- Requires an explicit manifest at audit time (not inferred from traffic)
+
+**Severity:** `WARNING`
+
+**Why it matters:** Silent routes often indicate broken wiring — e.g. an image model route that never dispatches, or an embedding path that was refactored away but still listed in config.
+
+**Recommended actions:**
+- Verify dispatch logic for silent `kind:name` entries
+- Remove optional capabilities from the manifest if they are intentionally dormant
+- Pass `--expected-capabilities model:image,model:embedding` to `vetch audit`
+
+**False positives:** Capabilities that are legitimately rare; manifests that list optional fallbacks not exercised in the window.
+
+---
+
 ## CACHE-MISS-001 — Cache miss pattern
 
 **Status:** 🔜 Planned

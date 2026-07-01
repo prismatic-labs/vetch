@@ -432,11 +432,16 @@ def audit(args: argparse.Namespace) -> None:
         window = getattr(args, "window", timedelta(days=7))
         end = datetime.now(timezone.utc)
         start = end - window
+        expected_caps = getattr(args, "expected_capabilities", None)
+        expected_list = None
+        if expected_caps:
+            expected_list = [s.strip() for s in expected_caps.split(",") if s.strip()]
         report = build_audit_report(
             start=start,
             end=end,
             model=getattr(args, "model", None),
             tags=_parse_tag_filter(getattr(args, "tags", None)),
+            expected_capabilities=expected_list,
         )
         if report.total_requests > 0 or getattr(args, "stored", False):
             print(format_audit_report(report, getattr(args, "format", "text")))
@@ -1243,6 +1248,14 @@ def main() -> None:
         "--session",
         action="store_true",
         help="Use current in-process session stats instead of stored metadata",
+    )
+    audit_parser.add_argument(
+        "--expected-capabilities",
+        metavar="CAPS",
+        help=(
+            "Comma-separated capability manifest for CAP-001 "
+            "(e.g. model:image,model:embedding)"
+        ),
     )
     audit_parser.add_argument(
         "--format",

@@ -167,6 +167,21 @@ be cross-validated against the direct-measurement sources below (ML.ENERGY, Sams
 TokenPowerBench); closed hosted-API models have no public power telemetry and stay
 inferred/Tier 3 by necessity.
 
+## Model capability map (`model_capabilities.json`)
+
+**File:** `src/vetch/registry/model_capabilities.json`
+
+**Purpose:** Kind C capability observability — maps model name prefixes/families to declared capability kinds (e.g. `chat`, `embedding`, `image`) for `capabilities_invoked` derivation when no function tools fire.
+
+**Methodology:**
+- Curated from public provider documentation and model cards (OpenAI, Anthropic, Google, Meta, Mistral, etc.)
+- Prefix/family keys match the same resolution order as `energy.json` / pricing aliases
+- Overrides at runtime via `vetch.set_model_capability_map()` for private or fine-tuned models
+
+**Refresh:** `python scripts/check_registry_freshness.py` in CI; bump `_comment` version when editing.
+
+**Confidence:** Medium for major hosted models; low for niche or rapidly renamed SKUs — treat silent Kind C as directional, not proof of missing features.
+
 ## References
 
 *   Pope, R. et al. (2022). "Efficiently Scaling Transformer Inference." MLSys 2023. arXiv:2211.05102

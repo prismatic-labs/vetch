@@ -147,6 +147,10 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
     parent_span_id: attribution.parentSpanId ?? null,
     request_fingerprint: attribution.requestFingerprint ?? null,
 
+    tools_offered: extractToolsOffered(args.params),
+    tools_invoked: extractToolsInvoked(args.result, args.streamObservation),
+    capabilities_invoked: null,
+
     ai_sdk_operation: args.operation,
     ...(rawFinishReason !== undefined ? { raw_finish_reason: rawFinishReason } : {}),
     tool_call_count: toolCallCount,
@@ -181,6 +185,7 @@ export function createStreamObservation(): VetchStreamObservation {
     visibleOutputChars: 0,
     toolCallCount: 0,
     toolResultCount: 0,
+    toolNamesInvoked: [],
   };
 }
 
@@ -198,6 +203,11 @@ export function observeStreamPart(part: unknown, observation: VetchStreamObserva
 
   if (type === "tool-call" || type === "tool-call-start") {
     observation.toolCallCount += 1;
+    const fn = asRecord(obj.function);
+    const toolName = firstString(obj.toolName, fn?.name);
+    if (toolName) {
+      observation.toolNamesInvoked.push(toolName);
+    }
   }
 
   if (type === "tool-result") {
@@ -652,6 +662,68 @@ function countToolParts(result: unknown, type: "tool-call" | "tool-result"): num
 
   const legacyKey = type === "tool-call" ? "toolCalls" : "toolResults";
   return countArrayLike(getObjectValue(result, legacyKey));
+}
+
+export function extractToolsOffered(params: unknown): import("./types.js").VetchCapabilityRef[] | null {
+  const tools = getObjectValue(params, "tools");
+  if (!Array.isArray(tools) || tools.length === 0) {
+    return null;
+  }
+  const names = new Set<string>();
+  for (const tool of tools) {
+    const obj = asRecord(tool);
+    const fn = obj ? asRecord(obj.function) : null;
+    const name =
+      (typeof obj?.name === "string" ? obj.name : undefined) ??
+      (typeof fn?.name === "string" ? fn.name : undefined);
+    if (name) {
+      names.add(name);
+    }
+  }
+  if (names.size === 0) {
+    return null;
+  }
+  return [...names].sort().map((name) => ({ name, kind: "function" as const }));
+}
+
+export function extractToolsInvoked(
+  result: unknown,
+  streamObservation?: VetchStreamObservation,
+): import("./types.js").VetchCapabilityRef[] | null {
+  if (streamObservation?.toolNamesInvoked?.length) {
+    const names = [...new Set(streamObservation.toolNamesInvoked)].sort();
+    return names.map((name) => ({ name, kind: "function" as const }));
+  }
+  if (result === undefined) {
+    return null;
+  }
+  const content = getObjectValue(result, "content");
+  const names = new Set<string>();
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      const obj = asRecord(part);
+      if (obj?.type === "tool-call" && typeof obj.toolName === "string") {
+        names.add(obj.toolName);
+      }
+    }
+  }
+  const legacyCalls = getObjectValue(result, "toolCalls");
+  if (Array.isArray(legacyCalls)) {
+    for (const call of legacyCalls) {
+      const obj = asRecord(call);
+      const fn = obj ? asRecord(obj.function) : null;
+      const name =
+        (typeof obj?.toolName === "string" ? obj.toolName : undefined) ??
+        (typeof fn?.name === "string" ? fn.name : undefined);
+      if (name) {
+        names.add(name);
+      }
+    }
+  }
+  if (names.size === 0) {
+    return null;
+  }
+  return [...names].sort().map((name) => ({ name, kind: "function" as const }));
 }
 
 function countTextishChars(value: unknown, depth = 0): number {

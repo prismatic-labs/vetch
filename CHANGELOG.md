@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-06-23
+
+Capability observability: function tools offered vs invoked, cache-aware wasted
+schema cost, Kind C model routes via registry map, TOOL-DEAD-001 / CAP-001.
+
+### Added — Capability fields on `InferenceEvent` (schema v2, additive)
+
+- `tools_offered`, `tools_invoked`, `tool_call_count`, `capabilities_invoked`,
+  `tool_schema_tokens` on Python events and `CapturedCall` / `capture()`.
+- `SessionStats.summary()` rollups: `function_tools_never_called`,
+  `wasted_tool_schema_tokens`, `wasted_tool_schema_cost_per_request_usd`,
+  `wasted_tool_schema_session_cost_usd`, `wasted_tool_schema_cost_usd` (session
+  headline = per-request × `dead_tool_offer_request_count`), `dead_tool_offer_request_count`,
+  `declared_capabilities_silent`, `capability_invocation_counts`,
+  `tool_call_event_rate`.
+- New module `vetch.capabilities` with OpenAI, Anthropic, GenAI, Vertex, and
+  Ollama extraction; streaming accumulators for OpenAI + Anthropic.
+- Registry `model_capabilities.json` with freshness CI; `configure_capabilities()`.
+- Advisories: **TOOL-DEAD-001** (per-session dead tools + wasted cost);
+  **CAP-001** (audit-only, windowed declared-route silence).
+- OTel: `gen_ai.tool.*` array attributes + `vetch.tools_never_called` +
+  `vetch.wasted_tool_schema_tokens` (per-request dead-schema footprint).
+- CLI: `vetch audit --expected-capabilities` for CAP-001 manifest.
+- `rollup_capability_summary_from_events()` for stored-event rollups.
+- Per-event `vetch_warnings` when dead tools ride on fully cached requests.
+- JS SDK: stream `tools_invoked` via `toolNamesInvoked`; exports
+  `extractToolsOffered` / `extractToolsInvoked`.
+
 ## [0.9.0] - 2026-06-23
 
 Registry freshness, honest match precision, and correct self-hosted cost
