@@ -183,12 +183,38 @@ class TestTagAllowlist:
         assert "region" in processed
         assert "internal_id" not in processed
 
-        # Should have warning about filtered tag
+        # Should warn per filtered tag, keep the substring wrapper.py counts on,
+        # but NOT leak the rejected key name into the event-bound warning.
         assert len(warnings) > 0
-        assert any("internal_id" in w and "allowlist" in w for w in warnings)
+        assert any("not in allowlist" in w for w in warnings)
+        assert not any("internal_id" in w for w in warnings)
 
         # Cleanup
         config._reset_config()
+
+    def test_allowlist_filter_does_not_leak_key_into_event(self):
+        """Rejected tag key must not appear in the emitted event; counter still fires."""
+        import vetch
+        import vetch.config as config
+        from vetch.emitter import BufferedEmitter, serialize_event, set_test_emitter
+        from vetch.wrapper import get_tracking_stats
+
+        buf = BufferedEmitter()
+        set_test_emitter(buf)
+        before = get_tracking_stats().get("allowlist_filtered", 0)
+        try:
+            vetch.set_tag_allowlist(["feature"])
+            with vetch.wrap(
+                tags={"feature": "x", "patient_name_john_smith": "1"}, emit=True
+            ):
+                pass
+            serialized = serialize_event(buf.events[-1])
+            assert "patient_name_john_smith" not in serialized
+            # Counter still increments because the warning keeps "not in allowlist".
+            assert get_tracking_stats().get("allowlist_filtered", 0) == before + 1
+        finally:
+            config._reset_config()
+            set_test_emitter(None)
 
 
 class TestCardinalityLimits:

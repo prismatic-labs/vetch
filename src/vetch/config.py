@@ -259,10 +259,19 @@ def filter_tags_by_allowlist(tags: dict[str, str] | None) -> tuple[dict[str, str
         if key in _tag_allowlist:
             filtered[key] = value
         else:
-            warnings.append(
-                f"Tag '{key}' not in allowlist, filtered. "
-                f"Allowed tags: {sorted(_tag_allowlist)}"
+            # Full detail (incl. the rejected key) goes to the local log only.
+            logger.warning(
+                "Tag '%s' not in allowlist, filtered. Allowed tags: %s. "
+                "Add to allowlist: vetch.set_tag_allowlist([..., '%s'])",
+                key,
+                sorted(_tag_allowlist),
+                key,
             )
+            # Event-bound warning must not echo the rejected key: a fail-closed
+            # control must not re-leak what it just blocked. Keep the exact
+            # substring "not in allowlist" and one warning per filtered tag
+            # (wrapper.py counts filtered tags on that substring).
+            warnings.append("Tag not in allowlist, filtered out.")
 
     return filtered, warnings
 
@@ -593,10 +602,17 @@ def process_tags_single_pass(
 
         # STEP 2: Filter by allowlist (if configured)
         if _tag_allowlist is not None and key not in _tag_allowlist:
-            warnings.append(
-                f"Tag '{key}' not in allowlist, filtered out. "
-                f"Add to allowlist: vetch.set_tag_allowlist([..., '{key}'])"
+            # Full detail (incl. the rejected key) goes to the local log only;
+            # the event-bound warning below must not echo the blocked key.
+            logger.warning(
+                "Tag '%s' not in allowlist, filtered out. "
+                "Add to allowlist: vetch.set_tag_allowlist([..., '%s'])",
+                key,
+                key,
             )
+            # Key-free, keeps the "not in allowlist" substring wrapper.py counts,
+            # one warning per filtered tag.
+            warnings.append("Tag not in allowlist, filtered out.")
             continue  # Skip this tag
 
         # STEP 3: Cardinality tracking (rate limiting + LRU eviction)

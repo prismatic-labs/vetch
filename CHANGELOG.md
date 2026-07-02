@@ -20,6 +20,15 @@ schema cost, Kind C model routes via registry map, TOOL-DEAD-001 / CAP-001.
   Gemini-shaped results are captured instead of silently dropped.
 - Map `gemini*` models to the `google_genai` provider key (was `vertexai`).
 
+### Fixed — Tag allowlist no longer leaks rejected keys
+
+- Allowlist-filtered tags previously echoed the rejected key name into the
+  event's `vetch_warnings` (a fail-closed control re-leaking what it blocked).
+  The event-bound warning is now key-free (`"Tag not in allowlist, filtered
+  out."`); full detail (key + remediation) goes to the local log only. The
+  filtered-tag counter (`get_tracking_stats()["allowlist_filtered"]`) is
+  preserved.
+
 ### Added — Capability fields on `InferenceEvent` (schema v2, additive)
 
 - `tools_offered`, `tools_invoked`, `tool_call_count`, `capabilities_invoked`,
