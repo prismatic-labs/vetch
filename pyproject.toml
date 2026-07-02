@@ -97,11 +97,11 @@ exclude = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = [
-    "--cov=vetch",
-    "--cov-report=term-missing",
-    "--cov-fail-under=70",
-]
+# Coverage flags are passed explicitly in CI (.github/workflows/ci.yml), not via
+# addopts, so running a subset locally (e.g. `pytest tests/test_config.py`) does
+# not fail the 70% gate. Run coverage locally with:
+#   pytest --cov=vetch --cov-report=term-missing --cov-fail-under=70
+addopts = []
 
 [tool.ruff]
 line-length = 100

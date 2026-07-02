@@ -10,8 +10,6 @@ test_self_hosted_routing.py, where the cost path is exercised.
 from __future__ import annotations
 
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
 
 from vetch.calculation import (
     calculate_energy,
@@ -19,6 +17,13 @@ from vetch.calculation import (
     resolve_model,
     resolve_model_match,
 )
+
+# Skip the whole module (rather than erroring at collection) when the optional
+# hypothesis dependency is absent.
+pytest.importorskip("hypothesis")
+
+from hypothesis import given  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
 
 # model id -> expected precision rung
 GOLDEN_PRECISION = {

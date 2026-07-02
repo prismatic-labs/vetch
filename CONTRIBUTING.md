@@ -48,9 +48,13 @@ pytest tests/test_session.py -v
 pytest tests/test_session.py::TestSession::test_basic_session -v
 ```
 
+Coverage flags are not in `addopts`, so running a subset (or bare `pytest`)
+does not fail the 70% gate — pass `--cov=vetch --cov-fail-under=70` explicitly
+(as above) when you want the gate. CI always enforces it.
+
 ### Test Requirements
 
-- **Coverage**: 70% minimum enforced, 90% target
+- **Coverage**: 70% minimum enforced in CI, 90% target
 - **Property tests**: Use Hypothesis for calculation edge cases
 - **Mock tests**: No live API calls in CI
 
