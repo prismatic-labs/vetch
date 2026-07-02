@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Capability observability: function tools offered vs invoked, cache-aware wasted
 schema cost, Kind C model routes via registry map, TOOL-DEAD-001 / CAP-001.
 
+### Fixed — LangChain integration (`VetchCallbackHandler`)
+
+- Subclass the real `BaseCallbackHandler`, so chat-model dispatch no longer
+  escapes with `AttributeError('raise_error')` (the handler now inherits
+  `ignore_chat_model` / `raise_error` and the default `on_chat_model_start`).
+- Extract usage from the message `usage_metadata` (Gemini and the standardized
+  LangChain shape) in addition to legacy `llm_output["token_usage"]`;
+  Gemini-shaped results are captured instead of silently dropped.
+- Map `gemini*` models to the `google_genai` provider key (was `vertexai`).
+
 ### Added — Capability fields on `InferenceEvent` (schema v2, additive)
 
 - `tools_offered`, `tools_invoked`, `tool_call_count`, `capabilities_invoked`,

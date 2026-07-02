@@ -5,6 +5,8 @@ Focus on critical paths: doesn't crash user code, basic functionality works.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 class TestLangChainIntegration:
     """Test LangChain integration critical paths."""
@@ -246,3 +248,126 @@ class TestLangChainErrorHandling:
         handler.on_llm_start(
             serialized={"name": "OpenAI"}, prompts=["Test prompt"], run_id="test-123"
         )
+
+
+class TestLangChainTask1Fixes:
+    """Task 1: real base subclass, usage_metadata extraction, provider heuristic."""
+
+    def _buffered(self):
+        from vetch.emitter import BufferedEmitter, set_test_emitter
+
+        buf = BufferedEmitter()
+        set_test_emitter(buf)
+        return buf
+
+    def test_handler_is_base_callback_handler(self):
+        pytest.importorskip("langchain_core")
+        from langchain_core.callbacks.base import BaseCallbackHandler
+
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        assert isinstance(VetchCallbackHandler(), BaseCallbackHandler)
+
+    def test_chat_model_dispatch_does_not_raise(self):
+        # Repro A: chat-model dispatch must not leak AttributeError('raise_error').
+        pytest.importorskip("langchain_core")
+        from langchain_core.callbacks import CallbackManager
+        from langchain_core.messages import HumanMessage
+
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        cm = CallbackManager(handlers=[VetchCallbackHandler(region="europe-west9")])
+        cm.on_chat_model_start({"name": "fake"}, [[HumanMessage(content="hi")]])
+
+    def test_gemini_shaped_result_captured(self):
+        # Repro B: usage_metadata on the message must be captured.
+        pytest.importorskip("langchain_core")
+        from langchain_core.messages import AIMessage
+        from langchain_core.outputs import ChatGeneration, LLMResult
+
+        from vetch.emitter import set_test_emitter
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        self._buffered()
+        try:
+            h = VetchCallbackHandler()
+            msg = AIMessage(
+                content="x",
+                usage_metadata={"input_tokens": 900, "output_tokens": 250, "total_tokens": 1150},
+            )
+            h.on_llm_end(
+                LLMResult(
+                    generations=[[ChatGeneration(message=msg)]],
+                    llm_output={"prompt_feedback": {}},
+                )
+            )
+            assert h.call_count == 1
+            text = h.events[-1]["usage"]["text"]
+            assert text["input_tokens"] == 900
+            assert text["output_tokens"] == 250
+        finally:
+            set_test_emitter(None)
+
+    def test_openai_shaped_result_still_captured(self):
+        # Regression: legacy llm_output["token_usage"] path still works.
+        pytest.importorskip("langchain_core")
+        from langchain_core.outputs import Generation, LLMResult
+
+        from vetch.emitter import set_test_emitter
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        self._buffered()
+        try:
+            h = VetchCallbackHandler()
+            # Plain Generation has no .message -> forces the legacy token_usage path.
+            h.on_llm_end(
+                LLMResult(
+                    generations=[[Generation(text="hi")]],
+                    llm_output={
+                        "model_name": "gpt-4",
+                        "token_usage": {
+                            "prompt_tokens": 50,
+                            "completion_tokens": 100,
+                            "total_tokens": 150,
+                        },
+                    },
+                )
+            )
+            assert h.call_count == 1
+            text = h.events[-1]["usage"]["text"]
+            assert text["input_tokens"] == 50
+            assert text["output_tokens"] == 100
+        finally:
+            set_test_emitter(None)
+
+    def test_allowlist_applies_via_handler(self):
+        pytest.importorskip("langchain_core")
+        from langchain_core.outputs import Generation, LLMResult
+
+        import vetch
+        import vetch.config as _cfg
+        from vetch.emitter import set_test_emitter
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        buf = self._buffered()
+        prev_allowlist = _cfg._tag_allowlist
+        try:
+            vetch.set_tag_allowlist(["feature"])
+            h = VetchCallbackHandler(tags={"feature": "x", "secret_key": "v"})
+            h.on_llm_end(
+                LLMResult(
+                    generations=[[Generation(text="hi")]],
+                    llm_output={
+                        "model_name": "gpt-4",
+                        "token_usage": {"prompt_tokens": 10, "completion_tokens": 20},
+                    },
+                )
+            )
+            assert h.call_count == 1
+            tags = buf.events[-1].get("tags") or {}
+            assert tags.get("feature") == "x"
+            assert "secret_key" not in tags
+            assert "v" not in tags.values()
+        finally:
+            _cfg._tag_allowlist = prev_allowlist
+            set_test_emitter(None)

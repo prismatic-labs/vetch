@@ -28,12 +28,32 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Subclass the real LangChain base so the handler inherits ``ignore_chat_model``,
+# ``raise_error``, and the default ``on_chat_model_start`` dispatch. Guarded so
+# the module still imports when LangChain is absent.
+try:
+    from langchain_core.callbacks.base import BaseCallbackHandler
+except ImportError:
+    try:
+        from langchain.callbacks.base import (  # type: ignore[import-not-found,no-redef]
+            BaseCallbackHandler,
+        )
+    except ImportError:
 
-class VetchCallbackHandler:
+        class BaseCallbackHandler:  # type: ignore[no-redef]
+            """Fallback when LangChain is not installed."""
+
+
+class VetchCallbackHandler(BaseCallbackHandler):
     """LangChain callback handler for Vetch energy/carbon tracking.
 
     Integrates with LangChain's callback system to automatically track
     all LLM calls in chains, agents, and LCEL pipelines.
+
+    Note:
+        This handler wraps an already-completed LLM call, so ``latency_ms`` on
+        events it emits reflects the wrap block (~0 ms), not the real LLM call.
+        Treat latency from handler-emitted events as not meaningful.
 
     Attributes:
         total_cost: Cumulative cost across all LLM calls (USD)
@@ -92,6 +112,59 @@ class VetchCallbackHandler:
         """
         pass
 
+    @staticmethod
+    def _um_get(um: Any, key: str) -> int:
+        """Read a usage_metadata field whether it is a dict or an object.
+
+        Never raises: returns 0 for anything non-numeric (e.g. test doubles).
+        """
+        try:
+            val = um.get(key, 0) if hasattr(um, "get") else getattr(um, key, 0)
+            return int(val or 0)
+        except Exception:
+            return 0
+
+    def _extract_usage_and_model(
+        self, response: LLMResult
+    ) -> tuple[int, int, int, str | None] | None:
+        """Return (input_tokens, output_tokens, total_tokens, model) or None.
+
+        Handles both the standardized LangChain ``usage_metadata`` on the message
+        (Gemini and, increasingly, all providers) and the legacy
+        ``llm_output["token_usage"]`` shape (langchain-openai).
+        """
+        llm_output = response.llm_output or {}
+        model = llm_output.get("model_name") or llm_output.get("model")
+
+        # 1. Standardized usage_metadata on the message. Sum across generations.
+        in_tok = out_tok = total = 0
+        found = False
+        for gen_list in response.generations:
+            for gen in gen_list:
+                msg = getattr(gen, "message", None)
+                um = getattr(msg, "usage_metadata", None)
+                if um:
+                    found = True
+                    in_tok += self._um_get(um, "input_tokens")
+                    out_tok += self._um_get(um, "output_tokens")
+                    total += self._um_get(um, "total_tokens")
+                if model is None and msg is not None:
+                    rm = getattr(msg, "response_metadata", None) or {}
+                    model = rm.get("model_name") or rm.get("model")
+        if found:
+            return in_tok, out_tok, total, model
+
+        # 2. Legacy llm_output["token_usage"] (langchain-openai)
+        tu = llm_output.get("token_usage") or {}
+        if tu:
+            return (
+                int(tu.get("prompt_tokens", 0) or 0),
+                int(tu.get("completion_tokens", 0) or 0),
+                int(tu.get("total_tokens", 0) or 0),
+                model,
+            )
+        return None
+
     def on_llm_end(
         self,
         response: LLMResult,
@@ -110,16 +183,11 @@ class VetchCallbackHandler:
             if not response.generations:
                 return
 
-            # Get usage metadata from llm_output (if available)
-            llm_output = response.llm_output or {}
-            token_usage = llm_output.get("token_usage", {})
-
-            if not token_usage:
+            extracted = self._extract_usage_and_model(response)
+            if extracted is None:
                 logger.debug("No token usage in LangChain response, skipping Vetch tracking")
                 return
-
-            # Extract model name (different providers use different keys)
-            model = llm_output.get("model_name") or llm_output.get("model")
+            in_tok, out_tok, total, model = extracted
 
             # Create Vetch wrapper with inherited config
             with self._wrap(region=self.region, tags=self.tags, emit=True) as ctx:
@@ -132,19 +200,20 @@ class VetchCallbackHandler:
                     # Detect provider from model name
                     provider = "unknown"
                     if model:
-                        if "gpt" in model.lower() or "o1" in model.lower():
+                        ml = model.lower()
+                        if "gpt" in ml or "o1" in ml:
                             provider = "openai"
-                        elif "claude" in model.lower():
+                        elif "claude" in ml:
                             provider = "anthropic"
-                        elif "gemini" in model.lower():
-                            provider = "vertexai"
+                        elif "gemini" in ml:
+                            provider = "google_genai"
 
                     # Build usage dict
                     usage: dict[str, Any] = {
                         "text": {
-                            "input_tokens": token_usage.get("prompt_tokens", 0),
-                            "output_tokens": token_usage.get("completion_tokens", 0),
-                            "total_tokens": token_usage.get("total_tokens", 0),
+                            "input_tokens": in_tok,
+                            "output_tokens": out_tok,
+                            "total_tokens": total,
                         }
                     }
 
@@ -171,7 +240,7 @@ class VetchCallbackHandler:
 
     def on_llm_error(
         self,
-        error: Exception | KeyboardInterrupt,
+        error: BaseException,
         **kwargs: Any,
     ) -> None:
         """Called when LLM errors."""
@@ -180,7 +249,7 @@ class VetchCallbackHandler:
 
     def on_llm_new_token(
         self,
-        token: str,
+        token: str | list[str | dict[str, Any]],
         **kwargs: Any,
     ) -> None:
         """Called when LLM generates a new token during streaming.
