@@ -34,6 +34,15 @@ schema cost, Kind C model routes via registry map, TOOL-DEAD-001 / CAP-001.
   never re-wraps an already-patched `__init__`) and closure-safe (the original
   `__init__` is captured in a local, not a mutable global).
 
+### Added — `instrumentation_status()` and import-order visibility
+
+- New `vetch.instrumentation_status()` reports, per provider (openai, anthropic,
+  azure_openai, vertexai, google_genai, ollama):
+  `installed` / `imported` / `instrumented` / `version` / `tested`.
+- `instrument()` now warns when an SDK is installed but was not imported before
+  the call (the `sys.modules` gate means it is silently not instrumented), and
+  the docstring documents the import-order requirement.
+
 ### Fixed — Tag allowlist no longer leaks rejected keys
 
 - Allowlist-filtered tags previously echoed the rejected key name into the

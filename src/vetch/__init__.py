@@ -60,6 +60,7 @@ __all__ = [
     "Session",
     "instrument",
     "uninstrument",
+    "instrumentation_status",
     "require_tags",
     "add_global_tags",
     "set_tag_cardinality_limit",
@@ -227,8 +228,12 @@ def instrument(
     Call once at application startup to automatically track all LLM calls
     without needing to use the `wrap()` context manager.
 
-    This is ideal for frameworks like LangChain, LlamaIndex, or any code
-    where you don't control the client instantiation.
+    This is useful for frameworks like LangChain or LlamaIndex, but only when
+    the framework constructs a supported raw SDK client (at a tested version)
+    *after* ``instrument()`` runs. ``instrument()`` patches SDK clients at
+    construction time and can only patch modules already imported (the
+    ``sys.modules`` gate); an SDK imported afterwards is silently not
+    instrumented. Import order matters — see :func:`instrumentation_status`.
 
     Args:
         region: Default grid region for carbon calculation.
@@ -255,6 +260,9 @@ def instrument(
         - Works with OpenAI, Anthropic, Vertex AI, and Google GenAI SDKs
         - Safe to call multiple times (idempotent)
         - Thread-safe for concurrent initialization
+        - Import order matters: an SDK imported *after* ``instrument()`` runs is
+          not patched. Import your SDKs first, or call ``instrument()`` again
+          afterwards, and check :func:`instrumentation_status` for coverage.
         - Set VETCH_DISABLED=true or VETCH_ENABLED=false to disable
     """
     global _instrumented, _default_region, _default_tags, _default_energy_override
@@ -278,6 +286,15 @@ def instrument(
             return True
 
         instrumented_any = False
+
+        # Snapshot which SDKs the user imported before this call. instrument()
+        # only patches already-imported modules, and the version-range check
+        # below imports SDKs to read their versions, so capture this first.
+        import sys as _sys
+
+        _imported_at_entry = {
+            _n: (_m in _sys.modules) for _n, (_m, _pm) in _INSTRUMENTATION_PROVIDERS.items()
+        }
 
         # Try to instrument OpenAI
         try:
@@ -369,6 +386,32 @@ def instrument(
                     _vetch_log.warning(
                         f"vetch: {_sdk_name} {_sdk_info.version} is outside the tested "
                         f"version range. Instrumentation may behave unexpectedly."
+                    )
+        except Exception:
+            pass
+
+        # Warn about installed-but-not-imported SDKs (snapshot taken at entry).
+        # instrument() can only patch modules already imported (the sys.modules
+        # gate), so an SDK present but imported later is silently NOT
+        # instrumented.
+        try:
+            import importlib.util as _ilu
+            import logging as _logging
+
+            _vetch_log = _logging.getLogger("vetch")
+            for _name, (_imp_mod, _pm) in _INSTRUMENTATION_PROVIDERS.items():
+                if _imported_at_entry.get(_name):
+                    continue
+                try:
+                    _installed = _ilu.find_spec(_imp_mod) is not None
+                except (ImportError, ModuleNotFoundError, ValueError):
+                    _installed = False
+                if _installed:
+                    _vetch_log.warning(
+                        "vetch: %s is installed but was not imported before "
+                        "vetch.instrument(); it is NOT instrumented. Import it "
+                        "first, or call vetch.instrument() again after importing.",
+                        _name,
                     )
         except Exception:
             pass
@@ -492,6 +535,81 @@ def uninstrument() -> bool:
 
     _instrumented = False
     return uninstrumented_all
+
+
+# Provider label -> (SDK module for install/import detection, vetch provider
+# module holding the ``_module_instrumented`` flag).
+_INSTRUMENTATION_PROVIDERS: dict[str, tuple[str, str]] = {
+    "openai": ("openai", "vetch.providers.openai"),
+    "anthropic": ("anthropic", "vetch.providers.anthropic"),
+    "azure_openai": ("openai", "vetch.providers.azure_openai"),  # Azure uses the openai SDK
+    "vertexai": ("google.cloud.aiplatform", "vetch.providers.vertexai"),
+    "google_genai": ("google.genai", "vetch.providers.genai"),
+    "ollama": ("ollama", "vetch.providers.ollama"),
+}
+
+
+def instrumentation_status() -> dict[str, dict[str, object]]:
+    """Report per-provider instrumentation coverage.
+
+    For each supported provider (``openai``, ``anthropic``, ``azure_openai``,
+    ``vertexai``, ``google_genai``, ``ollama``) returns a dict with:
+
+    - ``installed``: the SDK is importable (``importlib.util.find_spec``)
+    - ``imported``: the SDK module is already in ``sys.modules``
+    - ``instrumented``: Vetch has patched the SDK module
+    - ``version``: detected SDK version, or ``None``
+    - ``tested``: the version is within Vetch's tested range
+
+    ``instrument()`` only patches an SDK imported before it ran, so
+    ``installed and not imported`` marks a provider that is present but was not
+    instrumented (import it before calling ``instrument()``).
+    """
+    import importlib
+    import importlib.util
+    import sys
+
+    # Snapshot "imported" BEFORE any SDK version lookup: get_all_sdk_versions()
+    # imports openai/vertexai to read their versions, which would otherwise make
+    # them appear imported here.
+    imported_at_call = {
+        name: (import_mod in sys.modules)
+        for name, (import_mod, _pm) in _INSTRUMENTATION_PROVIDERS.items()
+    }
+
+    from vetch.compat import get_all_sdk_versions
+
+    versions = get_all_sdk_versions()
+    status: dict[str, dict[str, object]] = {}
+    for name, (import_mod, provider_mod) in _INSTRUMENTATION_PROVIDERS.items():
+        try:
+            installed = importlib.util.find_spec(import_mod) is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            installed = False
+
+        imported = imported_at_call[name]
+
+        instrumented = False
+        try:
+            mod = importlib.import_module(provider_mod)
+            instrumented = bool(getattr(mod, "_module_instrumented", False))
+        except Exception:
+            instrumented = False
+
+        # get_all_sdk_versions currently covers openai + vertexai; Azure reuses
+        # the openai SDK version. Others report version/tested as unknown.
+        vinfo = versions.get(name)
+        if vinfo is None and name == "azure_openai":
+            vinfo = versions.get("openai")
+
+        status[name] = {
+            "installed": installed,
+            "imported": imported,
+            "instrumented": instrumented,
+            "version": vinfo.version if vinfo else None,
+            "tested": vinfo.tested if vinfo else False,
+        }
+    return status
 
 
 def set_log_level(level: str | int) -> None:
