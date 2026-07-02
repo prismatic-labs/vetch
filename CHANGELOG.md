@@ -20,6 +20,20 @@ schema cost, Kind C model routes via registry map, TOOL-DEAD-001 / CAP-001.
   Gemini-shaped results are captured instead of silently dropped.
 - Map `gemini*` models to the `google_genai` provider key (was `vertexai`).
 
+### Added — OpenAI SDK 2.x support
+
+- Support `openai >= 2.0` (verified against 2.44.0): `TESTED_OPENAI_VERSIONS`
+  is now `[1.0.0, 3.0.0)`, so `instrument()` covers 2.x without
+  `VETCH_FORCE_PATCH`.
+
+### Fixed — OpenAI module double-instrumentation recursion
+
+- `instrument()` / `uninstrument()` cycles could leave `openai.OpenAI.__init__`
+  wrapping itself, so the next real client construction raised
+  `RecursionError`. Module instrumentation is now idempotent (a sentinel guard
+  never re-wraps an already-patched `__init__`) and closure-safe (the original
+  `__init__` is captured in a local, not a mutable global).
+
 ### Fixed — Tag allowlist no longer leaks rejected keys
 
 - Allowlist-filtered tags previously echoed the rejected key name into the

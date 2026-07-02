@@ -1145,26 +1145,43 @@ def instrument_openai_module() -> bool:
         try:
             import openai
 
-            # Store original __init__ for later restoration
+            # Idempotency guard: if __init__ is already a Vetch patch (the module
+            # flag can desync from the actual __init__ across instrument /
+            # uninstrument cycles), do NOT re-wrap it. Re-capturing a patched
+            # __init__ as the "original" is what caused the RecursionError.
+            if getattr(openai.OpenAI.__init__, "_vetch_patched_init", False):
+                _module_instrumented = True
+                return True
+
+            # Store original __init__ for later restoration.
             _original_openai_init = openai.OpenAI.__init__
+            # Bind the original into the closure via a LOCAL, never the mutable
+            # global, so patched_init always calls the true original even if the
+            # global is later reassigned.
+            _orig_sync_init = _original_openai_init
 
             def patched_init(self: Any, *args: Any, **kwargs: Any) -> None:
-                _original_openai_init(self, *args, **kwargs)
+                _orig_sync_init(self, *args, **kwargs)
                 # Auto-patch this client instance
                 with contextlib.suppress(Exception):
                     patch_openai_client(self)
 
+            patched_init._vetch_patched_init = True  # type: ignore[attr-defined]
             openai.OpenAI.__init__ = patched_init  # type: ignore[method-assign]
 
-            # Also patch AsyncOpenAI if available
-            if hasattr(openai, "AsyncOpenAI"):
+            # Also patch AsyncOpenAI if available (same guards).
+            if hasattr(openai, "AsyncOpenAI") and not getattr(
+                openai.AsyncOpenAI.__init__, "_vetch_patched_init", False
+            ):
                 _original_async_openai_init = openai.AsyncOpenAI.__init__
+                _orig_async_init = _original_async_openai_init
 
                 def patched_async_init(self: Any, *args: Any, **kwargs: Any) -> None:
-                    _original_async_openai_init(self, *args, **kwargs)
+                    _orig_async_init(self, *args, **kwargs)
                     with contextlib.suppress(Exception):
                         patch_openai_client(self)
 
+                patched_async_init._vetch_patched_init = True  # type: ignore[attr-defined]
                 openai.AsyncOpenAI.__init__ = patched_async_init  # type: ignore[method-assign]
 
             _module_instrumented = True
