@@ -283,6 +283,28 @@ Both are fail-open and add <5ms overhead.
 
 **See [QUICKSTART.md](QUICKSTART.md) for a complete 60-second guide.**
 
+### Coverage matrix
+
+`instrument()` patches **raw SDK clients at construction time**. Frameworks are
+covered transitively when they construct a supported client *after*
+`instrument()` runs.
+
+| Surface | Covered? | Notes |
+|---|---|---|
+| OpenAI / Azure OpenAI SDK | Yes | `openai >= 1.0, < 3.0` (tested through 2.44.0); no `VETCH_FORCE_PATCH` needed. |
+| Anthropic SDK | Yes | Raw client patching. |
+| Google GenAI (`google.genai`) | Yes | Includes `langchain-google-genai >= 2.x`, which builds a `google.genai.Client` internally. |
+| Vertex AI SDK | Yes | Raw client patching. |
+| Ollama | Yes | Native Python SDK and OpenAI-compatible endpoints. |
+| LangChain (any provider) | Via handler | Use `VetchCallbackHandler` (requires `langchain-core`; chat-model dispatch and Gemini `usage_metadata` capture were fixed in v0.10.0). |
+| pydantic-ai | Transitive | Google models build a `google.genai.Client` (covered); OpenAI models depend on the `openai` SDK version above. |
+
+**Import order matters.** `instrument()` can only patch SDKs already imported
+(the `sys.modules` gate): import your SDK *before* calling `instrument()`, or
+call it again afterwards. Check coverage at runtime with
+`vetch.instrumentation_status()`, which reports
+`installed` / `imported` / `instrumented` / `version` / `tested` per provider.
+
 ### Async support
 
 ```python
