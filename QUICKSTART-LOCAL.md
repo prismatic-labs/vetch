@@ -558,7 +558,10 @@ with vetch.wrap() as ctx:
 
 summary = vetch.get_session_stats().summary()
 print(summary["function_tools_never_called"])
-print(summary["wasted_tool_schema_cost_usd"])  # cache-aware directional estimate
+# Session total (per-request cost x requests that offered dead tools),
+# cache-aware directional estimate. Per-request figure and count are also
+# available as wasted_tool_schema_cost_per_request_usd / dead_tool_offer_request_count.
+print(summary["wasted_tool_schema_cost_usd"])
 ```
 
 Note: Vetch's `mcp/` server (`vetch-mcp`) is a FinOps calculator, not instrumentation

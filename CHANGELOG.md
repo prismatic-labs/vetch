@@ -5,10 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] - 2026-06-23
+## [0.10.0] - 2026-07-03
 
 Capability observability: function tools offered vs invoked, cache-aware wasted
 schema cost, Kind C model routes via registry map, TOOL-DEAD-001 / CAP-001.
+
+### Changed — Datacenter PUE refresh (vendor reports)
+
+- **Google / Vertex AI: 1.10 → 1.09** (Google 2026 Environmental Report, FY2025
+  fleet-wide PUE).
+- **AWS / Anthropic / Bedrock: 1.15 → 1.14** (AWS 2025 Sustainability Report,
+  global average).
+- **Azure / OpenAI: 1.12 unchanged**; source refreshed to the Microsoft 2025
+  Environmental Sustainability Report (`as_of` 2025-05-29). Microsoft publishes
+  no clean operational fleet average, so this remains a newest-generation
+  figure — a slightly more favorable basis than the Google/AWS fleet averages
+  (documented in METHODOLOGY.md).
+- **Impact:** estimated energy and carbon shift for Google and AWS/Anthropic
+  workloads (roughly −1% PUE overhead each). Re-baseline dashboards/budgets that
+  track absolute carbon for these providers.
 
 ### Fixed — LangChain integration (`VetchCallbackHandler`)
 

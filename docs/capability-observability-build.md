@@ -129,7 +129,7 @@ Add a CHANGELOG.md entry under a new `## [0.10.0]` heading in every PR. Bump `ve
 
 - [x] Accumulate under the lock: `function_tools_offered/invoked` sets, `capabilities_invoked` set, `capability_invocation_counts`, `tool_schema_tokens`.
 - [x] Per-session cardinality bound (reuse `set_tag_cardinality_limit` precedent); stop accumulating distinct names past it + `vetch_warnings` note.
-- [x] `summary()` adds: `function_tools_never_called`, `wasted_tool_schema_tokens`, `wasted_tool_schema_cost_usd` (cache-aware rate from PR 1 accumulators), `declared_capabilities_silent` (per session), `capability_invocation_counts`, `tool_call_event_rate`.
+- [x] `summary()` adds: `function_tools_never_called`, `wasted_tool_schema_tokens`, `wasted_tool_schema_cost_usd` (**session total** = per-request cost × `dead_tool_offer_request_count`; per-request exposed as `wasted_tool_schema_cost_per_request_usd`), `declared_capabilities_silent` (per session), `capability_invocation_counts`, `tool_call_event_rate`.
 
 **Tests:** cache-aware cost (fully-cached → `$0`; mixed; zero-billable guard; rate never from `total_cost_usd`); set-difference correctness; per-session bound; concurrent `update()` does not corrupt sets.
 

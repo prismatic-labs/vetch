@@ -15,7 +15,7 @@ Customers report: *"some tools are not being called."* In production this is two
 1. **Function tools (Kind A).** The model was offered `get_weather`, `refund_order`, etc. via `tools=` but never emitted a `tool_use` / `tool_calls` block. The dead schemas are still re-sent as input every turn, so this is a coverage signal *and* a cost signal.
 2. **Silent capability routes (Kind C).** A pipeline step (image gen, embeddings, a dedicated model) was wired but the code path never runs. Not visible as a "declined tool"; it is a missing separate call or modality, detected against a declared roster.
 
-Vetch today records neither the **offered** tool set nor **invoked** capability identifiers on Python events. The audit path already *reads* `tool_call_count` for PREMIUM-001 gating (`audit_report._tool_call_event_rate`), but **Python `InferenceEvent` does not define or emit that field** — only the Vercel AI SDK middleware does (`packages/vetch-ai-sdk/src/event.ts`). This plan closes that gap and unifies both senses under one abstraction.
+Vetch today records neither the **offered** tool set nor **invoked** capability identifiers on Python events. The audit path already *reads* `tool_call_count` for PREMIUM-001 gating (`audit_report._tool_call_event_rate`), but at plan time **Python `InferenceEvent` did not define or emit that field** — only the Vercel AI SDK middleware did (`packages/vetch-ai-sdk/src/event.ts`). This plan closed that gap and unified both senses under one abstraction. *(Implemented in v0.10.0; `tool_call_count` and the capability fields now ship on Python events.)*
 
 ### What this plan does *not* claim
 
@@ -103,6 +103,8 @@ Kind A needs no manifest; Kind C requires `expected_capabilities` for "never fir
 ---
 
 ## Cost formula
+
+> **Shipped semantics (v0.10.0):** the formula below gives the *per-request* dead-schema cost. The headline `wasted_tool_schema_cost_usd` in `summary()` is the **session total** = per-request cost × `dead_tool_offer_request_count` (the number of requests that offered at least one never-called tool). The per-request figure is exposed as `wasted_tool_schema_cost_per_request_usd`.
 
 The session input rate must come from input cost net of cache reads, not blended totals. The earlier draft used `total_cost_usd / total_input_tokens`, wrong twice: it folds output cost into an "input rate" and ignores cache discounts. Correct, matching the cached/billable split already in `calculation.py`:
 
