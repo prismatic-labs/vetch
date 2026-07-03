@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
 import vetch
 
 _PROVIDERS = {"openai", "anthropic", "azure_openai", "vertexai", "google_genai", "ollama"}
@@ -26,6 +28,11 @@ def test_instrumentation_status_shape():
 def test_installed_but_not_imported_warns_in_fresh_process():
     # openai is installed in the venv. In a fresh process `import vetch` does not
     # import it, so instrument() must warn that it is not instrumented.
+    # Skip if openai is not installed (CI minimal test extras).
+    import importlib.util
+
+    if importlib.util.find_spec("openai") is None:
+        pytest.skip("openai not installed")
     code = (
         "import logging, io, sys\n"
         "buf = io.StringIO()\n"
