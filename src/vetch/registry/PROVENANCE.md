@@ -41,10 +41,10 @@ To account for non-GPU server components, we apply a **1.2x Hardware Overhead Mu
 This multiplier covers the energy consumed by server components beyond the GPU itself (CPUs, DRAM, NVLink, host networking). It does **not** include data center cooling or power distribution — those are accounted for by the PUE factor applied during carbon calculation.
 
 **PUE (Power Usage Effectiveness)** is applied separately in `calculate_carbon()` with a configurable default of 1.2, based on:
-*   Google: 1.09 (fleet average, 2024)
-*   AWS: 1.14 (Jiang et al. 2025)
-*   Azure: 1.12 (Jiang et al. 2025)
-*   Industry average: ~1.58 (Uptime Institute 2023)
+*   Google: 1.09 (fleet average, Google 2026 Environmental Report, FY2025)
+*   AWS: 1.14 (AWS 2025 Sustainability Report, global average)
+*   Azure: 1.12 (Microsoft 2025 Environmental Sustainability Report, newest-gen)
+*   Industry average: ~1.54 (Uptime Institute 2025)
 
 Override via `VETCH_DEFAULT_PUE` environment variable.
 

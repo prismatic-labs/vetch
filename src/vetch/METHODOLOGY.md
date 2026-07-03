@@ -260,12 +260,14 @@ Anonymized submissions (model + tokens + energy + hardware) will aggregate into 
 
 PUE measures datacenter overhead efficiency (cooling, power distribution). Vetch uses **provider-specific PUE values** from official sustainability reports:
 
-| Provider | PUE | Tier | Source |
-|----------|-----|------|--------|
-| **Google Cloud** | 1.10 | 1 | [Google Data Centers Efficiency Report 2023](https://datacenters.google/efficiency/) |
-| **Microsoft Azure** | 1.12 | 1 | [Microsoft Datacenters Sustainability 2024](https://datacenters.microsoft.com/sustainability/efficiency/) |
-| **AWS** | 1.15 | 1 | [AWS Sustainability Report 2024](https://aws.amazon.com/sustainability/data-centers/) |
-| **Unknown/Default** | 1.2 | 3 | Industry average (Uptime Institute 2023) |
+| Provider | PUE | Tier | As of | Source |
+|----------|-----|------|-------|--------|
+| **Google Cloud** | 1.09 | 1 | 2026-06 | [Google 2026 Environmental Report (FY2025)](https://sustainability.google/reports/google-2026-environmental-report/) |
+| **Microsoft Azure** | 1.12 | 1 | 2025-05 | [Microsoft 2025 Environmental Sustainability Report](https://blogs.microsoft.com/on-the-issues/2025/05/29/environmental-sustainability-report/) |
+| **AWS** | 1.14 | 1 | 2025 | [AWS 2025 Sustainability Report](https://aws.amazon.com/sustainability/data-centers/) |
+| **Unknown/Default** | 1.2 | 3 | — | Industry average (Uptime Institute 2025 enterprise ~1.54) |
+
+**Basis caveat:** Google and AWS values are fleet-wide averages. Microsoft does not publish a clean operational fleet average, so Azure/OpenAI use Microsoft's newest-generation figure (~1.12) — a slightly more favorable basis. Reconciling to a common basis would require an *estimated* Azure fleet PUE (~1.18, tier 2), a deliberate methodology change rather than a report refresh.
 
 **PUE Tier Definitions:**
 - **Tier 1**: Known value (vendor-published OR user-configured via `VETCH_DEFAULT_PUE`)
@@ -277,10 +279,10 @@ Note: There is no Tier 0 or Tier 2 for PUE because:
 
 **Auto-detection:** Vetch infers provider from model name:
 - `gpt-*`, `o1-*`, `o3-*`, `o4-*` → OpenAI (Azure-backed, PUE 1.12)
-- `claude-*` → Anthropic (AWS-backed, PUE 1.15)
-- `gemini-*`, `gemma-*` → Vertex AI (Google Cloud, PUE 1.10)
+- `claude-*` → Anthropic (AWS-backed, PUE 1.14)
+- `gemini-*`, `gemma-*` → Vertex AI (Google Cloud, PUE 1.09)
 
-Google's 1.10 PUE is a fleet-average value. Combining a regional grid intensity with a fleet-average PUE is intentionally transparent but mixed precision: it is better than a generic datacenter default, but it is not a facility-specific request measurement. If you know the deployment PUE, set `VETCH_DEFAULT_PUE` for the audit.
+Google's 1.09 PUE is a fleet-average value. Combining a regional grid intensity with a fleet-average PUE is intentionally transparent but mixed precision: it is better than a generic datacenter default, but it is not a facility-specific request measurement. If you know the deployment PUE, set `VETCH_DEFAULT_PUE` for the audit.
 
 ### PUE Limitations
 
@@ -288,7 +290,7 @@ Google's 1.10 PUE is a fleet-average value. Combining a regional grid intensity 
 
 1. **Fleet averages, not inference-specific**: PUE reports include training workloads (high utilization) and inference (bursty, lower utilization). Inference PUE may be 10-20% worse than fleet average.
 
-2. **Regional variation ignored**: Google's PUE ranges from 1.04 (best datacenter) to 1.20+ (worst). We use fleet average (1.10), which masks 5-15% regional differences.
+2. **Regional variation ignored**: Google's PUE ranges from 1.04 (best datacenter) to 1.20+ (worst). We use fleet average (1.09), which masks 5-15% regional differences.
 
 3. **Provider inference is fragile**: We guess provider from model name. If OpenAI switches from Azure to AWS, or uses multi-cloud routing, our PUE will be incorrect until we update the mapping.
 

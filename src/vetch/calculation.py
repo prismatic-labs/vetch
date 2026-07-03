@@ -761,12 +761,19 @@ DEFAULT_PUE = 1.2
 # Provider-specific PUE values from official sustainability reports (Tier 1 data)
 # Sources:
 #   Google: Google 2026 Environmental Report, FY2025 (fleet-wide 1.09)
-#   Azure: https://datacenters.microsoft.com/sustainability/efficiency/ (2024: 1.12)
+#   Azure: Microsoft 2025 Environmental Sustainability Report (newest-gen <1.12)
 #   AWS: https://aws.amazon.com/sustainability/data-centers/ (2025 report: 1.14)
+#
+# Basis caveat: google/aws are fleet-wide averages; azure/openai use Microsoft's
+# newest-generation figure (Microsoft does not publish a clean operational fleet
+# average). Azure/OpenAI are therefore on a slightly more favorable basis than
+# google/aws. Reconciling to a common basis would require an estimated Azure
+# fleet PUE (~1.18, tier 2) and is a deliberate methodology change, not a report
+# refresh — do not silently swap the value.
 PROVIDER_PUE: dict[str, float] = {
     "google": 1.09,      # Google fleet-wide (2026 report, FY2025)
     "vertexai": 1.09,    # Vertex AI runs on Google Cloud
-    "azure": 1.12,       # Microsoft Azure (2024 newest gen)
+    "azure": 1.12,       # Microsoft newest-gen (2025 report reaffirms <1.12)
     "openai": 1.12,      # OpenAI primarily uses Azure
     "aws": 1.14,         # AWS global average (2025 report)
     "anthropic": 1.14,   # Anthropic uses AWS
@@ -778,8 +785,8 @@ PROVIDER_PUE: dict[str, float] = {
 PROVIDER_PUE_SOURCES: dict[str, str] = {
     "google": "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
     "vertexai": "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
-    "azure": "Microsoft Datacenters Sustainability 2024",
-    "openai": "Microsoft Datacenters Sustainability 2024 (Azure-backed)",
+    "azure": "Microsoft 2025 Environmental Sustainability Report (newest-gen PUE)",
+    "openai": "Microsoft 2025 Environmental Sustainability Report (Azure-backed)",
     "aws": "AWS 2025 Sustainability Report (global average PUE)",
     "anthropic": "AWS 2025 Sustainability Report (AWS-backed)",
     "bedrock": "AWS 2025 Sustainability Report",
@@ -791,8 +798,8 @@ PROVIDER_PUE_SOURCES: dict[str, str] = {
 PROVIDER_PUE_AS_OF: dict[str, str | None] = {
     "google": "2026-06-30",
     "vertexai": "2026-06-30",
-    "azure": "2024-01-01",
-    "openai": "2024-01-01",
+    "azure": "2025-05-29",
+    "openai": "2025-05-29",
     "aws": "2025-01-01",
     "anthropic": "2025-01-01",
     "bedrock": "2025-01-01",
