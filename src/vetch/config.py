@@ -102,8 +102,8 @@ def set_advisory_thresholds(overrides: dict[str, dict[str, float]]) -> None:
       ``max_output_token_cv`` (default 0.35), ``min_avg_output_tokens`` (default 10),
       ``max_retry_rate`` (default 0.05), ``max_tool_call_rate`` (default 0.10),
       ``max_truncation_rate`` (default 0.02), ``min_candidate_discount`` (default 0.50).
-    ``TOOL-DEAD-001``: ``min_requests`` (default 10),
-      ``min_offered_tools`` (default 1).
+    ``TOOL-DEAD-001``: ``min_requests`` (default 10, applies to
+      ``dead_tool_offer_request_count``), ``min_offered_tools`` (default 1).
     """
     global _advisory_thresholds
     _advisory_thresholds = {k: dict(v) for k, v in overrides.items()}

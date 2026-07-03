@@ -109,6 +109,7 @@ def test_cache_aware_wasted_cost_fully_cached() -> None:
     stats.update(event)
     summary = stats.summary()
     assert summary["function_tools_never_called"] == ["dead_tool"]
+    assert summary["wasted_tool_schema_tokens_per_request"] == 500
     assert summary["wasted_tool_schema_tokens"] == 500
     assert summary["wasted_tool_schema_cost_usd"] == 0.0
 
@@ -128,7 +129,8 @@ def test_cache_aware_wasted_cost_mixed() -> None:
             }
         )
     summary = stats.summary()
-    assert summary["wasted_tool_schema_tokens"] == 100
+    assert summary["wasted_tool_schema_tokens_per_request"] == 100
+    assert summary["wasted_tool_schema_tokens"] == 300
     assert summary["wasted_tool_schema_cost_usd"] > 0
 
 

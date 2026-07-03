@@ -777,6 +777,14 @@ class VetchContext:
                 model=model,
             )
 
+        from vetch.capabilities import sanitize_capability_capture_fields
+
+        tools_offered, tools_invoked, tool_schema_tokens = sanitize_capability_capture_fields(
+            tools_offered=tools_offered,
+            tools_invoked=tools_invoked,
+            tool_schema_tokens=tool_schema_tokens,
+        )
+
         # Build event
         self._event = InferenceEvent(
             schema_version=SCHEMA_VERSION,

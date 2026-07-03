@@ -112,6 +112,7 @@ def test_otel_attributes_are_semconv_arrays():
         "tools_invoked": [{"name": "a", "kind": "function"}],
         "tool_call_count": 1,
         "capabilities_invoked": [{"name": "image", "kind": "model"}],
+        "tool_schema_tokens": {"a": 10, "b": 20},
     }
     set_otel_capability_attributes(span, event)
     assert span.attrs["gen_ai.tool.definitions"] == ["a", "b"]
@@ -119,8 +120,21 @@ def test_otel_attributes_are_semconv_arrays():
     assert span.attrs["gen_ai.tool.call.count"] == 1
     assert span.attrs["vetch.capabilities_invoked"] == ["model:image"]
     assert span.attrs["vetch.tools_never_called"] == ["b"]
+    assert span.attrs["vetch.wasted_tool_schema_tokens"] == 20
     # arrays, not CSV strings
     assert isinstance(span.attrs["gen_ai.tool.definitions"], list)
+
+
+def test_otel_emits_wasted_tool_schema_tokens():
+    span = _FakeSpan()
+    event = {
+        "tools_offered": [{"name": "a", "kind": "function"}, {"name": "b", "kind": "function"}],
+        "tools_invoked": [{"name": "a", "kind": "function"}],
+        "tool_schema_tokens": {"a": 10, "b": 30},
+    }
+    set_otel_capability_attributes(span, event)
+    # only the never-called tool (b) counts toward wasted schema tokens
+    assert span.attrs["vetch.wasted_tool_schema_tokens"] == 30
 
 
 def test_transport_cap_truncates_and_warns_without_touching_source():

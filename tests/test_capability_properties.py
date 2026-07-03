@@ -206,6 +206,7 @@ def test_fully_cached_session_reports_zero_cost():
         )
     )
     s = stats.summary()
+    assert s["wasted_tool_schema_tokens_per_request"] == 500
     assert s["wasted_tool_schema_tokens"] == 500
     assert s["wasted_tool_schema_cost_usd"] == 0.0
     assert "wasted_tool_schema_cost_note" in s

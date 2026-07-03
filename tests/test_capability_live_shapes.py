@@ -13,6 +13,8 @@ import pytest
 
 from vetch.capabilities import (
     extract_anthropic_tools_invoked,
+    extract_genai_tools_invoked,
+    extract_openai_compat_tools_invoked,
     extract_openai_tools_invoked,
     reset_capability_state,
 )
@@ -84,4 +86,42 @@ def test_anthropic_real_message_shape():
     )
     refs, count = extract_anthropic_tools_invoked(msg)
     assert [r["name"] for r in refs] == ["lookup"]
+    assert count == 1
+
+
+def test_genai_real_response_shape():
+    pytest.importorskip("google.genai")
+    from google.genai import types as gt
+
+    resp = gt.GenerateContentResponse(
+        candidates=[
+            gt.Candidate(
+                content=gt.Content(
+                    parts=[gt.Part(function_call=gt.FunctionCall(name="fetch"))]
+                )
+            )
+        ]
+    )
+    refs, count = extract_genai_tools_invoked(resp)
+    assert [r["name"] for r in refs] == ["fetch"]
+    assert count == 1
+
+
+def test_ollama_real_response_shape():
+    pytest.importorskip("ollama")
+    from ollama._types import ChatResponse, Message
+
+    resp = ChatResponse(
+        model="llama3.1",
+        message=Message(
+            role="assistant",
+            tool_calls=[
+                Message.ToolCall(
+                    function=Message.ToolCall.Function(name="run", arguments={})
+                )
+            ],
+        ),
+    )
+    refs, count = extract_openai_compat_tools_invoked(resp)
+    assert [r["name"] for r in refs] == ["run"]
     assert count == 1

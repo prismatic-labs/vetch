@@ -175,12 +175,10 @@ inferred/Tier 3 by necessity.
 
 **Methodology:**
 - Curated from public provider documentation and model cards (OpenAI, Anthropic, Google, Meta, Mistral, etc.)
-- Prefix/family keys match the same resolution order as `energy.json` / pricing aliases
+- Keys are **prefix patterns**; `resolve_model_capability()` picks the **longest matching prefix**
 - Overrides at runtime via `vetch.set_model_capability_map()` for private or fine-tuned models
 
-**Refresh:** `python scripts/check_registry_freshness.py` in CI; bump `_comment` version when editing.
-
-**Confidence:** Medium for major hosted models; low for niche or rapidly renamed SKUs — treat silent Kind C as directional, not proof of missing features.
+**Confidence:** Medium for major hosted model families; unmapped SKUs remain false negatives (documented).
 
 ## References
 

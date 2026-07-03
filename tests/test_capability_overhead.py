@@ -40,9 +40,9 @@ def test_memoization_extracts_tokens_once_for_stable_object(monkeypatch):
     calls = {"n": 0}
     real = cap._estimate_tool_json_tokens
 
-    def counting(obj):
+    def counting(obj, *, provider="openai"):
         calls["n"] += 1
-        return real(obj)
+        return real(obj, provider=provider)
 
     monkeypatch.setattr("vetch.capabilities._estimate_tool_json_tokens", counting)
 

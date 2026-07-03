@@ -171,6 +171,7 @@ export interface VetchEvent {
 
   tools_offered: VetchCapabilityRef[] | null;
   tools_invoked: VetchCapabilityRef[] | null;
+  tool_schema_tokens: Record<string, number> | null;
   capabilities_invoked: VetchCapabilityRef[] | null;
 
   ai_sdk_operation: VetchOperation;

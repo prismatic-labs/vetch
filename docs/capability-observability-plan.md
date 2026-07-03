@@ -93,8 +93,9 @@ class CapabilityRef(TypedDict):
 | Field | Meaning |
 |-------|---------|
 | `function_tools_never_called` | Union(`tools_offered`) − union(`tools_invoked`) over the session |
-| `wasted_tool_schema_tokens` | Input-token footprint of the never-called function tools |
-| `wasted_tool_schema_cost_usd` | `wasted_tool_schema_tokens` × **cache-aware** session input rate (see [Cost formula](#cost-formula)) |
+| `wasted_tool_schema_tokens` | Session total footprint (`per_request` × `dead_tool_offer_request_count`) |
+| `wasted_tool_schema_tokens_per_request` | Per-request footprint of never-called tools |
+| `wasted_tool_schema_cost_usd` | Session headline cost (per-request × retransmit count) |
 | `declared_capabilities_silent` | `expected_capabilities` − union(`capabilities_invoked`) over the session |
 | `capability_invocation_counts` | `dict[str, int]` keyed by `"kind:name"` |
 
@@ -112,7 +113,10 @@ The session input rate must come from input cost net of cache reads, not blended
 effective_input_usd   = Σ( estimated_cost_input_usd − estimated_cost_cache_read_usd )
 billable_input_tokens = Σ( max(0, input_tokens − cache_read_tokens) )
 session_input_rate    = effective_input_usd / billable_input_tokens        # guard /0
-wasted_tool_schema_cost_usd = wasted_tool_schema_tokens × session_input_rate
+wasted_tool_schema_cost_per_request_usd = wasted_tool_schema_tokens_per_request × session_input_rate
+wasted_tool_schema_session_cost_usd     = per_request × dead_tool_offer_request_count
+wasted_tool_schema_cost_usd             = session headline (alias of session total)
+wasted_tool_schema_session_tokens       = wasted_tool_schema_tokens_per_request × dead_tool_offer_request_count
 ```
 
 **Prerequisite:** `SessionStats` does not accumulate input cost or cache reads today (`total_cost_usd` is full per-call cost). Add `total_effective_input_usd` and `total_billable_input_tokens` accumulators in `update()`. The rate derives from those, never from `total_cost_usd`.

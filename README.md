@@ -409,10 +409,13 @@ summary = vetch.get_session_stats().summary()
 print(summary["function_tools_never_called"])
 print(summary["wasted_tool_schema_cost_per_request_usd"])  # one transmission
 print(summary["wasted_tool_schema_session_cost_usd"])      # × requests with dead tools
-print(summary["declared_capabilities_silent"])
+print(summary["wasted_tool_schema_cost_usd"])              # session headline (same as session)
+print(summary["function_tools_never_called"])              # only when tools_invoked was known
 ```
 
-**Cost semantics:** `wasted_tool_schema_tokens` is the per-request footprint of never-called tools. `wasted_tool_schema_cost_per_request_usd` applies the session’s cache-aware input rate once. `wasted_tool_schema_session_cost_usd` (and `wasted_tool_schema_cost_usd`) multiply by `dead_tool_offer_request_count`. Fully cached sessions report `$0` with a note in `wasted_tool_schema_cost_note` and per-event `vetch_warnings`.
+**Cost semantics:** `wasted_tool_schema_tokens_per_request` is the per-request footprint of never-called tools. `wasted_tool_schema_tokens` (and `wasted_tool_schema_session_tokens`) multiply by `dead_tool_offer_request_count`. `wasted_tool_schema_cost_per_request_usd` applies the session’s cache-aware input rate once. `wasted_tool_schema_session_cost_usd` (and `wasted_tool_schema_cost_usd`) multiply cost the same way. `function_tools_never_called` only includes tools observed on requests where `tools_invoked` was known (not `None`). Fully cached sessions report `$0` with a note in `wasted_tool_schema_cost_note` and per-event `vetch_warnings`.
+
+**Limitations:** Kind C uses prefix matching against a small registry (high false-negative rate for unmapped models). JS SDK derives Kind C and redacts names when `VETCH_REDACTION_KEY` is set; session rollups remain Python-first. Manual `capture()` must pass `tools_invoked` (use `[]` when none fired) for trustworthy dead-tool math.
 
 **Audit:** `vetch audit --expected-capabilities model:image,model:embedding` runs CAP-001 over stored events. TOOL-DEAD-001 is included when events carry `tools_offered` / `tool_schema_tokens`.
 

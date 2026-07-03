@@ -11,7 +11,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PY_REGISTRY = REPO / "src" / "vetch" / "registry"
 TS_REGISTRY = REPO / "packages" / "vetch-ai-sdk" / "src" / "registry"
-FILES = ("energy.json", "pricing.json", "aliases.json", "wue.json")
+FILES = ("energy.json", "pricing.json", "aliases.json", "wue.json", "model_capabilities.json")
 SENSING = ("global_averages.json",)
 
 

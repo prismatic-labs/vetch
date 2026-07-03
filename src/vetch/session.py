@@ -122,6 +122,7 @@ class Session:
         emit: bool = True,
         max_calls: int = DEFAULT_MAX_CALLS,
         advisory_thresholds: dict[str, dict[str, float]] | None = None,
+        expected_capabilities: list[str] | None = None,
     ) -> None:
         """Initialize a session.
 
@@ -136,10 +137,13 @@ class Session:
             advisory_thresholds: Optional per-session advisory threshold
                 overrides. Use this to scope detectors by route, workflow, or
                 tenant without changing process-wide defaults.
+            expected_capabilities: Optional Kind C manifest for CAP-001 /
+                ``declared_capabilities_silent`` scoped to this session.
         """
         self.session_id = session_id or str(uuid.uuid4())
         self.parent_session_id = parent_session_id
         self.tags = dict(tags) if tags else None
+        self.expected_capabilities = list(expected_capabilities) if expected_capabilities else []
         self._emit = emit
         self._max_calls = max_calls
 
@@ -150,7 +154,10 @@ class Session:
             if advisory_thresholds
             else None
         )
-        self.stats = SessionStats(advisory_thresholds=self.advisory_thresholds)
+        self.stats = SessionStats(
+            advisory_thresholds=self.advisory_thresholds,
+            expected_capabilities=self.expected_capabilities or None,
+        )
 
         # v0.4.0: Stall circuit breaker state. Set by register_event when
         # STALL-001 fires; read by provider wrappers via _stall.apply_stall_action.

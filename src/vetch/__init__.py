@@ -97,6 +97,7 @@ __all__ = [
     "configure_capabilities",
     "set_expected_capabilities",
     "set_model_capability_map",
+    "rollup_capability_summary_from_events",
     "on_advisory",
 ]
 
@@ -831,4 +832,8 @@ def __getattr__(name: str) -> object:
         from vetch.stats import on_advisory
 
         return on_advisory
+    if name == "rollup_capability_summary_from_events":
+        from vetch.capabilities import rollup_capability_summary_from_events
+
+        return rollup_capability_summary_from_events
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

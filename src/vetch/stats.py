@@ -72,7 +72,10 @@ class SessionStats:
     total_billable_input_tokens: int = 0
 
     # Capability observability (v0.10.0)
+    expected_capabilities: list[str] | None = None
     function_tools_offered: set[str] = field(default_factory=set)
+    # Offered tools on events where tools_invoked was known (not None).
+    function_tools_offered_when_invocation_known: set[str] = field(default_factory=set)
     function_tools_invoked: set[str] = field(default_factory=set)
     capabilities_invoked: set[tuple[str, str]] = field(default_factory=set)
     capability_invocation_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
@@ -218,8 +221,6 @@ class SessionStats:
         return get_tag_cardinality_limit()
 
     def _accumulate_capability_fields(self, event: Mapping[str, Any]) -> None:
-        from vetch.capabilities import get_expected_capabilities
-
         limit = self._capability_cardinality_limit()
         warnings_needed = False
 
@@ -287,44 +288,59 @@ class SessionStats:
                 if name not in self.tool_schema_tokens and isinstance(tokens, int):
                     self.tool_schema_tokens[name] = tokens
 
-        if isinstance(offered, list) and offered:
-            offered_names = {
-                ref.get("name")
-                for ref in offered
-                if isinstance(ref, dict) and isinstance(ref.get("name"), str) and ref["name"]
-            }
-            invoked_names = {
-                ref.get("name")
-                for ref in (invoked if isinstance(invoked, list) else [])
-                if isinstance(ref, dict) and isinstance(ref.get("name"), str) and ref["name"]
-            }
+        # Only attribute a dead-tool retransmit when we actually know what was
+        # invoked. If tools_invoked is unknown (None — e.g. a manual capture()
+        # that passed offered tools but not invoked), we cannot tell which
+        # offered tools went uncalled, so skip rather than count them all as
+        # dead (which would overstate wasted-schema cost on partial captures).
+        if isinstance(offered, list) and offered and isinstance(invoked, list):
+            offered_names: set[str] = set()
+            for ref in offered:
+                if not isinstance(ref, dict):
+                    continue
+                name = ref.get("name")
+                if isinstance(name, str) and name:
+                    offered_names.add(name)
+            self.function_tools_offered_when_invocation_known.update(offered_names)
+            invoked_names: set[str] = set()
+            for ref in invoked:
+                if not isinstance(ref, dict):
+                    continue
+                name = ref.get("name")
+                if isinstance(name, str) and name:
+                    invoked_names.add(name)
             if offered_names - invoked_names:
                 self.dead_tool_offer_requests += 1
 
         if warnings_needed and not getattr(self, "_capability_bound_warned", False):
             object.__setattr__(self, "_capability_bound_warned", True)
 
-        _ = get_expected_capabilities()
-
     def _capability_summary(self) -> dict[str, Any]:
         from vetch.capabilities import get_expected_capabilities
 
-        never_called = sorted(self.function_tools_offered - self.function_tools_invoked)
-        wasted_tokens = sum(
+        never_called = sorted(
+            self.function_tools_offered_when_invocation_known - self.function_tools_invoked
+        )
+        wasted_tokens_per_request = sum(
             self.tool_schema_tokens.get(name, 0) for name in never_called
         )
         if self.total_billable_input_tokens > 0:
             session_input_rate = (
                 self.total_effective_input_usd / self.total_billable_input_tokens
             )
-            wasted_cost_per_request = wasted_tokens * session_input_rate
+            wasted_cost_per_request = wasted_tokens_per_request * session_input_rate
         else:
             wasted_cost_per_request = 0.0
 
         retransmit_count = self.dead_tool_offer_requests
         wasted_cost_session = wasted_cost_per_request * retransmit_count
+        wasted_tokens_session = wasted_tokens_per_request * retransmit_count
 
-        expected = get_expected_capabilities()
+        expected = (
+            list(self.expected_capabilities)
+            if self.expected_capabilities is not None
+            else get_expected_capabilities()
+        )
         invoked_keys = {f"{k}:{n}" for k, n in self.capabilities_invoked}
         declared_silent = sorted(
             cap for cap in expected if cap not in invoked_keys
@@ -336,7 +352,9 @@ class SessionStats:
 
         result: dict[str, Any] = {
             "function_tools_never_called": never_called,
-            "wasted_tool_schema_tokens": wasted_tokens,
+            "wasted_tool_schema_tokens_per_request": wasted_tokens_per_request,
+            "wasted_tool_schema_tokens": wasted_tokens_session,
+            "wasted_tool_schema_session_tokens": wasted_tokens_session,
             "wasted_tool_schema_cost_per_request_usd": round(wasted_cost_per_request, 6),
             "wasted_tool_schema_session_cost_usd": round(wasted_cost_session, 6),
             "wasted_tool_schema_cost_usd": round(wasted_cost_session, 6),
@@ -345,7 +363,7 @@ class SessionStats:
             "capability_invocation_counts": dict(self.capability_invocation_counts),
             "tool_call_event_rate": round(tool_call_event_rate, 4),
         }
-        if self.total_billable_input_tokens == 0 and wasted_tokens > 0:
+        if self.total_billable_input_tokens == 0 and wasted_tokens_per_request > 0:
             result["wasted_tool_schema_cost_note"] = (
                 "fully_cached_session: billable_input_tokens=0, session cost reported as $0"
             )

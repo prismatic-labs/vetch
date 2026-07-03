@@ -9,6 +9,7 @@ import logging
 import os
 import secrets
 import threading
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,10 @@ _generated_redaction_key: bytes | None = None
 _redaction_key_warning_shown = False
 
 _offered_memo_lock = threading.Lock()
-_offered_memo: dict[str, tuple[list[CapabilityRef] | None, dict[str, int] | None]] = {}
+_offered_memo: OrderedDict[str, tuple[list[CapabilityRef] | None, dict[str, int] | None]] = (
+    OrderedDict()
+)
+_OFFERED_MEMO_MAX = 256
 
 REGISTRY_DIR = Path(__file__).resolve().parent / "registry"
 _MODEL_CAPABILITIES_FILE = "model_capabilities.json"
@@ -94,6 +98,50 @@ def redact_capability_refs(refs: list[CapabilityRef] | None) -> list[CapabilityR
     ]
 
 
+def redact_tool_schema_tokens(tokens: dict[str, int] | None) -> dict[str, int] | None:
+    if not tokens:
+        return tokens
+    return {redact_capability_name(name): value for name, value in tokens.items()}
+
+
+def sanitize_capability_capture_fields(
+    *,
+    tools_offered: list[CapabilityRef] | None = None,
+    tools_invoked: list[CapabilityRef] | None = None,
+    tool_schema_tokens: dict[str, int] | None = None,
+) -> tuple[
+    list[CapabilityRef] | None,
+    list[CapabilityRef] | None,
+    dict[str, int] | None,
+]:
+    """Apply redaction to capability fields (manual capture + emit safety net)."""
+    return (
+        redact_capability_refs(tools_offered),
+        redact_capability_refs(tools_invoked),
+        redact_tool_schema_tokens(tool_schema_tokens),
+    )
+
+
+def _offered_memo_get(key: str) -> tuple[list[CapabilityRef] | None, dict[str, int] | None] | None:
+    with _offered_memo_lock:
+        if key not in _offered_memo:
+            return None
+        _offered_memo.move_to_end(key)
+        return _offered_memo[key]
+
+
+def _offered_memo_put(
+    key: str,
+    value: tuple[list[CapabilityRef] | None, dict[str, int] | None],
+) -> None:
+    with _offered_memo_lock:
+        if key in _offered_memo:
+            _offered_memo.move_to_end(key)
+        _offered_memo[key] = value
+        while len(_offered_memo) > _OFFERED_MEMO_MAX:
+            _offered_memo.popitem(last=False)
+
+
 def normalize_function_tools(names: Iterable[str]) -> list[CapabilityRef]:
     """De-dupe, stable-sort, and wrap names as function capability refs."""
     unique = sorted({redact_capability_name(n) for n in names if n})
@@ -114,14 +162,18 @@ def _serialize_tools_for_hash(tools: Any) -> str:
         return repr(tools)
 
 
-def _estimate_tool_json_tokens(tool_obj: Any) -> int:
+def _estimate_tool_json_tokens(tool_obj: Any, *, provider: str = "openai") -> int:
     try:
+        payload = json.dumps(tool_obj, default=str)
+        provider_key = provider.lower()
+        if provider_key in ("anthropic", "google_genai", "vertexai", "ollama"):
+            return max(1, len(payload) // 4)
         from vetch.calculation import _get_tiktoken_encoding
 
         enc = _get_tiktoken_encoding("gpt-4o")
-        payload = json.dumps(tool_obj, default=str)
         if enc is not None:
             return len(enc.encode(payload))
+        return max(1, len(payload) // 4)
     except Exception:
         pass
     try:
@@ -133,6 +185,8 @@ def _estimate_tool_json_tokens(tool_obj: Any) -> int:
 
 def extract_openai_tools_offered(
     kwargs: Mapping[str, Any],
+    *,
+    provider: str = "openai",
 ) -> tuple[list[CapabilityRef] | None, dict[str, int] | None]:
     """Extract offered function tools and per-tool schema token sizes."""
     tools = kwargs.get("tools")
@@ -142,10 +196,9 @@ def extract_openai_tools_offered(
         return None, None
 
     memo_key = _memo_key_for_tools(tools)
-    with _offered_memo_lock:
-        cached = _offered_memo.get(memo_key)
-        if cached is not None:
-            return cached
+    cached = _offered_memo_get(memo_key)
+    if cached is not None:
+        return cached
 
     try:
         names: list[str] = []
@@ -173,17 +226,16 @@ def extract_openai_tools_offered(
             if name:
                 redacted = redact_capability_name(name)
                 names.append(redacted)
-                token_sizes[redacted] = _estimate_tool_json_tokens(entry)
+                token_sizes[redacted] = _estimate_tool_json_tokens(entry, provider=provider)
 
         refs = normalize_function_tools(names) if names else []
         result: tuple[list[CapabilityRef] | None, dict[str, int] | None] = (
             refs if refs else [],
             token_sizes if token_sizes else {},
         )
-        with _offered_memo_lock:
-            _offered_memo[memo_key] = result
-            payload_key = hashlib.sha256(_serialize_tools_for_hash(tools).encode()).hexdigest()[:16]
-            _offered_memo[payload_key] = result
+        _offered_memo_put(memo_key, result)
+        payload_key = hashlib.sha256(_serialize_tools_for_hash(tools).encode()).hexdigest()[:16]
+        _offered_memo_put(payload_key, result)
         return result
     except Exception:
         logger.debug("extract_openai_tools_offered failed", exc_info=True)
@@ -229,10 +281,9 @@ def extract_anthropic_tools_offered(
         return None, None
 
     memo_key = _memo_key_for_tools(tools)
-    with _offered_memo_lock:
-        cached = _offered_memo.get(memo_key)
-        if cached is not None:
-            return cached
+    cached = _offered_memo_get(memo_key)
+    if cached is not None:
+        return cached
 
     try:
         names: list[str] = []
@@ -250,12 +301,11 @@ def extract_anthropic_tools_offered(
             if name:
                 redacted = redact_capability_name(name)
                 names.append(redacted)
-                token_sizes[redacted] = _estimate_tool_json_tokens(entry)
+                token_sizes[redacted] = _estimate_tool_json_tokens(entry, provider="anthropic")
 
         refs = normalize_function_tools(names) if names else []
         result = (refs if refs else [], token_sizes if token_sizes else {})
-        with _offered_memo_lock:
-            _offered_memo[memo_key] = result
+        _offered_memo_put(memo_key, result)
         return result
     except Exception:
         logger.debug("extract_anthropic_tools_offered failed", exc_info=True)
@@ -312,7 +362,9 @@ def extract_genai_tools_offered(
                 if isinstance(raw, str) and raw:
                     redacted = redact_capability_name(raw)
                     names.append(redacted)
-                    token_sizes[redacted] = _estimate_tool_json_tokens(decl)
+                    token_sizes[redacted] = _estimate_tool_json_tokens(
+                        decl, provider="google_genai"
+                    )
         refs = normalize_function_tools(names) if names else []
         return (refs if refs else [], token_sizes if token_sizes else {})
     except Exception:
@@ -353,9 +405,11 @@ def extract_genai_tools_invoked(
 
 def extract_openai_compat_tools_offered(
     kwargs: Mapping[str, Any],
+    *,
+    provider: str = "openai",
 ) -> tuple[list[CapabilityRef] | None, dict[str, int] | None]:
     """Ollama and other OpenAI-compatible chat APIs."""
-    return extract_openai_tools_offered(kwargs)
+    return extract_openai_tools_offered(kwargs, provider=provider)
 
 
 def extract_openai_compat_tools_invoked(
@@ -392,7 +446,7 @@ def stage_request_tools(provider: str, kwargs: Mapping[str, Any]) -> None:
 
     offered: tuple[list[CapabilityRef] | None, dict[str, int] | None]
     if provider in ("openai", "azure_openai", "openai-compatible", "ollama"):
-        offered = extract_openai_compat_tools_offered(kwargs)
+        offered = extract_openai_compat_tools_offered(kwargs, provider=provider)
     elif provider == "anthropic":
         offered = extract_anthropic_tools_offered(kwargs)
     elif provider in ("google_genai", "vertexai"):
@@ -520,12 +574,35 @@ def get_merged_model_capability_map() -> dict[str, str]:
     return merged
 
 
+def resolve_model_capability(model: str) -> str | None:
+    """Longest-prefix match against the merged model capability map."""
+    if not model:
+        return None
+    cap_map = get_merged_model_capability_map()
+    if model in cap_map:
+        return cap_map[model]
+    model_lower = model.lower()
+    best_prefix = ""
+    best_cap: str | None = None
+    for prefix, capability in cap_map.items():
+        prefix_lower = prefix.lower()
+        if model_lower.startswith(prefix_lower) and len(prefix_lower) > len(best_prefix):
+            best_prefix = prefix_lower
+            best_cap = capability
+    return best_cap
+
+
 def set_expected_capabilities(capabilities: list[str]) -> None:
     global _expected_capabilities
     _expected_capabilities = list(capabilities)
 
 
 def get_expected_capabilities() -> list[str]:
+    from vetch.session import get_active_session
+
+    session = get_active_session()
+    if session is not None and session.expected_capabilities:
+        return list(session.expected_capabilities)
     return list(_expected_capabilities)
 
 
@@ -568,9 +645,9 @@ def derive_capabilities_invoked(
             if tokens > 0:
                 refs.append({"name": name, "kind": "model"})
 
-    cap_map = get_merged_model_capability_map()
-    if model and model in cap_map:
-        refs.append({"name": cap_map[model], "kind": "model"})
+    cap = resolve_model_capability(model)
+    if cap:
+        refs.append({"name": cap, "kind": "model"})
 
     if not refs:
         return None
@@ -721,7 +798,9 @@ def rollup_capability_summary_from_events(
     summary = stats.summary()
     keys = (
         "function_tools_never_called",
+        "wasted_tool_schema_tokens_per_request",
         "wasted_tool_schema_tokens",
+        "wasted_tool_schema_session_tokens",
         "wasted_tool_schema_cost_per_request_usd",
         "wasted_tool_schema_session_cost_usd",
         "wasted_tool_schema_cost_usd",
@@ -737,7 +816,7 @@ def rollup_capability_summary_from_events(
 
 def reset_capability_state() -> None:
     """Test-only reset."""
-    global _expected_capabilities, _model_capability_overrides, _offered_memo
+    global _expected_capabilities, _model_capability_overrides
     with _offered_memo_lock:
         _offered_memo.clear()
     _expected_capabilities = []

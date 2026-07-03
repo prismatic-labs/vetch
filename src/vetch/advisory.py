@@ -1008,7 +1008,7 @@ def generate_advisories(stats: SessionStats) -> list[Advisory]:
     min_requests = int(_threshold(stats, "TOOL-DEAD-001", "min_requests", 10))
     min_offered = int(_threshold(stats, "TOOL-DEAD-001", "min_offered_tools", 1))
     if (
-        stats.total_requests >= min_requests
+        retransmit_count >= min_requests
         and len(never_called) >= min_offered
         and wasted_cost > 0
     ):
@@ -1025,7 +1025,7 @@ def generate_advisories(stats: SessionStats) -> list[Advisory]:
                 "directional estimate)."
             ),
             potential_savings_usd=wasted_cost,
-            request_count=stats.total_requests,
+            request_count=retransmit_count,
         ))
 
     return advisories

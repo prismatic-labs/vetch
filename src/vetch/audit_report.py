@@ -121,10 +121,6 @@ def build_audit_report(
     expected_capabilities: Sequence[str] | None = None,
 ) -> AuditReport:
     """Build an audit report from locally stored events."""
-    if expected_capabilities is not None:
-        from vetch.capabilities import set_expected_capabilities
-
-        set_expected_capabilities(list(expected_capabilities))
     events = query_events(start=start, end=end, model=model, tags=tags)
     aggregate_summary = query_daily_usage(
         start=start,
@@ -159,7 +155,9 @@ def build_audit_report(
         if use_aggregates
         else _build_breakdowns(events, tag_keys)
     )
-    findings = _build_findings(events, window_days, tag_keys)
+    findings = _build_findings(
+        events, window_days, tag_keys, expected_capabilities=expected_capabilities
+    )
 
     stall_findings = [finding for finding in findings if finding.code == "STALL-001"]
     session_stall_findings = [
@@ -241,6 +239,7 @@ def _build_findings(
     events: list[dict[str, Any]],
     window_days: float,
     tag_keys: tuple[str, ...],
+    expected_capabilities: Sequence[str] | None = None,
 ) -> list[AuditFinding]:
     scope_stats: dict[str, SessionStats] = {"all": SessionStats()}
     scope_counts: dict[str, int] = {"all": 0}
@@ -274,7 +273,9 @@ def _build_findings(
             findings.append(_finding_from_advisory(advisory, stats, scope, window_days))
 
     findings.extend(_build_premium_findings(events))
-    findings.extend(_build_cap_findings(events, window_days))
+    findings.extend(
+        _build_cap_findings(events, window_days, expected_capabilities=expected_capabilities)
+    )
 
     findings.sort(
         key=lambda f: (
@@ -314,11 +315,15 @@ def _build_findings(
 def _build_cap_findings(
     events: list[dict[str, Any]],
     window_days: float,
+    expected_capabilities: Sequence[str] | None = None,
 ) -> list[AuditFinding]:
     """Windowed CAP-001: declared capabilities silent across stored events."""
-    from vetch.capabilities import get_expected_capabilities
+    if expected_capabilities is not None:
+        expected = list(expected_capabilities)
+    else:
+        from vetch.capabilities import get_expected_capabilities
 
-    expected = get_expected_capabilities()
+        expected = get_expected_capabilities()
     if not expected or not events:
         return []
 

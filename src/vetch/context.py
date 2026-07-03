@@ -158,6 +158,13 @@ class TrackingContext:
             finish_reason: Provider finish status when exposed.
             requested_max_tokens: Output-token cap requested by the caller.
         """
+        from vetch.capabilities import sanitize_capability_capture_fields
+
+        tools_offered, tools_invoked, tool_schema_tokens = sanitize_capability_capture_fields(
+            tools_offered=tools_offered,
+            tools_invoked=tools_invoked,
+            tool_schema_tokens=tool_schema_tokens,
+        )
         self.captured_call = CapturedCall(
             model=model,
             provider=provider,

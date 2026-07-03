@@ -12,6 +12,11 @@ import type {
   VetchUsage,
 } from "./types.js";
 import { enrichVetchEvent, resolveModelMatch } from "./calculation.js";
+import {
+  deriveCapabilitiesInvoked,
+  extractToolsInvoked,
+  extractToolsOfferedWithSizes,
+} from "./capabilities.js";
 import { readEnvBudgets } from "./env.js";
 import { resolveProviderLabel } from "./provider-label.js";
 import { VETCH_VERSION } from "./version.js";
@@ -62,6 +67,11 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
     resolveAttribution(args.options.attribution),
     requestMetadata.attribution,
   );
+  const toolsOfferedPayload = extractToolsOfferedWithSizes(args.params);
+  const toolsInvoked = extractToolsInvoked(args.result, args.streamObservation);
+  const usageForCaps = textUsage ?
+    createUsage(rawUsage, textUsage, countImagesInParams(args.params)) :
+    null;
 
   const event: VetchEvent = {
     schema_version: "2",
@@ -75,9 +85,7 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
     model_match: modelMatch.precision,
     multimodal: hasMultimodalInputs(args.params),
 
-    usage: textUsage ?
-      createUsage(rawUsage, textUsage, countImagesInParams(args.params)) :
-      null,
+    usage: usageForCaps,
     accumulated_chars: args.operation === "stream" ? visibleOutputChars : null,
 
     estimated_energy_wh: null,
@@ -147,9 +155,14 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
     parent_span_id: attribution.parentSpanId ?? null,
     request_fingerprint: attribution.requestFingerprint ?? null,
 
-    tools_offered: extractToolsOffered(args.params),
-    tools_invoked: extractToolsInvoked(args.result, args.streamObservation),
-    capabilities_invoked: null,
+    tools_offered: toolsOfferedPayload.refs,
+    tools_invoked: toolsInvoked,
+    tool_schema_tokens: toolsOfferedPayload.schemaTokens,
+    capabilities_invoked: deriveCapabilitiesInvoked({
+      usage: usageForCaps,
+      model: modelInfo.model,
+      isEmbedding: false,
+    }),
 
     ai_sdk_operation: args.operation,
     ...(rawFinishReason !== undefined ? { raw_finish_reason: rawFinishReason } : {}),
@@ -664,67 +677,7 @@ function countToolParts(result: unknown, type: "tool-call" | "tool-result"): num
   return countArrayLike(getObjectValue(result, legacyKey));
 }
 
-export function extractToolsOffered(params: unknown): import("./types.js").VetchCapabilityRef[] | null {
-  const tools = getObjectValue(params, "tools");
-  if (!Array.isArray(tools) || tools.length === 0) {
-    return null;
-  }
-  const names = new Set<string>();
-  for (const tool of tools) {
-    const obj = asRecord(tool);
-    const fn = obj ? asRecord(obj.function) : null;
-    const name =
-      (typeof obj?.name === "string" ? obj.name : undefined) ??
-      (typeof fn?.name === "string" ? fn.name : undefined);
-    if (name) {
-      names.add(name);
-    }
-  }
-  if (names.size === 0) {
-    return null;
-  }
-  return [...names].sort().map((name) => ({ name, kind: "function" as const }));
-}
-
-export function extractToolsInvoked(
-  result: unknown,
-  streamObservation?: VetchStreamObservation,
-): import("./types.js").VetchCapabilityRef[] | null {
-  if (streamObservation?.toolNamesInvoked?.length) {
-    const names = [...new Set(streamObservation.toolNamesInvoked)].sort();
-    return names.map((name) => ({ name, kind: "function" as const }));
-  }
-  if (result === undefined) {
-    return null;
-  }
-  const content = getObjectValue(result, "content");
-  const names = new Set<string>();
-  if (Array.isArray(content)) {
-    for (const part of content) {
-      const obj = asRecord(part);
-      if (obj?.type === "tool-call" && typeof obj.toolName === "string") {
-        names.add(obj.toolName);
-      }
-    }
-  }
-  const legacyCalls = getObjectValue(result, "toolCalls");
-  if (Array.isArray(legacyCalls)) {
-    for (const call of legacyCalls) {
-      const obj = asRecord(call);
-      const fn = obj ? asRecord(obj.function) : null;
-      const name =
-        (typeof obj?.toolName === "string" ? obj.toolName : undefined) ??
-        (typeof fn?.name === "string" ? fn.name : undefined);
-      if (name) {
-        names.add(name);
-      }
-    }
-  }
-  if (names.size === 0) {
-    return null;
-  }
-  return [...names].sort().map((name) => ({ name, kind: "function" as const }));
-}
+export { extractToolsInvoked, extractToolsOfferedWithSizes as extractToolsOffered } from "./capabilities.js";
 
 function countTextishChars(value: unknown, depth = 0): number {
   if (depth > 20) {

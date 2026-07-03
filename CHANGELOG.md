@@ -87,8 +87,13 @@ schema cost, Kind C model routes via registry map, TOOL-DEAD-001 / CAP-001.
 - CLI: `vetch audit --expected-capabilities` for CAP-001 manifest.
 - `rollup_capability_summary_from_events()` for stored-event rollups.
 - Per-event `vetch_warnings` when dead tools ride on fully cached requests.
-- JS SDK: stream `tools_invoked` via `toolNamesInvoked`; exports
-  `extractToolsOffered` / `extractToolsInvoked`.
+- JS SDK: stream `tools_invoked` via `toolNamesInvoked`; Kind C derivation +
+  `tool_schema_tokens`; exports `extractToolsOffered` / `extractToolsInvoked`;
+  `redactCapabilityName` when `VETCH_REDACTION_KEY` is set.
+- `Session(expected_capabilities=[...])` scopes CAP-001 / declared-route silence.
+- `function_tools_never_called` excludes events where `tools_invoked` was unknown.
+- `wasted_tool_schema_session_tokens` aligns token headline with session cost math.
+- `_offered_memo` bounded (LRU 256); audit CAP-001 no longer mutates global manifest.
 
 ## [0.9.0] - 2026-06-23
 

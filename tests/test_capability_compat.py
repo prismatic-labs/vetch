@@ -88,7 +88,9 @@ def test_summary_snapshot_is_stable():
 
     s = stats.summary()
     assert s["function_tools_never_called"] == ["lookup", "refund"]
-    assert s["wasted_tool_schema_tokens"] == 110  # 60 + 50
+    assert s["wasted_tool_schema_tokens_per_request"] == 110  # 60 + 50
+    assert s["wasted_tool_schema_tokens"] == 110 * 10
+    assert s["wasted_tool_schema_session_tokens"] == 110 * 10
     # rate = total_effective_input (10 * 0.01) / total_billable (10 * 1000) = 1e-6/tok
     # per-request = 110 * 1e-6 = 0.00011; session = 0.00011 * 10 requests
     assert s["wasted_tool_schema_cost_per_request_usd"] == round(110 * (0.10 / 10000), 6)
@@ -163,5 +165,44 @@ def test_rollup_capability_summary_from_stored_events():
     rollup = rollup_capability_summary_from_events(events)
     assert rollup["function_tools_never_called"] == ["b"]
     assert rollup["dead_tool_offer_request_count"] == 4
-    assert rollup["wasted_tool_schema_tokens"] == 30
+    assert rollup["wasted_tool_schema_tokens"] == 30 * 4
     assert rollup["wasted_tool_schema_cost_usd"] == rollup["wasted_tool_schema_session_cost_usd"]
+
+
+def test_dead_tool_retransmit_skipped_when_invoked_unknown():
+    """tools_offered with tools_invoked=None (unknown) must not attribute retransmit cost."""
+    stats = SessionStats()
+    for _ in range(5):
+        stats.update(
+            {
+                "usage": {"text": {"input_tokens": 1000, "output_tokens": 0}},
+                "estimated_cost_input_usd": 0.02,
+                "cache_read_tokens": 0,
+                "model": "gpt-4o",
+                "tools_offered": [
+                    {"name": "a", "kind": "function"},
+                    {"name": "b", "kind": "function"},
+                ],
+                # tools_invoked intentionally omitted -> unknown
+                "tool_schema_tokens": {"a": 20, "b": 30},
+            }
+        )
+    s = stats.summary()
+    assert s["dead_tool_offer_request_count"] == 0
+    assert s["wasted_tool_schema_cost_usd"] == 0.0  # no cost attributed when invoked unknown
+    assert s["function_tools_never_called"] == []
+
+    # Regression: a known-empty tools_invoked is a genuine dead offer and still counts.
+    stats2 = SessionStats()
+    stats2.update(
+        {
+            "usage": {"text": {"input_tokens": 1000, "output_tokens": 0}},
+            "estimated_cost_input_usd": 0.02,
+            "cache_read_tokens": 0,
+            "model": "gpt-4o",
+            "tools_offered": [{"name": "a", "kind": "function"}],
+            "tools_invoked": [],
+            "tool_schema_tokens": {"a": 20},
+        }
+    )
+    assert stats2.summary()["dead_tool_offer_request_count"] == 1
