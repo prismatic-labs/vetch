@@ -21,30 +21,29 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
-if TYPE_CHECKING:
-    from langchain.schema import LLMResult  # type: ignore[import-not-found]
+from vetch.integrations._langchain_base import (
+    BaseCallbackHandlerFallback,
+    resolve_callback_handler_base,
+)
 
 logger = logging.getLogger(__name__)
 
-# Subclass the real LangChain base so the handler inherits ``ignore_chat_model``,
-# ``raise_error``, and the default ``on_chat_model_start`` dispatch. Guarded so
-# the module still imports when LangChain is absent.
-try:
-    from langchain_core.callbacks.base import BaseCallbackHandler
-except ImportError:
-    try:
-        from langchain.callbacks.base import (  # type: ignore[import-not-found,no-redef]
-            BaseCallbackHandler,
-        )
-    except ImportError:
-
-        class BaseCallbackHandler:  # type: ignore[no-redef]
-            """Fallback when LangChain is not installed."""
+if TYPE_CHECKING:
+    _CallbackHandlerBase = BaseCallbackHandlerFallback
+else:
+    _CallbackHandlerBase = resolve_callback_handler_base()
 
 
-class VetchCallbackHandler(BaseCallbackHandler):
+class _LLMResultLike(Protocol):
+    """Subset of LangChain ``LLMResult`` used by :class:`VetchCallbackHandler`."""
+
+    llm_output: dict[str, Any] | None
+    generations: list[list[Any]]
+
+
+class VetchCallbackHandler(_CallbackHandlerBase):
     """LangChain callback handler for Vetch energy/carbon tracking.
 
     Integrates with LangChain's callback system to automatically track
@@ -125,7 +124,7 @@ class VetchCallbackHandler(BaseCallbackHandler):
             return 0
 
     def _extract_usage_and_model(
-        self, response: LLMResult
+        self, response: _LLMResultLike
     ) -> tuple[int, int, int, str | None] | None:
         """Return (input_tokens, output_tokens, total_tokens, model) or None.
 
@@ -167,7 +166,7 @@ class VetchCallbackHandler(BaseCallbackHandler):
 
     def on_llm_end(
         self,
-        response: LLMResult,
+        response: _LLMResultLike,
         **kwargs: Any,
     ) -> None:
         """Called when LLM finishes running.
