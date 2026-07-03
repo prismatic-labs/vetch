@@ -762,15 +762,15 @@ DEFAULT_PUE = 1.2
 # Sources:
 #   Google: Google 2026 Environmental Report, FY2025 (fleet-wide 1.09)
 #   Azure: https://datacenters.microsoft.com/sustainability/efficiency/ (2024: 1.12)
-#   AWS: https://aws.amazon.com/sustainability/data-centers/ (2024: 1.15)
+#   AWS: https://aws.amazon.com/sustainability/data-centers/ (2025 report: 1.14)
 PROVIDER_PUE: dict[str, float] = {
     "google": 1.09,      # Google fleet-wide (2026 report, FY2025)
     "vertexai": 1.09,    # Vertex AI runs on Google Cloud
     "azure": 1.12,       # Microsoft Azure (2024 newest gen)
     "openai": 1.12,      # OpenAI primarily uses Azure
-    "aws": 1.15,         # AWS (2024 global average)
-    "anthropic": 1.15,   # Anthropic uses AWS
-    "bedrock": 1.15,     # AWS Bedrock
+    "aws": 1.14,         # AWS global average (2025 report)
+    "anthropic": 1.14,   # Anthropic uses AWS
+    "bedrock": 1.14,     # AWS Bedrock
     "deepseek": 1.27,    # DeepSeek own servers (Jegham et al.)
 }
 
@@ -780,9 +780,9 @@ PROVIDER_PUE_SOURCES: dict[str, str] = {
     "vertexai": "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
     "azure": "Microsoft Datacenters Sustainability 2024",
     "openai": "Microsoft Datacenters Sustainability 2024 (Azure-backed)",
-    "aws": "AWS Sustainability Report 2024",
-    "anthropic": "AWS Sustainability Report 2024 (AWS-backed)",
-    "bedrock": "AWS Sustainability Report 2024",
+    "aws": "AWS 2025 Sustainability Report (global average PUE)",
+    "anthropic": "AWS 2025 Sustainability Report (AWS-backed)",
+    "bedrock": "AWS 2025 Sustainability Report",
     "deepseek": "Jegham et al. (2025) DeepSeek datacenter PUE",
 }
 
@@ -793,9 +793,9 @@ PROVIDER_PUE_AS_OF: dict[str, str | None] = {
     "vertexai": "2026-06-30",
     "azure": "2024-01-01",
     "openai": "2024-01-01",
-    "aws": "2024-01-01",
-    "anthropic": "2024-01-01",
-    "bedrock": "2024-01-01",
+    "aws": "2025-01-01",
+    "anthropic": "2025-01-01",
+    "bedrock": "2025-01-01",
     "deepseek": "2025-01-01",
 }
 
