@@ -752,20 +752,20 @@ def calculate_energy(
 
 
 # Default PUE (Power Usage Effectiveness) for data centers
-# Hyperscaler average: ~1.10-1.15 (Google, Azure, AWS sustainability reports)
-# Global industry average is ~1.58 (Uptime Institute 2023), but LLM inference
+# Hyperscaler average: ~1.09-1.15 (Google, Azure, AWS sustainability reports)
+# Global industry average is ~1.54 (Uptime Institute 2025), but LLM inference
 # runs in hyperscaler DCs, not enterprise on-prem. 1.2 is a conservative
 # default for "probably a hyperscaler we don't recognize."
 DEFAULT_PUE = 1.2
 
 # Provider-specific PUE values from official sustainability reports (Tier 1 data)
 # Sources:
-#   Google: https://datacenters.google/efficiency/ (2023: 1.10)
+#   Google: Google 2026 Environmental Report, FY2025 (fleet-wide 1.09)
 #   Azure: https://datacenters.microsoft.com/sustainability/efficiency/ (2024: 1.12)
 #   AWS: https://aws.amazon.com/sustainability/data-centers/ (2024: 1.15)
 PROVIDER_PUE: dict[str, float] = {
-    "google": 1.10,      # Google Cloud (2023 average)
-    "vertexai": 1.10,    # Vertex AI runs on Google Cloud
+    "google": 1.09,      # Google fleet-wide (2026 report, FY2025)
+    "vertexai": 1.09,    # Vertex AI runs on Google Cloud
     "azure": 1.12,       # Microsoft Azure (2024 newest gen)
     "openai": 1.12,      # OpenAI primarily uses Azure
     "aws": 1.15,         # AWS (2024 global average)
@@ -776,14 +776,27 @@ PROVIDER_PUE: dict[str, float] = {
 
 # Documentation sources for transparency
 PROVIDER_PUE_SOURCES: dict[str, str] = {
-    "google": "Google Data Centers Efficiency Report 2023",
-    "vertexai": "Google Data Centers Efficiency Report 2023",
+    "google": "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
+    "vertexai": "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
     "azure": "Microsoft Datacenters Sustainability 2024",
     "openai": "Microsoft Datacenters Sustainability 2024 (Azure-backed)",
     "aws": "AWS Sustainability Report 2024",
     "anthropic": "AWS Sustainability Report 2024 (AWS-backed)",
     "bedrock": "AWS Sustainability Report 2024",
     "deepseek": "Jegham et al. (2025) DeepSeek datacenter PUE",
+}
+
+# Publication/measurement date (ISO) for each provider's PUE figure. Mirrors
+# PROVIDER_PUE_SOURCES; consumed by the staleness advisory. None = unknown.
+PROVIDER_PUE_AS_OF: dict[str, str | None] = {
+    "google": "2026-06-30",
+    "vertexai": "2026-06-30",
+    "azure": "2024-01-01",
+    "openai": "2024-01-01",
+    "aws": "2024-01-01",
+    "anthropic": "2024-01-01",
+    "bedrock": "2024-01-01",
+    "deepseek": "2025-01-01",
 }
 
 
