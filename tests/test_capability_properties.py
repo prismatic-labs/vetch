@@ -279,7 +279,10 @@ def test_offered_extractor_never_raises_on_junk(tools):
 )
 @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_redaction_leaves_no_plaintext_name(names, monkeypatch):
+    from vetch.capabilities import configure_capabilities
+
     monkeypatch.setenv("VETCH_REDACTION_KEY", "prop-test-key")
+    configure_capabilities(redact_names=True)
     refs = normalize_function_tools(names)
     original = set(names)
     out_names = [r["name"] for r in refs]

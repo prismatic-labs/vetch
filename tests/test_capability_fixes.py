@@ -79,22 +79,24 @@ def test_session_scoped_expected_capabilities():
 
 
 def test_manual_capture_redacts_tool_names(monkeypatch):
+    from vetch.capabilities import set_redacted_capability_names
     from vetch.context import TrackingContext
 
     monkeypatch.setenv("VETCH_REDACTION_KEY", "unit-test-key")
+    set_redacted_capability_names(["notify_user_acme"])
     ctx = TrackingContext()
     ctx.capture(
         model="gpt-4o",
         provider="openai",
         usage={"text": {"input_tokens": 1, "output_tokens": 1}},
-        tools_offered=[{"name": "send_email_to_alice", "kind": "function"}],
+        tools_offered=[{"name": "notify_user_acme", "kind": "function"}],
         tools_invoked=[],
-        tool_schema_tokens={"send_email_to_alice": 42},
+        tool_schema_tokens={"notify_user_acme": 42},
     )
     assert ctx.captured_call is not None
     name = ctx.captured_call.tools_offered[0]["name"]
     assert name.startswith("redacted-")
-    assert "alice" not in name
+    assert "acme" not in name
     assert all(k.startswith("redacted-") for k in (ctx.captured_call.tool_schema_tokens or {}))
 
 

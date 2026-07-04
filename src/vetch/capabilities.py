@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _CAPABILITY_LIST_CAP = 64
 _redacted_capability_names: set[str] = set()
+_redact_all_capability_names: bool = False
 _redaction_lock = threading.Lock()
 _generated_redaction_key: bytes | None = None
 _redaction_key_warning_shown = False
@@ -70,12 +71,19 @@ def _redaction_key() -> bytes | None:
 
 
 def redact_capability_name(name: str) -> str:
-    """Return ``name`` or ``redacted-<hmac>`` when redaction applies."""
-    key_str = os.environ.get("VETCH_REDACTION_KEY", "")
+    """Return ``name`` or ``redacted-<hmac>`` when redaction applies.
+
+    Capability names are redacted only when explicitly opted in via
+    :func:`set_redacted_capability_names` or ``configure_capabilities(redact_names=True)``.
+    ``VETCH_REDACTION_KEY`` supplies the HMAC key for tag hashing and for opted-in
+    capability names — it does not blanket-hash every tool name.
+    """
     with _redaction_lock:
-        should_redact = bool(key_str) or name in _redacted_capability_names
+        should_redact = _redact_all_capability_names or name in _redacted_capability_names
     if not should_redact:
         return name
+
+    key_str = os.environ.get("VETCH_REDACTION_KEY", "")
 
     key_bytes: bytes | None
     if key_str:
@@ -412,6 +420,66 @@ def extract_openai_compat_tools_offered(
     return extract_openai_tools_offered(kwargs, provider=provider)
 
 
+def extract_langchain_tools_offered(
+    invocation_params: Mapping[str, Any] | None,
+) -> tuple[list[CapabilityRef] | None, dict[str, int] | None]:
+    """Extract offered tools from LangChain ``invocation_params``."""
+    if not invocation_params:
+        return None, None
+    tools = invocation_params.get("tools")
+    if tools is None:
+        return None, None
+    return extract_openai_tools_offered({"tools": tools}, provider="langchain")
+
+
+def extract_langchain_tools_invoked(
+    response: Any,
+) -> tuple[list[CapabilityRef] | None, int | None]:
+    """Extract invoked tools from a LangChain ``LLMResult``."""
+    try:
+        names: list[str] = []
+        generations = getattr(response, "generations", None) or []
+        for gen_list in generations:
+            for gen in gen_list:
+                msg = getattr(gen, "message", None)
+                if msg is None:
+                    continue
+                tool_calls = getattr(msg, "tool_calls", None)
+                if not tool_calls:
+                    continue
+                for tc in tool_calls:
+                    name: str | None = None
+                    if isinstance(tc, dict):
+                        raw = tc.get("name")
+                        if isinstance(raw, str) and raw:
+                            name = raw
+                        else:
+                            fn = tc.get("function")
+                            if isinstance(fn, dict):
+                                raw = fn.get("name")
+                                if isinstance(raw, str) and raw:
+                                    name = raw
+                    else:
+                        raw = getattr(tc, "name", None)
+                        if isinstance(raw, str) and raw:
+                            name = raw
+                        else:
+                            fn = getattr(tc, "function", None)
+                            if fn is not None:
+                                raw = getattr(fn, "name", None)
+                                if isinstance(raw, str) and raw:
+                                    name = raw
+                    if name:
+                        names.append(name)
+        if not names:
+            return [], 0
+        refs = normalize_function_tools(names)
+        return refs, len(names)
+    except Exception:
+        logger.debug("extract_langchain_tools_invoked failed", exc_info=True)
+        return None, None
+
+
 def extract_openai_compat_tools_invoked(
     result: Any,
 ) -> tuple[list[CapabilityRef] | None, int | None]:
@@ -615,11 +683,19 @@ def configure_capabilities(
     *,
     expected: list[str] | None = None,
     model_capability_map: dict[str, str] | None = None,
+    redact_names: bool | None = None,
+    redacted_names: Iterable[str] | None = None,
 ) -> None:
+    global _redact_all_capability_names
     if expected is not None:
         set_expected_capabilities(expected)
     if model_capability_map is not None:
         set_model_capability_map(model_capability_map)
+    if redact_names is not None:
+        with _redaction_lock:
+            _redact_all_capability_names = redact_names
+    if redacted_names is not None:
+        set_redacted_capability_names(redacted_names)
 
 
 def derive_capabilities_invoked(
@@ -816,9 +892,11 @@ def rollup_capability_summary_from_events(
 
 def reset_capability_state() -> None:
     """Test-only reset."""
-    global _expected_capabilities, _model_capability_overrides
+    global _expected_capabilities, _model_capability_overrides, _redact_all_capability_names
     with _offered_memo_lock:
         _offered_memo.clear()
     _expected_capabilities = []
     _model_capability_overrides = {}
+    with _redaction_lock:
+        _redact_all_capability_names = False
     set_redacted_capability_names([])

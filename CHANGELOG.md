@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-07-04
+
+Patch release: LangChain callback capability capture, redaction semantics, and
+instrumentation-status accuracy.
+
+### Fixed — LangChain callback (`VetchCallbackHandler`)
+
+- Capture ``tools_offered`` from ``on_chat_model_start`` / ``on_llm_start``
+  (``invocation_params.tools``) and ``tools_invoked`` / ``tool_call_count`` from
+  response message ``tool_calls`` on ``on_llm_end``. Restores TOOL-DEAD-001 and
+  related capability fields on the recommended LangChain integration path.
+- ``on_llm_error`` now discards the offered-tools stash for the failed
+  ``run_id`` so errored/cancelled runs no longer leak entries in the pending
+  dicts.
+
+### Fixed — Spurious "outside tested version range" warning
+
+- Added tested version ranges for Anthropic and Google GenAI, so
+  ``instrument()`` no longer warns that these supported SDKs are "outside the
+  tested version range" (previously they reported ``tested=False`` and tripped
+  the warning for every user).
+
+### Added — Sensitive-data privacy regression suite
+
+- ``tests/test_privacy_sensitive_data.py`` plants synthetic PHI, financial, and
+  PII across prompt, completion, tool-call arguments, and tags, asserting none
+  appear in emitted events (Vetch stays metadata-only).
+
+### Fixed — Capability name redaction
+
+- ``VETCH_REDACTION_KEY`` no longer blanket-hashes every function-tool name.
+  Names are redacted only when explicitly opted in via
+  ``set_redacted_capability_names`` or ``configure_capabilities(redact_names=True)``.
+  The key still drives HMAC for opted-in names and tag hashing.
+
+### Fixed — Double instrumentation
+
+- One-time warning when ``VetchCallbackHandler`` is used alongside
+  ``vetch.instrument()`` on the same provider (duplicate events possible).
+
+### Fixed — `instrumentation_status()`
+
+- Report ``anthropic`` and ``google_genai`` distribution versions via
+  ``importlib.metadata`` (not ``module.__version__``).
+- Docstring clarifies ``instrumented`` is module-level patch state; add
+  ``is_client_instrumented(client)`` for instance-level checks.
+
 ## [0.10.0] - 2026-07-03
 
 Capability observability: function tools offered vs invoked, cache-aware wasted

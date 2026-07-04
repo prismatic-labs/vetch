@@ -21,6 +21,7 @@ from vetch.capabilities import (
     normalize_function_tools,
     redact_capability_name,
     reset_capability_state,
+    set_redacted_capability_names,
     truncate_capability_lists_for_transport,
 )
 from vetch.schema import CapabilityRef
@@ -172,7 +173,20 @@ def test_truncate_transport_only() -> None:
 
 def test_redact_capability_name_with_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VETCH_REDACTION_KEY", "test-secret-key")
+    set_redacted_capability_names(["secret_tool"])
     assert redact_capability_name("secret_tool").startswith("redacted-")
+
+
+def test_redaction_key_does_not_hash_tool_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VETCH_REDACTION_KEY", "k")
+    assert redact_capability_name("search_index") == "search_index"
+
+
+def test_redact_capability_name_opted_in_hashes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VETCH_REDACTION_KEY", "k")
+    set_redacted_capability_names(["internal_tool"])
+    assert redact_capability_name("internal_tool").startswith("redacted-")
+    assert redact_capability_name("public_tool") == "public_tool"
 
 
 def test_concurrent_stats_update() -> None:

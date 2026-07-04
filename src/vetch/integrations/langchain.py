@@ -27,8 +27,41 @@ from vetch.integrations._langchain_base import (
     BaseCallbackHandlerFallback,
     resolve_callback_handler_base,
 )
+from vetch.schema import CapabilityRef
 
 logger = logging.getLogger(__name__)
+
+_dual_path_warning_shown = False
+
+_PROVIDER_PATCH_MODULES = (
+    "vetch.providers.openai",
+    "vetch.providers.anthropic",
+    "vetch.providers.genai",
+    "vetch.providers.vertexai",
+)
+
+
+def _warn_if_double_instrumentation() -> None:
+    """Warn once when both LangChain callbacks and ``instrument()`` are active."""
+    global _dual_path_warning_shown
+    if _dual_path_warning_shown:
+        return
+    import importlib
+
+    for provider_mod in _PROVIDER_PATCH_MODULES:
+        try:
+            mod = importlib.import_module(provider_mod)
+            if getattr(mod, "_module_instrumented", False):
+                _dual_path_warning_shown = True
+                logger.warning(
+                    "VetchCallbackHandler is active while vetch.instrument() has patched "
+                    "an SDK module. Use the LangChain callback OR instrument() for a given "
+                    "provider, not both — otherwise each LLM call may emit duplicate events."
+                )
+                return
+        except Exception:
+            continue
+
 
 if TYPE_CHECKING:
     _CallbackHandlerBase = BaseCallbackHandlerFallback
@@ -87,6 +120,8 @@ class VetchCallbackHandler(_CallbackHandlerBase):
 
         # Track individual events for detailed analysis
         self.events: deque[dict[str, Any]] = deque(maxlen=1000)  # Bounded to prevent OOM
+        self._pending_tools_by_run: dict[str, list[CapabilityRef]] = {}
+        self._pending_schema_tokens_by_run: dict[str, dict[str, int]] = {}
 
         # Try to import vetch (fail gracefully if not installed)
         try:
@@ -94,9 +129,48 @@ class VetchCallbackHandler(_CallbackHandlerBase):
 
             self._wrap = wrap
             self._vetch_available = True
+            _warn_if_double_instrumentation()
         except ImportError:
             logger.warning("Vetch not installed. VetchCallbackHandler will not track metrics.")
             self._vetch_available = False
+
+    def _stash_tools_offered(self, **kwargs: Any) -> None:
+        """Record offered tools from LangChain start callbacks (keyed by run_id)."""
+        run_id = kwargs.get("run_id")
+        if run_id is None:
+            return
+        try:
+            from vetch.capabilities import extract_langchain_tools_offered
+
+            inv = kwargs.get("invocation_params") or {}
+            offered, schema_tokens = extract_langchain_tools_offered(inv)
+            key = str(run_id)
+            if offered is not None:
+                self._pending_tools_by_run[key] = offered
+            if schema_tokens is not None:
+                self._pending_schema_tokens_by_run[key] = schema_tokens
+        except Exception:
+            logger.debug("LangChain tools_offered stash failed", exc_info=True)
+
+    def _pop_pending_tools(
+        self, **kwargs: Any
+    ) -> tuple[list[CapabilityRef] | None, dict[str, int] | None]:
+        run_id = kwargs.get("run_id")
+        if run_id is None:
+            return None, None
+        key = str(run_id)
+        offered = self._pending_tools_by_run.pop(key, None)
+        schema_tokens = self._pending_schema_tokens_by_run.pop(key, None)
+        return offered, schema_tokens
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[Any]],
+        **kwargs: Any,
+    ) -> None:
+        """Capture tools bound for chat-model calls before the response arrives."""
+        self._stash_tools_offered(**kwargs)
 
     def on_llm_start(
         self,
@@ -104,12 +178,8 @@ class VetchCallbackHandler(_CallbackHandlerBase):
         prompts: list[str],
         **kwargs: Any,
     ) -> None:
-        """Called when LLM starts running.
-
-        Note: We track on_llm_end instead of on_llm_start to capture
-        actual usage metadata from the response.
-        """
-        pass
+        """Capture tools bound for legacy LLM calls before the response arrives."""
+        self._stash_tools_offered(**kwargs)
 
     @staticmethod
     def _um_get(um: Any, key: str) -> int:
@@ -188,6 +258,11 @@ class VetchCallbackHandler(_CallbackHandlerBase):
                 return
             in_tok, out_tok, total, model = extracted
 
+            from vetch.capabilities import extract_langchain_tools_invoked
+
+            tools_invoked, tool_call_count = extract_langchain_tools_invoked(response)
+            tools_offered, tool_schema_tokens = self._pop_pending_tools(**kwargs)
+
             # Create Vetch wrapper with inherited config
             with self._wrap(region=self.region, tags=self.tags, emit=True) as ctx:
                 # Manually capture the metadata (since LangChain already made the call)
@@ -223,6 +298,10 @@ class VetchCallbackHandler(_CallbackHandlerBase):
                         usage=usage,  # type: ignore[arg-type]
                         is_stream=False,
                         complete=True,
+                        tools_offered=tools_offered,
+                        tools_invoked=tools_invoked,
+                        tool_call_count=tool_call_count,
+                        tool_schema_tokens=tool_schema_tokens,
                     )
 
             # Aggregate metrics
@@ -243,6 +322,12 @@ class VetchCallbackHandler(_CallbackHandlerBase):
         **kwargs: Any,
     ) -> None:
         """Called when LLM errors."""
+        # Discard tools stashed for this run so the pending dicts don't leak when
+        # on_llm_end never fires (errored / cancelled runs).
+        try:
+            self._pop_pending_tools(**kwargs)
+        except Exception:
+            logger.debug("LangChain pending-tools cleanup failed", exc_info=True)
         # Log error but don't block
         logger.debug(f"LLM error in LangChain: {error}")
 
@@ -272,6 +357,8 @@ class VetchCallbackHandler(_CallbackHandlerBase):
         self.total_water_l = 0.0
         self.call_count = 0
         self.events = deque(maxlen=1000)
+        self._pending_tools_by_run.clear()
+        self._pending_schema_tokens_by_run.clear()
 
     def get_summary(self) -> dict[str, Any]:
         """Get summary of aggregated metrics.

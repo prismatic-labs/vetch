@@ -61,6 +61,7 @@ __all__ = [
     "instrument",
     "uninstrument",
     "instrumentation_status",
+    "is_client_instrumented",
     "require_tags",
     "add_global_tags",
     "set_tag_cardinality_limit",
@@ -558,9 +559,12 @@ def instrumentation_status() -> dict[str, dict[str, object]]:
 
     - ``installed``: the SDK is importable (``importlib.util.find_spec``)
     - ``imported``: the SDK module is already in ``sys.modules``
-    - ``instrumented``: Vetch has patched the SDK module
-    - ``version``: detected SDK version, or ``None``
-    - ``tested``: the version is within Vetch's tested range
+    - ``instrumented``: Vetch has patched the SDK **module** (constructor /
+      factory hooks). This does not guarantee every client instance is wrapped —
+      use :func:`is_client_instrumented` on a specific client when verifying
+      instance-level coverage.
+    - ``version``: detected SDK distribution version, or ``None``
+    - ``tested``: the version is within Vetch's tested range (when defined)
 
     ``instrument()`` only patches an SDK imported before it ran, so
     ``installed and not imported`` marks a provider that is present but was not
@@ -597,8 +601,7 @@ def instrumentation_status() -> dict[str, dict[str, object]]:
         except Exception:
             instrumented = False
 
-        # get_all_sdk_versions currently covers openai + vertexai; Azure reuses
-        # the openai SDK version. Others report version/tested as unknown.
+        # Azure reuses the openai SDK version. Others fall back to provider key.
         vinfo = versions.get(name)
         if vinfo is None and name == "azure_openai":
             vinfo = versions.get("openai")
@@ -611,6 +614,32 @@ def instrumentation_status() -> dict[str, dict[str, object]]:
             "tested": vinfo.tested if vinfo else False,
         }
     return status
+
+
+def is_client_instrumented(client: object) -> bool:
+    """Return whether a concrete SDK client instance is Vetch-wrapped.
+
+    Unlike :func:`instrumentation_status` (module-level patch flags), this
+    probes the client object for Vetch wrappers on common call paths.
+    """
+    from vetch.proxy import is_vetch_patched
+
+    if getattr(client, "vetch_patched", False) is True:
+        return True
+    messages = getattr(client, "messages", None)
+    if messages is not None and is_vetch_patched(getattr(messages, "create", None)):
+        return True
+    chat = getattr(client, "chat", None)
+    if chat is not None:
+        completions = getattr(chat, "completions", None)
+        if completions is not None and is_vetch_patched(getattr(completions, "create", None)):
+            return True
+    models = getattr(client, "models", None)
+    if models is not None:
+        generate = getattr(models, "generate_content", None)
+        if generate is not None and is_vetch_patched(generate):
+            return True
+    return False
 
 
 def set_log_level(level: str | int) -> None:

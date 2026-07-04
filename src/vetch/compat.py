@@ -6,8 +6,10 @@ This module handles:
 - Python version validation
 """
 
+from __future__ import annotations
+
 import sys
-from typing import NamedTuple, Union
+from typing import NamedTuple
 
 # Minimum Python version
 MIN_PYTHON_VERSION = (3, 9)
@@ -15,13 +17,15 @@ MIN_PYTHON_VERSION = (3, 9)
 # Tested SDK versions (we warn if not in this range)
 TESTED_OPENAI_VERSIONS = ("1.0.0", "3.0.0")  # [min, max)
 TESTED_VERTEXAI_VERSIONS = ("1.0.0", "3.0.0")  # [min, max)
+TESTED_ANTHROPIC_VERSIONS = ("0.18.0", "1.0.0")  # [min, max)
+TESTED_GENAI_VERSIONS = ("0.1.0", "3.0.0")  # [min, max)
 
 
 class VersionInfo(NamedTuple):
     """SDK version information."""
 
     name: str
-    version: Union[str, None]
+    version: str | None
     installed: bool
     tested: bool
 
@@ -109,6 +113,44 @@ def get_vertexai_version() -> VersionInfo:
         return VersionInfo("vertexai", None, False, False)
 
 
+def _distribution_version(dist_name: str) -> str | None:
+    """Read an installed distribution version (not ``module.__version__``)."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        return version(dist_name)
+    except PackageNotFoundError:
+        return None
+
+
+def _module_installed(module_name: str) -> bool:
+    """Return whether ``module_name`` is importable (fail-closed on spec errors)."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def get_anthropic_version() -> VersionInfo:
+    """Detect Anthropic SDK version."""
+    if not _module_installed("anthropic"):
+        return VersionInfo("anthropic", None, False, False)
+    ver = _distribution_version("anthropic")
+    tested = version_in_range(ver, *TESTED_ANTHROPIC_VERSIONS) if ver else False
+    return VersionInfo("anthropic", ver, True, tested)
+
+
+def get_genai_version() -> VersionInfo:
+    """Detect Google GenAI SDK version."""
+    if not _module_installed("google.genai"):
+        return VersionInfo("google_genai", None, False, False)
+    ver = _distribution_version("google-genai")
+    tested = version_in_range(ver, *TESTED_GENAI_VERSIONS) if ver else False
+    return VersionInfo("google_genai", ver, True, tested)
+
+
 def get_all_sdk_versions() -> dict[str, VersionInfo]:
     """Get version info for all supported SDKs.
 
@@ -117,7 +159,9 @@ def get_all_sdk_versions() -> dict[str, VersionInfo]:
     """
     return {
         "openai": get_openai_version(),
+        "anthropic": get_anthropic_version(),
         "vertexai": get_vertexai_version(),
+        "google_genai": get_genai_version(),
     }
 
 

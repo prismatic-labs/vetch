@@ -238,16 +238,124 @@ class TestLangChainErrorHandling:
             # Should not crash user's code
             handler.on_llm_end(mock_response)
 
-    def test_on_llm_start_no_op(self):
-        """on_llm_start is a no-op (tracking happens in on_llm_end)."""
+    def test_on_llm_start_stashes_tools(self):
+        """on_llm_start records offered tools for the matching run_id."""
+        pytest.importorskip("langchain_core")
         from vetch.integrations.langchain import VetchCallbackHandler
 
         handler = VetchCallbackHandler(region="us-east-1")
-
-        # Should not crash, just passes through
         handler.on_llm_start(
-            serialized={"name": "OpenAI"}, prompts=["Test prompt"], run_id="test-123"
+            serialized={"name": "OpenAI"},
+            prompts=["Test prompt"],
+            run_id="run-abc",
+            invocation_params={
+                "tools": [{"type": "function", "function": {"name": "search_index"}}],
+            },
         )
+        assert "run-abc" in handler._pending_tools_by_run
+        offered = handler._pending_tools_by_run["run-abc"]
+        assert any(t["name"] == "search_index" for t in offered)
+
+    def test_on_llm_error_clears_pending_tools(self):
+        """Errored runs must not leak entries in the pending-tools dicts."""
+        pytest.importorskip("langchain_core")
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        handler = VetchCallbackHandler()
+        handler.on_llm_start(
+            serialized={"name": "OpenAI"},
+            prompts=["p"],
+            run_id="run-err",
+            invocation_params={
+                "tools": [{"type": "function", "function": {"name": "search_index"}}],
+            },
+        )
+        assert "run-err" in handler._pending_tools_by_run
+        handler.on_llm_error(RuntimeError("boom"), run_id="run-err")
+        assert "run-err" not in handler._pending_tools_by_run
+        assert "run-err" not in handler._pending_schema_tokens_by_run
+
+
+class TestLangChainToolCapture:
+    """v0.10.1: capability fields on the callback path."""
+
+    @staticmethod
+    def _stderr_event(capsys, monkeypatch):
+        from vetch.emitter import _configure_logging
+
+        monkeypatch.setenv("VETCH_OUTPUT", "stderr")
+        _configure_logging()
+        return capsys
+
+    def test_callback_captures_tools(self, capsys, monkeypatch):
+        pytest.importorskip("langchain_core")
+        import json
+
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        from langchain_core.messages import AIMessage
+
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        self._stderr_event(capsys, monkeypatch)
+        ai = AIMessage(
+            content="ok",
+            tool_calls=[{"name": "search_index", "args": {"q": "x"}, "id": "1"}],
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
+        model = GenericFakeChatModel(messages=iter([ai]))
+        model.invoke("hi", config={"callbacks": [VetchCallbackHandler()]})
+        ev = next(
+            json.loads(line)
+            for line in capsys.readouterr().err.splitlines()
+            if line.startswith("{")
+        )
+        assert ev["tool_call_count"] == 1
+        assert any(
+            t["name"] == "search_index" or t["name"].startswith("redacted-")
+            for t in ev["tools_invoked"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_callback_captures_tools_async(self, capsys, monkeypatch):
+        pytest.importorskip("langchain_core")
+        import json
+
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        from langchain_core.messages import AIMessage
+
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        self._stderr_event(capsys, monkeypatch)
+        ai = AIMessage(
+            content="ok",
+            tool_calls=[{"name": "search_index", "args": {"q": "x"}, "id": "1"}],
+            usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        )
+        model = GenericFakeChatModel(messages=iter([ai]))
+        await model.ainvoke("hi", config={"callbacks": [VetchCallbackHandler()]})
+        ev = next(
+            json.loads(line)
+            for line in capsys.readouterr().err.splitlines()
+            if line.startswith("{")
+        )
+        assert ev["tool_call_count"] == 1
+
+    def test_double_instrumentation_warns_once(self, caplog):
+        pytest.importorskip("langchain_core")
+        pytest.importorskip("openai")
+        import openai  # noqa: F401
+
+        import vetch
+        from vetch.integrations.langchain import VetchCallbackHandler
+
+        vetch.instrument()
+        try:
+            with caplog.at_level("WARNING", logger="vetch.integrations.langchain"):
+                VetchCallbackHandler(region="us-east-1")
+                VetchCallbackHandler(region="us-east-1")
+            assert any("duplicate events" in record.message for record in caplog.records)
+        finally:
+            vetch.uninstrument()
 
 
 class TestLangChainTask1Fixes:

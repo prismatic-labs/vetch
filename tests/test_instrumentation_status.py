@@ -25,7 +25,45 @@ def test_instrumentation_status_shape():
         assert st["version"] is None or isinstance(st["version"], str)
 
 
-def test_installed_but_not_imported_warns_in_fresh_process():
+def test_instrumentation_status_docstring_clarifies_module_patch():
+  """instrumented reflects module-level patch, not per-instance wrapping."""
+  assert "module" in vetch.instrumentation_status.__doc__.lower()
+  assert "is_client_instrumented" in vetch.instrumentation_status.__doc__
+
+
+def test_status_reports_versions():
+    import importlib.util
+
+    if importlib.util.find_spec("anthropic") is None:
+        pytest.skip("anthropic not installed")
+    if importlib.util.find_spec("google.genai") is None:
+        pytest.skip("google.genai not installed")
+    import anthropic  # noqa: F401
+    import google.genai  # noqa: F401
+
+    vetch.instrument()
+    try:
+        st = vetch.instrumentation_status()
+        assert st["anthropic"]["version"]
+        assert st["google_genai"]["version"]
+    finally:
+        vetch.uninstrument()
+
+
+def test_is_client_instrumented_openai():
+    pytest.importorskip("openai")
+    import openai
+
+    import vetch
+    from vetch.proxy import is_vetch_patched
+
+    vetch.instrument()
+    try:
+        client = openai.OpenAI(api_key="sk-test")
+        assert vetch.is_client_instrumented(client)
+        assert is_vetch_patched(client.chat.completions.create)
+    finally:
+        vetch.uninstrument()
     # openai is installed in the venv. In a fresh process `import vetch` does not
     # import it, so instrument() must warn that it is not instrumented.
     # Skip if openai is not installed (CI minimal test extras).
@@ -48,3 +86,21 @@ def test_installed_but_not_imported_warns_in_fresh_process():
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK" in result.stdout
+
+
+def test_anthropic_genai_have_tested_ranges():
+    """anthropic/genai must resolve a tested range so instrument() does not
+    spuriously warn 'outside tested version range' for these supported providers."""
+    from vetch.compat import (
+        TESTED_ANTHROPIC_VERSIONS,
+        TESTED_GENAI_VERSIONS,
+        get_genai_version,
+        version_in_range,
+    )
+
+    assert version_in_range("0.40.0", *TESTED_ANTHROPIC_VERSIONS) is True
+    assert version_in_range("2.10.0", *TESTED_GENAI_VERSIONS) is True
+    info = get_genai_version()
+    if info.installed:  # present in the test env via langchain-google-genai
+        assert info.version is not None
+        assert info.tested is True

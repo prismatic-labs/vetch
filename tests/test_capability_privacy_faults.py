@@ -15,6 +15,7 @@ from vetch.capabilities import (
     extract_openai_tools_offered,
     reset_capability_state,
     set_otel_capability_attributes,
+    set_redacted_capability_names,
     truncate_capability_lists_for_transport,
 )
 
@@ -52,15 +53,17 @@ def test_no_tool_arguments_or_schema_survive_extraction():
 
 def test_redaction_leaves_no_plaintext(monkeypatch):
     monkeypatch.setenv("VETCH_REDACTION_KEY", "unit-test-key")
-    tools = [{"type": "function", "function": {"name": "send_email_to_alice"}}]
+    set_redacted_capability_names(["notify_user_acme"])
+    tools = [{"type": "function", "function": {"name": "notify_user_acme"}}]
     refs, _ = extract_openai_tools_offered({"tools": tools})
     name = refs[0]["name"]
     assert name.startswith("redacted-")
-    assert "alice" not in name and "send_email" not in name
+    assert "acme" not in name and "notify_user" not in name
 
 
 def test_redaction_is_stable_within_process(monkeypatch):
     monkeypatch.setenv("VETCH_REDACTION_KEY", "unit-test-key")
+    set_redacted_capability_names(["tool_x"])
     a = cap.redact_capability_name("tool_x")
     b = cap.redact_capability_name("tool_x")
     assert a == b and a != "tool_x"

@@ -205,11 +205,11 @@ class TestTagAllowlist:
         try:
             vetch.set_tag_allowlist(["feature"])
             with vetch.wrap(
-                tags={"feature": "x", "patient_name_john_smith": "1"}, emit=True
+                tags={"feature": "x", "secret_internal_key": "1"}, emit=True
             ):
                 pass
             serialized = serialize_event(buf.events[-1])
-            assert "patient_name_john_smith" not in serialized
+            assert "secret_internal_key" not in serialized
             # Counter still increments because the warning keeps "not in allowlist".
             assert get_tracking_stats().get("allowlist_filtered", 0) == before + 1
         finally:
