@@ -301,7 +301,18 @@ class SessionStats:
                 name = ref.get("name")
                 if isinstance(name, str) and name:
                     offered_names.add(name)
-            self.function_tools_offered_when_invocation_known.update(offered_names)
+            # Bound this set by the same cardinality limit as
+            # function_tools_offered. Without the cap it grows without limit
+            # (the DoS vector the sibling set's cap exists to prevent), and it
+            # would diverge from function_tools_offered so that never-called
+            # tools could be reported that were never admitted as offered.
+            known = self.function_tools_offered_when_invocation_known
+            for name in offered_names:
+                if len(known) >= limit and name not in known:
+                    warnings_needed = True
+                    self._capability_names_bounded = True
+                    continue
+                known.add(name)
             invoked_names: set[str] = set()
             for ref in invoked:
                 if not isinstance(ref, dict):
@@ -318,8 +329,13 @@ class SessionStats:
     def _capability_summary(self) -> dict[str, Any]:
         from vetch.capabilities import get_expected_capabilities
 
+        # Intersect with function_tools_offered so a never-called tool is always
+        # one we actually tracked as offered. The two sets are capped
+        # independently, so without this a name admitted to one but not the
+        # other could otherwise leak into the summary.
         never_called = sorted(
-            self.function_tools_offered_when_invocation_known - self.function_tools_invoked
+            (self.function_tools_offered_when_invocation_known - self.function_tools_invoked)
+            & self.function_tools_offered
         )
         wasted_tokens_per_request = sum(
             self.tool_schema_tokens.get(name, 0) for name in never_called
@@ -374,7 +390,7 @@ class SessionStats:
     def summary(self) -> dict[str, Any]:
         with self._lock:  # type: ignore[attr-defined]
             if not self._summary_dirty and self._summary_cache is not None:  # type: ignore[attr-defined]
-                return dict(self._summary_cache)  # type: ignore[arg-type, attr-defined]
+                return dict(self._summary_cache)  # type: ignore[attr-defined]
             result = self._compute_summary()
             object.__setattr__(self, "_summary_cache", result)
             object.__setattr__(self, "_summary_dirty", False)
