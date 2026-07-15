@@ -63,7 +63,7 @@ def test_session_rollup_memory_is_bounded():
     assert stats.total_requests == ITERS
 
 
-def test_sustained_concurrency_no_corruption():
+def test_concurrent_updates_preserve_capability_invariants():
     reset_capability_state()
     stats = SessionStats()
 
@@ -73,7 +73,11 @@ def test_sustained_concurrency_no_corruption():
     with ThreadPoolExecutor(max_workers=32) as ex:
         list(ex.map(worker, range(ITERS)))
 
+    # Concurrency check: no updates are lost under the lock.
     assert stats.total_requests == ITERS
     s = stats.summary()
-    # never-called set stays internally consistent under load
+    # Cardinality-bound invariant: every never-called tool must be one we
+    # actually tracked as offered. This holds regardless of threading (it
+    # reproduces single-threaded once DISTINCT exceeds the cardinality cap), so
+    # a failure here points at the rollup's set bounding, not a data race.
     assert set(s["function_tools_never_called"]) <= stats.function_tools_offered
