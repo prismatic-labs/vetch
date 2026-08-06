@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3] - 2026-08-06
+
+Patch release: instrument the OpenAI Responses API, plus two fail-open fixes to
+the OpenAI provider surfaced while building it.
+
+### Added — OpenAI Responses API metering
+
+- `client.responses.create` and `client.responses.parse` are now metered (sync
+  and async). The Responses endpoint is separate from chat completions and
+  `parse()` posts directly rather than routing through `create()`, so both
+  methods are patched independently. Usage is read from the Responses shape
+  (`input_tokens` / `output_tokens` / `output_tokens_details.reasoning_tokens` /
+  `input_tokens_details.cached_tokens`); reasoning tokens are subtracted from
+  visible output and surfaced separately for energy, consistent with chat.
+- Streaming is covered, including the higher-level `client.responses.stream()`
+  manager: stream events aggregate into a single event with final usage.
+- `is_client_instrumented()` now probes `responses.create` / `.parse`.
+
+### Fixed — bound-method dispatch restored on unpatch
+
+- `unpatch_openai_client` / `uninstrument` previously restored the stored unbound
+  function as an instance attribute, leaving `self` unbound so the next real call
+  mapped its first keyword (e.g. `model=`) onto `self` and broke the client. A
+  shared `_restore_instance_method` now removes the instance shadow (or rebinds)
+  for chat completions, embeddings, and responses.
+
+### Fixed — metering stays fail-open
+
+- A raising capture hook (e.g. `response.output_text`, a computed SDK property
+  that can throw on tool-call-only / refusal responses) previously propagated and
+  crashed the host call. The `_after_*_create` hooks and stream captures are now
+  guarded so a metering failure never breaks the host call. Visible-output tokens
+  are clamped to `>= 0` for malformed usage where reasoning exceeds output.
+
 ## [0.10.2] - 2026-08-06
 
 Patch release: correct Anthropic prompt-cache cost accounting and add TTL-tiered
