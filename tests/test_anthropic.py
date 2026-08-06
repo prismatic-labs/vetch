@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 from vetch.providers.anthropic import (
     StreamWrapper,
+    _extract_cache_creation_1h,
     _extract_stop_reason,
     _extract_visible_chars,
     extract_model,
@@ -20,6 +21,28 @@ from vetch.providers.anthropic import (
     patch_anthropic_client,
     unpatch_anthropic_client,
 )
+
+
+class TestExtractCacheCreation1h:
+    """Tests for _extract_cache_creation_1h (1-hour-TTL cache write breakdown)."""
+
+    def test_extracts_1h_tokens_when_present(self) -> None:
+        usage = MagicMock()
+        usage.cache_creation = MagicMock()
+        usage.cache_creation.ephemeral_1h_input_tokens = 512
+        assert _extract_cache_creation_1h(usage) == 512
+
+    def test_none_when_usage_missing(self) -> None:
+        assert _extract_cache_creation_1h(None) is None
+
+    def test_none_when_no_breakdown(self) -> None:
+        usage = MagicMock(spec=["cache_creation_input_tokens"])
+        assert _extract_cache_creation_1h(usage) is None
+
+    def test_none_when_breakdown_lacks_1h_field(self) -> None:
+        usage = MagicMock()
+        usage.cache_creation = MagicMock(spec=["ephemeral_5m_input_tokens"])
+        assert _extract_cache_creation_1h(usage) is None
 
 
 class TestExtractUsage:

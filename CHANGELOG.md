@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-08-06
+
+Patch release: correct Anthropic prompt-cache cost accounting and add TTL-tiered
+cache-write pricing. Surfaced by a Claude Code token audit where cache reads were
+~99% of token volume and ~85% of cost.
+
+### Fixed — Anthropic cache-read cost/energy accounting
+
+- The cost and energy math assumed the OpenAI convention where ``input_tokens``
+  already includes cache-read tokens. Anthropic reports them disjoint
+  (``usage.input_tokens`` is the fresh, uncached count; ``cache_read_input_tokens``
+  is separate), so ``input_tokens - cache_read`` zeroed out the fresh-input charge
+  whenever cache reads exceeded fresh input — the norm for agentic traffic. Cost
+  and energy are now normalized to a billable input for providers that report cache
+  reads disjointly (``_CACHE_READ_DISJOINT_PROVIDERS``). The emitted
+  ``usage.input_tokens`` is unchanged and still reconciles with the provider's
+  own dashboard.
+
+### Added — TTL-tiered cache-write pricing
+
+- ``calculate_cost`` now prices 1-hour-TTL cache writes at 2.0× input (vs 1.25×
+  for 5-minute), via a new ``cache_creation_premium_1h`` registry field on all
+  Claude entries. ``cache_creation_1h_tokens`` is extracted from Anthropic usage
+  and plumbed provider → context → wrapper → calculation. Backward compatible:
+  absent 1h data prices all writes at the 5-minute premium.
+
 ## [0.10.1] - 2026-07-04
 
 Patch release: LangChain callback capability capture, redaction semantics, and

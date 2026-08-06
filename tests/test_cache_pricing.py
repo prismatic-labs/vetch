@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import pytest
+
 from vetch.calculation import _reset_registries, calculate_cost
+
+# Index of cache_write_cost in the calculate_cost return tuple:
+# (total, input_cost, output_cost, cache_write_cost, cache_read_cost, tier)
+_WRITE = 3
 
 
 class TestCacheAwarePricing:
@@ -108,3 +114,61 @@ class TestCacheAwarePricing:
         # Negative cache_read_tokens should not trigger discount
         # (the conditional checks for > 0)
         assert total_neg == total_base
+
+
+class TestCacheWriteTTLTiering:
+    """Cache writes must be priced by TTL: Anthropic 5-min = 1.25x, 1-hour = 2.0x."""
+
+    RATE_IN = 0.003  # claude-3.5-sonnet usd_per_1k_input
+
+    def setup_method(self) -> None:
+        _reset_registries()
+
+    def teardown_method(self) -> None:
+        _reset_registries()
+
+    def test_1h_write_costs_more_than_5m(self) -> None:
+        """A 1-hour write is priced strictly above the same 5-minute write."""
+        w5m = calculate_cost(
+            1000, 100, "claude-3.5-sonnet", cache_creation_tokens=1000
+        )[_WRITE]
+        w1h = calculate_cost(
+            1000, 100, "claude-3.5-sonnet",
+            cache_creation_tokens=1000, cache_creation_1h_tokens=1000,
+        )[_WRITE]
+        assert w1h > w5m
+        # 2.0x vs 1.25x premium → exact 1.6x ratio
+        assert w1h == pytest.approx(w5m * (2.0 / 1.25))
+
+    def test_unspecified_1h_defaults_to_5m_pricing(self) -> None:
+        """Legacy behavior: no 1h count prices every write at the 5-minute premium."""
+        w_default = calculate_cost(
+            1000, 100, "claude-3.5-sonnet", cache_creation_tokens=1000
+        )[_WRITE]
+        w_zero_1h = calculate_cost(
+            1000, 100, "claude-3.5-sonnet",
+            cache_creation_tokens=1000, cache_creation_1h_tokens=0,
+        )[_WRITE]
+        assert w_default == pytest.approx(w_zero_1h)
+        assert w_default == pytest.approx(1000 * self.RATE_IN * 1.25 / 1000)
+
+    def test_mixed_ttl_split_pricing(self) -> None:
+        """A mixed write bills the 1h subset at 2.0x and the remainder at 1.25x."""
+        write = calculate_cost(
+            1000, 100, "claude-3.5-sonnet",
+            cache_creation_tokens=1000, cache_creation_1h_tokens=400,
+        )[_WRITE]
+        expected = (600 * self.RATE_IN * 1.25 + 400 * self.RATE_IN * 2.0) / 1000
+        assert write == pytest.approx(expected)
+
+    def test_1h_count_clamped_to_total(self) -> None:
+        """A 1h count exceeding the total write is clamped, not double-counted."""
+        clamped = calculate_cost(
+            1000, 100, "claude-3.5-sonnet",
+            cache_creation_tokens=500, cache_creation_1h_tokens=9999,
+        )[_WRITE]
+        all_1h = calculate_cost(
+            1000, 100, "claude-3.5-sonnet",
+            cache_creation_tokens=500, cache_creation_1h_tokens=500,
+        )[_WRITE]
+        assert clamped == pytest.approx(all_1h)

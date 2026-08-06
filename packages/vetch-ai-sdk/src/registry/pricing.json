@@ -142,55 +142,64 @@
     "usd_per_1k_input": 0.015,
     "usd_per_1k_output": 0.075,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "claude-3-sonnet": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "claude-3-haiku": {
     "usd_per_1k_input": 0.00025,
     "usd_per_1k_output": 0.00125,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "claude-3.5-sonnet": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "claude-3.5-haiku": {
     "usd_per_1k_input": 0.0008,
     "usd_per_1k_output": 0.004,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "claude-3.7-sonnet": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "claude-haiku-4-5": {
     "usd_per_1k_input": 0.001,
     "usd_per_1k_output": 0.005,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "claude-sonnet-4": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "claude-sonnet-4-5": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,
     "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
     "as_of": "2026-06-23"
   },
   "claude-sonnet-4-6": {
@@ -198,6 +207,7 @@
     "usd_per_1k_output": 0.015,
     "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
     "as_of": "2026-06-23"
   },
   "claude-opus-4-5": {
@@ -205,6 +215,7 @@
     "usd_per_1k_output": 0.025,
     "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
     "as_of": "2026-06-23"
   },
   "claude-opus-4-6": {
@@ -212,6 +223,7 @@
     "usd_per_1k_output": 0.025,
     "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
     "as_of": "2026-06-23"
   },
   "claude-opus-4-7": {
@@ -219,6 +231,7 @@
     "usd_per_1k_output": 0.025,
     "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
     "as_of": "2026-06-23"
   },
   "claude-opus-4-8": {
@@ -226,13 +239,15 @@
     "usd_per_1k_output": 0.025,
     "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
     "as_of": "2026-06-23"
   },
   "claude-3.7-sonnet-thinking": {
     "usd_per_1k_input": 0.003,
     "usd_per_1k_output": 0.015,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0
   },
   "gemini-1.5-pro": {
     "usd_per_1k_input": 0.00125,

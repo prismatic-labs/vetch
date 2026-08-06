@@ -237,6 +237,26 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     )
 
 
+def _extract_cache_creation_1h(usage: Any) -> int | None:
+    """Extract 1-hour-TTL cache-write tokens from an Anthropic usage object.
+
+    Anthropic reports the per-TTL breakdown under ``usage.cache_creation`` as
+    ``ephemeral_5m_input_tokens`` / ``ephemeral_1h_input_tokens`` (extended cache
+    TTL). The top-level ``cache_creation_input_tokens`` is their sum. We only need
+    the 1-hour portion here; the remainder is priced at the 5-minute premium.
+
+    Returns None when the breakdown is absent (older SDKs / 5-minute-only usage),
+    which keeps cost pricing on the legacy 5-minute assumption.
+    """
+    if usage is None:
+        return None
+    breakdown = getattr(usage, "cache_creation", None)
+    if breakdown is None:
+        return None
+    value = getattr(breakdown, "ephemeral_1h_input_tokens", None)
+    return value if isinstance(value, int) else None
+
+
 def extract_model(response: Any) -> str:
     """Extract model name from Anthropic response.
 
@@ -268,6 +288,7 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
     with auto_context_for_instrumented_call("anthropic"):
         # Non-streaming: capture immediately
         usage, cache_read, cache_create = extract_usage(result)
+        cache_create_1h = _extract_cache_creation_1h(getattr(result, "usage", None))
         model = extract_model(result)
 
         # Extended Thinking auto-detection for non-streaming
@@ -304,6 +325,7 @@ def _after_create(result: Any, *args: Any, **kwargs: Any) -> None:
                 complete=True,
                 cache_read_tokens=cache_read,
                 cache_creation_tokens=cache_create,
+                cache_creation_1h_tokens=cache_create_1h,
                 visible_output_chars=visible_chars,
                 finish_reason=finish_reason,
                 **cap_kwargs,
@@ -349,6 +371,7 @@ class StreamWrapper:
         self._output_tokens = 0
         self._cache_read_tokens: int | None = None
         self._cache_creation_tokens: int | None = None
+        self._cache_creation_1h_tokens: int | None = None
         self._complete = False
         self._error = False
         self._error_type: str | None = None
@@ -412,6 +435,9 @@ class StreamWrapper:
                         self._cache_read_tokens = cache_read
                     if cache_create is not None:
                         self._cache_creation_tokens = cache_create
+                    cache_create_1h = _extract_cache_creation_1h(usage)
+                    if cache_create_1h is not None:
+                        self._cache_creation_1h_tokens = cache_create_1h
 
         elif event_type == "content_block_delta":
             delta = getattr(chunk, "delta", None)
@@ -516,6 +542,7 @@ class StreamWrapper:
                 error_type=self._error_type,
                 cache_read_tokens=self._cache_read_tokens,
                 cache_creation_tokens=self._cache_creation_tokens,
+                cache_creation_1h_tokens=self._cache_creation_1h_tokens,
                 accumulated_tik_tokens=self._tik_token_count,
                 content_type_hint=content_type_hint,
                 finish_reason=self._stop_reason,
@@ -542,6 +569,7 @@ class StreamWrapper:
                     error_type=self._error_type,
                     cache_read_tokens=self._cache_read_tokens,
                     cache_creation_tokens=self._cache_creation_tokens,
+                    cache_creation_1h_tokens=self._cache_creation_1h_tokens,
                     accumulated_tik_tokens=self._tik_token_count,
                     content_type_hint=content_type_hint,
                     finish_reason=self._stop_reason,

@@ -26,6 +26,24 @@ METHODOLOGY_VERSION = "1.3"
 _SELF_HOSTED_PROVIDERS = frozenset({"self-hosted", "ollama"})
 _UNKNOWN_PRICE_PROVIDERS = frozenset({"openai-compatible"})
 
+# Providers that report cache-read tokens DISJOINT from input_tokens.
+# The cost/energy math (calculate_cost, calculate_energy) expects the OpenAI
+# convention where input_tokens already INCLUDES cache-read tokens (cached is a
+# subset of prompt_tokens). Anthropic instead reports usage.input_tokens as the
+# fresh, uncached count and cache_read_input_tokens separately, with no overlap.
+# For these providers we add cache-read back into the billable input before the
+# math runs, so the subtraction in calculate_cost/calculate_energy recovers the
+# correct fresh-token count. The emitted usage.input_tokens is left untouched so
+# it still reconciles with the provider's own dashboard.
+#
+# MAINTAINER NOTE: membership is keyed on the provider STRING, and Claude reports
+# disjoint counts regardless of the gateway serving it. If Claude is ever wired in
+# under a different provider string (Bedrock, or Vertex/`vertexai` gaining Claude
+# cache extraction), that string MUST be added here or the fresh-input cost will be
+# silently zeroed again. openai/google_genai are correctly absent: openai uses the
+# inclusive convention and google_genai does not surface cache-read tokens today.
+_CACHE_READ_DISJOINT_PROVIDERS = frozenset({"anthropic"})
+
 # Threshold for the tracking-degradation score (see prepare_inference_metrics).
 # Calibrated so the flag means "Vetch had to compensate for degraded tracking
 # inputs" — it fires for unknown models, prefix/family proxies, estimated usage,
@@ -1225,6 +1243,7 @@ def calculate_cost(
     model: str,
     cache_read_tokens: int | None = None,
     cache_creation_tokens: int | None = None,
+    cache_creation_1h_tokens: int | None = None,
 ) -> tuple[float, float, float, float, float, str]:
     """Calculate estimated cost in USD with cache tier breakdown.
 
@@ -1240,7 +1259,11 @@ def calculate_cost(
         output_tokens: Number of output tokens.
         model: Model identifier.
         cache_read_tokens: Tokens read from prompt cache (cost savings).
-        cache_creation_tokens: Tokens written to prompt cache (extra cost).
+        cache_creation_tokens: Total tokens written to prompt cache (extra cost).
+        cache_creation_1h_tokens: Subset of cache_creation_tokens written with a
+            1-hour TTL, priced at the model's ``cache_creation_premium_1h``. The
+            remaining (5-minute) writes use ``cache_creation_premium``. Defaults to
+            None, which prices every write at the 5-minute premium (legacy behavior).
 
     Returns:
         Tuple of (total_cost, input_cost, output_cost, cache_write_cost, cache_read_cost,
@@ -1285,6 +1308,10 @@ def calculate_cost(
     # 1.25 = Anthropic premium. Only override if the model explicitly sets it.
     cache_read_discount = entry.get("cache_read_discount", 0.1)
     cache_creation_premium = entry.get("cache_creation_premium", 1.0)
+    # 1-hour TTL writes cost more than the default 5-minute writes (Anthropic:
+    # 2.0x vs 1.25x input). Fall back to the 5-minute premium when a model does
+    # not distinguish the two tiers.
+    cache_creation_premium_1h = entry.get("cache_creation_premium_1h", cache_creation_premium)
 
     # Base input tokens (excluding cached tokens)
     effective_input = input_tokens
@@ -1297,8 +1324,15 @@ def calculate_cost(
         cache_read_cost = (cache_read_tokens * rate_in * cache_read_discount) / 1000
 
     if cache_creation_tokens and cache_creation_tokens > 0:
-        # Cache creation tokens cost extra on top of normal input cost
-        cache_write_cost = (cache_creation_tokens * rate_in * cache_creation_premium) / 1000
+        # Cache creation tokens cost extra on top of normal input cost. Split the
+        # write into 1-hour and 5-minute TTL buckets so each is priced correctly;
+        # the 1h count is a subset of the total, clamped defensively.
+        create_1h = min(max(0, cache_creation_1h_tokens or 0), cache_creation_tokens)
+        create_5m = cache_creation_tokens - create_1h
+        cache_write_cost = (
+            create_5m * rate_in * cache_creation_premium
+            + create_1h * rate_in * cache_creation_premium_1h
+        ) / 1000
 
     # Calculate input cost with tiered pricing
     cost_in = (
@@ -1411,6 +1445,7 @@ def prepare_inference_metrics(
     accumulated_tik_tokens: int = 0,
     content_type_hint: str = "en",
     n_images: int = 0,
+    cache_creation_1h_tokens: int | None = None,
 ) -> InferenceMetrics:
     """Compute all energy/carbon/cost metrics for a single inference call.
 
@@ -1427,6 +1462,10 @@ def prepare_inference_metrics(
         energy_override: Optional user-supplied energy values.
         cache_read_tokens: Cache-read token count for cost discount.
         cache_creation_tokens: Cache-creation token count for cost premium.
+        cache_creation_1h_tokens: Subset of cache_creation_tokens written with a
+            1-hour TTL (Anthropic), priced at the higher 1h write premium. The
+            remainder is priced at the 5-minute premium. None/0 keeps the legacy
+            behavior of pricing all cache writes at the 5-minute premium.
         existing_warnings: Warnings accumulated earlier in the context lifecycle.
 
     Returns:
@@ -1552,6 +1591,14 @@ def prepare_inference_metrics(
                 )
 
             _cache_tokens = int(cache_read_tokens) if cache_read_tokens else 0
+            # Normalize the billable input to the OpenAI convention the cost/energy
+            # math assumes (input_tokens includes cache reads). Providers that report
+            # cache reads disjoint from input (e.g. Anthropic) would otherwise have
+            # their fresh-input cost zeroed out whenever cache_read >= input_tokens,
+            # which is the norm for agentic traffic. The emitted usage is untouched.
+            billable_in_tokens = in_tokens
+            if provider in _CACHE_READ_DISJOINT_PROVIDERS and _cache_tokens > 0:
+                billable_in_tokens = in_tokens + _cache_tokens
             # Resolve once and reuse for both the energy calc and the event field.
             match = resolve_model_match(model)
             # Record how the model name was resolved so downstream can flag
@@ -1565,7 +1612,7 @@ def prepare_inference_metrics(
                 metrics.energy_basis,
                 metrics.model_known,
             ) = calculate_energy(
-                in_tokens,
+                billable_in_tokens,
                 out_tokens,
                 model,
                 cast("dict[str, Any]", energy_override),
@@ -1581,7 +1628,7 @@ def prepare_inference_metrics(
             # n_images is passed so image energy cancels symmetrically on both sides.
             if _cache_tokens > 0 and metrics.energy_wh is not None:
                 (baseline_energy_wh, *_) = calculate_energy(
-                    in_tokens,
+                    billable_in_tokens,
                     out_tokens,
                     model,
                     cast("dict[str, Any]", energy_override),
@@ -1652,11 +1699,12 @@ def prepare_inference_metrics(
                     metrics.cost_cache_read_usd,
                     metrics.billing_tier,
                 ) = calculate_cost(
-                    in_tokens,
+                    billable_in_tokens,
                     out_tokens,
                     model,
                     cache_read_tokens=cache_read_tokens,
                     cache_creation_tokens=cache_creation_tokens,
+                    cache_creation_1h_tokens=cache_creation_1h_tokens,
                 )
 
             # Apply price multiplier
@@ -1675,11 +1723,12 @@ def prepare_inference_metrics(
             # metrics.cost_usd already includes the multiplier; apply it to uncached_cost too.
             if _cache_tokens > 0 and metrics.cost_usd is not None:
                 (uncached_cost, *_) = calculate_cost(
-                    in_tokens,
+                    billable_in_tokens,
                     out_tokens,
                     model,
                     cache_read_tokens=0,
                     cache_creation_tokens=cache_creation_tokens,
+                    cache_creation_1h_tokens=cache_creation_1h_tokens,
                 )
                 if uncached_cost is not None:
                     adjusted_uncached = uncached_cost * price_multiplier

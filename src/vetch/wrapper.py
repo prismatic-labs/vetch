@@ -608,6 +608,7 @@ class VetchContext:
         # Cache tokens
         cache_read_tokens: int | None = None
         cache_creation_tokens: int | None = None
+        cache_creation_1h_tokens: int | None = None
         visible_output_chars: int | None = None
         finish_reason: str | None = None
         requested_max_tokens: int | None = None
@@ -630,6 +631,8 @@ class VetchContext:
             cache_read_tokens = raw_crt if isinstance(raw_crt, int) else None
             raw_cct = captured.cache_creation_tokens
             cache_creation_tokens = raw_cct if isinstance(raw_cct, int) else None
+            raw_cct_1h = captured.cache_creation_1h_tokens
+            cache_creation_1h_tokens = raw_cct_1h if isinstance(raw_cct_1h, int) else None
             visible_output_chars = captured.visible_output_chars
             finish_reason = captured.finish_reason
             requested_max_tokens = captured.requested_max_tokens
@@ -666,6 +669,7 @@ class VetchContext:
             accumulated_tik_tokens=accumulated_tik_tokens,
             content_type_hint=content_type_hint,
             n_images=n_images,
+            cache_creation_1h_tokens=cache_creation_1h_tokens,
         )
 
         # Propagate usage_estimated counter for monitoring dashboards

@@ -44,6 +44,9 @@ class CapturedCall:
     # Prompt caching metadata
     cache_read_tokens: int | None = None
     cache_creation_tokens: int | None = None
+    # Subset of cache_creation_tokens written with a 1-hour TTL (Anthropic),
+    # priced at the higher 1h write premium. None keeps 5-minute pricing.
+    cache_creation_1h_tokens: int | None = None
     # Streaming token estimation (tiktoken or script-aware char ratio)
     accumulated_tik_tokens: int = 0
     content_type_hint: str = "en"
@@ -128,6 +131,7 @@ class TrackingContext:
         warnings: list[str] | None = None,
         cache_read_tokens: int | None = None,
         cache_creation_tokens: int | None = None,
+        cache_creation_1h_tokens: int | None = None,
         accumulated_tik_tokens: int = 0,
         content_type_hint: str = "en",
         visible_output_chars: int | None = None,
@@ -178,6 +182,7 @@ class TrackingContext:
             warnings=warnings or [],
             cache_read_tokens=cache_read_tokens,
             cache_creation_tokens=cache_creation_tokens,
+            cache_creation_1h_tokens=cache_creation_1h_tokens,
             accumulated_tik_tokens=accumulated_tik_tokens,
             content_type_hint=content_type_hint,
             visible_output_chars=visible_output_chars,
