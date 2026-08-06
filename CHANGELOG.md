@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4] - 2026-08-07
+
+Minor release: a public API for metering calls Vetch does not intercept, and an
+explicit provider override — together these enable metering a self-hosted model
+reached over raw HTTP (energy/carbon with cost correctly zeroed).
+
+### Added — `vetch.record_usage(...)`
+
+- Meter a call from usage you already have (e.g. a self-hosted model called with
+  `requests`): `record_usage(model, input_tokens, output_tokens, *, region,
+  provider_hint, tags, energy_override, price_multiplier, reasoning_tokens,
+  cache_read_tokens, cache_creation_tokens, duration_ms, emit)`. It runs the same
+  calculation and emit path as an instrumented call, so events are
+  schema-identical (test-pinned) and flow into aggregation, budgets, sessions,
+  and exporters. Each call emits exactly one event and returns it, independent of
+  any active `wrap()`. Latency is the caller-supplied `duration_ms` or `None` —
+  never a fabricated value.
+
+### Added — `provider_hint`
+
+- `wrap()`, `awrap()`, `instrument()`, and `record_usage()` accept
+  `provider_hint` to override the provider inferred from the model name / SDK
+  client. `provider_hint="self-hosted"` yields cost 0 with energy and carbon
+  still computed; `"openai-compatible"` leaves cost unknown rather than wrong.
+  `instrument(provider_hint=...)` sets a deployment-wide default. Values are
+  normalised and validated — an unrecognised hint (e.g. a typo) is used but
+  flagged in `vetch_warnings` (fail-loud) rather than silently mis-billed.
+
 ## [0.10.3] - 2026-08-06
 
 Patch release: instrument the OpenAI Responses API, plus two fail-open fixes to
