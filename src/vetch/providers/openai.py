@@ -8,6 +8,9 @@ Supports:
 - Async completions (await client.chat.completions.create)
 - Streaming completions (stream=True)
 - Async streaming completions (stream=True)
+- Responses API (client.responses.create / client.responses.parse), sync + async,
+  including streaming and reasoning-token accounting
+- Embeddings (client.embeddings.create)
 
 Privacy guarantee: We read model, usage, timing metadata, and output length/status.
 We never store prompt or completion text.
@@ -16,10 +19,12 @@ We never store prompt or completion text.
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import logging
 import re
 import threading
+import types
 import weakref
 from typing import TYPE_CHECKING, Any, cast
 from weakref import WeakKeyDictionary
@@ -33,10 +38,41 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _fail_open_metering(func: Any) -> Any:
+    """Decorator: a metering hook must never break the host LLM call.
+
+    CLAUDE.md's #1 non-negotiable is fail-open — if Vetch's post-call capture
+    raises (e.g. ``response.output_text`` is a computed SDK property that can
+    throw on tool-call-only / refusal responses), we log and swallow rather than
+    propagate, so the caller still receives its successful result. Applied to the
+    chat, embeddings, and responses ``_after_*_create`` hooks.
+    """
+
+    @functools.wraps(func)
+    def _wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 - fail-open is mandatory here
+            logger.warning(
+                "vetch: metering hook %s failed (%s); continuing without tracking",
+                getattr(func, "__name__", "?"),
+                e,
+            )
+            return None
+
+    return _wrapper
+
 # Thread-safe per-client storage for original methods
 # Using WeakKeyDictionary so clients can be garbage collected
 _client_originals: WeakKeyDictionary[Any, Any] = WeakKeyDictionary()
 _client_lock = threading.Lock()
+
+# Responses API (client.responses.create / .parse) originals. A single
+# ``responses`` object carries two patchable methods, so we store a per-object
+# {method_name: original_callable} map rather than a single callable (as
+# _client_originals does for chat/embeddings). Guarded by _client_lock.
+_responses_originals: WeakKeyDictionary[Any, dict[str, Any]] = WeakKeyDictionary()
 
 
 class _WeakChatWrapper:
@@ -272,6 +308,156 @@ class _WeakAsyncEmbeddingsWrapper:
             raise
 
 
+class _WeakResponsesWrapper:
+    """Wrapper for sync ``responses.create`` / ``responses.parse``.
+
+    The Responses API (``/v1/responses``) is a separate endpoint from chat
+    completions; ``parse`` calls ``self._post`` directly rather than routing
+    through ``create``, so both methods must be patched independently. One
+    wrapper instance is installed per (responses object, method name).
+    """
+
+    __slots__ = (
+        "_responses_ref", "_originals_dict", "_method_name", "_provider",
+        "vetch_patched", "_vetch_original",
+    )
+
+    def __init__(
+        self,
+        responses: Any,
+        originals_dict: WeakKeyDictionary[Any, dict[str, Any]],
+        method_name: str,
+        provider: str = "openai",
+    ) -> None:
+        self._responses_ref = weakref.ref(responses)
+        self._originals_dict = originals_dict
+        self._method_name = method_name
+        self._provider = provider
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        responses = self._responses_ref()
+        if responses is None:
+            raise RuntimeError("Responses object was garbage collected")
+
+        original = self._originals_dict[responses][self._method_name]
+        ctx = get_active_context()
+
+        # Stall circuit breaker (parity with chat): may raise for "kill" or
+        # mutate kwargs["model"] for "reroute".
+        rerouted, original_model = apply_stall_action(kwargs, ctx)
+        if rerouted and original_model and ctx is not None:
+            ctx.attribution_model = original_model
+
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = original(responses, *args, **kwargs)
+            if is_stream:
+                model_hint = kwargs.get("model", "unknown")
+                return ResponsesStreamWrapper(
+                    result, model_hint=model_hint, provider=self._provider
+                )
+            _after_responses_create(result, *args, _vetch_provider=self._provider, **kwargs)
+            return result
+
+        except Exception as e:
+            if rerouted and original_model and looks_like_param_mismatch(e):
+                ctx = get_active_context()
+                if ctx is not None:
+                    ctx.warnings.append(
+                        f"STALL-001 reroute failed ({type(e).__name__}); "
+                        f"falling back to original model {original_model}"
+                    )
+                kwargs["model"] = original_model
+                try:
+                    result = original(responses, *args, **kwargs)
+                    if is_stream:
+                        model_hint = kwargs.get("model", "unknown")
+                        return ResponsesStreamWrapper(
+                            result, model_hint=model_hint, provider=self._provider
+                        )
+                    _after_responses_create(
+                        result, *args, _vetch_provider=self._provider, **kwargs
+                    )
+                    return result
+                except Exception as fallback_err:
+                    _on_create_error(fallback_err, provider=self._provider)
+                    raise
+            _on_create_error(e, provider=self._provider)
+            raise
+
+
+class _WeakAsyncResponsesWrapper:
+    """Async wrapper for ``responses.create`` / ``responses.parse``."""
+
+    __slots__ = (
+        "_responses_ref", "_originals_dict", "_method_name", "_provider",
+        "vetch_patched", "_vetch_original",
+    )
+
+    def __init__(
+        self,
+        responses: Any,
+        originals_dict: WeakKeyDictionary[Any, dict[str, Any]],
+        method_name: str,
+        provider: str = "openai",
+    ) -> None:
+        self._responses_ref = weakref.ref(responses)
+        self._originals_dict = originals_dict
+        self._method_name = method_name
+        self._provider = provider
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        responses = self._responses_ref()
+        if responses is None:
+            raise RuntimeError("Responses object was garbage collected")
+
+        original = self._originals_dict[responses][self._method_name]
+        ctx = get_active_context()
+
+        rerouted, original_model = apply_stall_action(kwargs, ctx)
+        if rerouted and original_model and ctx is not None:
+            ctx.attribution_model = original_model
+
+        is_stream = kwargs.get("stream", False)
+
+        try:
+            result = await original(responses, *args, **kwargs)
+            if is_stream:
+                model_hint = kwargs.get("model", "unknown")
+                return AsyncResponsesStreamWrapper(
+                    result, model_hint=model_hint, provider=self._provider
+                )
+            _after_responses_create(result, *args, _vetch_provider=self._provider, **kwargs)
+            return result
+
+        except Exception as e:
+            if rerouted and original_model and looks_like_param_mismatch(e):
+                ctx = get_active_context()
+                if ctx is not None:
+                    ctx.warnings.append(
+                        f"STALL-001 reroute failed ({type(e).__name__}); "
+                        f"falling back to original model {original_model}"
+                    )
+                kwargs["model"] = original_model
+                try:
+                    result = await original(responses, *args, **kwargs)
+                    if is_stream:
+                        model_hint = kwargs.get("model", "unknown")
+                        return AsyncResponsesStreamWrapper(
+                            result, model_hint=model_hint, provider=self._provider
+                        )
+                    _after_responses_create(
+                        result, *args, _vetch_provider=self._provider, **kwargs
+                    )
+                    return result
+                except Exception as fallback_err:
+                    _on_create_error(fallback_err, provider=self._provider)
+                    raise
+            _on_create_error(e, provider=self._provider)
+            raise
+
+
 def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     """Extract usage metadata from OpenAI response including image tokens.
 
@@ -317,7 +503,8 @@ def extract_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
     # them here to avoid double-counting when the calculation engine adds
     # reasoning.output_tokens separately for energy purposes.
     completion_tokens = getattr(usage, "completion_tokens", 0)
-    visible_output_tokens = completion_tokens - reasoning_tokens
+    # Clamp against malformed usage where reasoning exceeds visible completion.
+    visible_output_tokens = max(0, completion_tokens - reasoning_tokens)
 
     usage_dict: Usage = {
         "text": {
@@ -399,6 +586,89 @@ def extract_response_diagnostics(response: Any) -> tuple[int | None, str | None]
 
 def _requested_max_tokens(kwargs: dict[str, Any]) -> int | None:
     raw = kwargs.get("max_completion_tokens", kwargs.get("max_tokens"))
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return max(0, raw)
+    return None
+
+
+def extract_responses_usage(response: Any) -> tuple[Usage | None, int | None, int | None]:
+    """Extract usage from an OpenAI Responses API response.
+
+    The Responses shape differs from chat completions: ``usage.input_tokens`` /
+    ``usage.output_tokens`` (not ``prompt_tokens`` / ``completion_tokens``),
+    cache reads in ``usage.input_tokens_details.cached_tokens``, and reasoning
+    tokens in ``usage.output_tokens_details.reasoning_tokens``.
+
+    As with chat, ``output_tokens`` already INCLUDES reasoning tokens, so we
+    subtract them from visible output and surface reasoning separately; the
+    calculation engine re-adds reasoning for energy purposes.
+
+    Returns:
+        Tuple of (Usage dict, cache_read_tokens, cache_creation_tokens). The
+        Responses API does not report cache-creation tokens, so that is None.
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None, None, None
+
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    total_tokens = getattr(usage, "total_tokens", 0) or 0
+
+    cache_read_tokens = None
+    input_details = getattr(usage, "input_tokens_details", None)
+    if input_details is not None:
+        cache_read_tokens = getattr(input_details, "cached_tokens", None)
+
+    reasoning_tokens = 0
+    output_details = getattr(usage, "output_tokens_details", None)
+    if output_details is not None:
+        raw_reasoning = getattr(output_details, "reasoning_tokens", 0)
+        if isinstance(raw_reasoning, int):
+            reasoning_tokens = raw_reasoning
+
+    # Clamp: guard against SDK drift / malformed usage where reasoning exceeds
+    # total output, which would otherwise emit negative visible-output tokens.
+    visible_output_tokens = max(0, output_tokens - reasoning_tokens)
+
+    usage_dict: Usage = {
+        "text": {
+            "input_tokens": input_tokens,
+            "output_tokens": visible_output_tokens,
+            "total_tokens": total_tokens,
+        }
+    }
+
+    if reasoning_tokens > 0:
+        usage_dict["reasoning"] = {
+            "input_tokens": 0,
+            "output_tokens": reasoning_tokens,  # Generated (decode), not prefill
+            "total_tokens": reasoning_tokens,
+        }
+
+    return usage_dict, cache_read_tokens, None
+
+
+def extract_responses_diagnostics(response: Any) -> tuple[int | None, str | None]:
+    """Extract privacy-safe output diagnostics from a Responses API response.
+
+    Uses ``response.output_text`` (a convenience string property) for a visible
+    character count without retaining content, and ``response.status`` as the
+    finish reason.
+    """
+    status = getattr(response, "status", None)
+    finish_reason = str(status) if status is not None else None
+
+    output_text = getattr(response, "output_text", None)
+    visible_chars = len(output_text) if isinstance(output_text, str) else None
+    return visible_chars, finish_reason
+
+
+def _requested_responses_max_tokens(kwargs: dict[str, Any]) -> int | None:
+    """Responses API caps output with ``max_output_tokens``."""
+    raw = kwargs.get("max_output_tokens")
     if isinstance(raw, bool):
         return None
     if isinstance(raw, int):
@@ -523,6 +793,7 @@ def _infer_openai_provider(base_url: str | None) -> str:
     return "openai-compatible"
 
 
+@_fail_open_metering
 def _after_create(
     result: Any, *args: Any, _vetch_provider: str = "openai", **kwargs: Any
 ) -> None:
@@ -594,6 +865,44 @@ def _on_create_error(error: BaseException, provider: str = "openai") -> None:
             )
 
 
+@_fail_open_metering
+def _after_responses_create(
+    result: Any, *args: Any, _vetch_provider: str = "openai", **kwargs: Any
+) -> None:
+    """Hook called after a non-streaming responses.create / responses.parse.
+
+    Captures usage from the Responses shape into the active context. Streaming
+    calls return early here; ResponsesStreamWrapper captures on completion.
+    """
+    from vetch.wrapper import auto_context_for_instrumented_call
+
+    if kwargs.get("stream", False):
+        return
+
+    with auto_context_for_instrumented_call(_vetch_provider):
+        usage, cache_read, cache_create = extract_responses_usage(result)
+        model = extract_model(result)
+        visible_chars, finish_reason = extract_responses_diagnostics(result)
+
+        ctx = get_active_context()
+        if ctx is not None:
+            if ctx.attribution_model:
+                model = ctx.attribution_model
+            ctx.capture(
+                model=model,
+                provider=_vetch_provider,
+                usage=usage,
+                is_stream=False,
+                complete=True,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_create,
+                visible_output_chars=visible_chars,
+                finish_reason=finish_reason,
+                requested_max_tokens=_requested_responses_max_tokens(kwargs),
+            )
+
+
+@_fail_open_metering
 def _after_embeddings_create(
     result: Any, *args: Any, _vetch_provider: str = "openai", **kwargs: Any
 ) -> None:
@@ -764,6 +1073,7 @@ class StreamWrapper:
             if prompt_details:
                 self._cache_read_tokens = getattr(prompt_details, "cached_tokens", None)
 
+    @_fail_open_metering
     def _capture_to_context(self) -> None:
         """Capture final metadata to active context (or create auto-context)."""
         if self._captured:
@@ -917,6 +1227,216 @@ class AsyncStreamWrapper(StreamWrapper):
                 pass
 
 
+class ResponsesStreamWrapper:
+    """Wrapper for OpenAI Responses API streaming (``Stream[ResponseStreamEvent]``).
+
+    Counts visible output characters without accumulating content and captures
+    final usage from the ``response.completed`` event (which carries the full
+    ``response`` object with ``usage``). Event types are duck-typed rather than
+    imported, so new event kinds don't break metering: any event with a string
+    ``delta`` contributes to the char count, and any event exposing
+    ``response.usage`` supplies the final token counts.
+    """
+
+    def __init__(
+        self, stream: Any, model_hint: str = "unknown", provider: str = "openai"
+    ) -> None:
+        self._stream = stream
+        self._provider = provider
+        self._model = model_hint if isinstance(model_hint, str) else "unknown"
+        self._accumulated_chars = 0
+        self._final_usage: Usage | None = None
+        self._cache_read_tokens: int | None = None
+        self._complete = False
+        self._error = False
+        self._error_type: str | None = None
+        self._captured = False
+
+    def __getattr__(self, name: str) -> Any:
+        # Forward unknown attributes to the wrapped stream. The higher-level
+        # ``client.responses.stream()`` entrypoint wraps the object returned by
+        # ``create(stream=True)`` in an SDK ``ResponseStream`` whose __init__
+        # reads ``raw_stream.response`` (and later ``.close()``); without this
+        # forwarding that path would raise AttributeError under instrumentation.
+        # Iteration still flows through our __next__/__anext__, so metering is
+        # preserved. Guard the wrapped-stream slot to avoid recursion before
+        # __init__ has set it.
+        if name == "_stream":
+            raise AttributeError(name)
+        return getattr(self._stream, name)
+
+    def __iter__(self) -> ResponsesStreamWrapper:
+        return self
+
+    def __next__(self) -> Any:
+        try:
+            event = next(self._stream)
+            self._process_event(event)
+            return event
+        except StopIteration:
+            self._complete = True
+            self._capture_to_context()
+            raise
+        except Exception as e:
+            self._error = True
+            self._error_type = type(e).__name__
+            self._capture_to_context()
+            raise
+
+    def _process_event(self, event: Any) -> None:
+        # Text deltas (ResponseTextDeltaEvent and friends) expose a str `delta`.
+        delta = getattr(event, "delta", None)
+        if isinstance(delta, str):
+            self._accumulated_chars += len(delta)
+
+        # Completed/incomplete events carry the full response with usage.
+        response = getattr(event, "response", None)
+        if response is not None:
+            model = getattr(response, "model", None)
+            if model:
+                self._model = model
+            usage, cache_read, _ = extract_responses_usage(response)
+            if usage is not None:
+                self._final_usage = usage
+                if cache_read is not None:
+                    self._cache_read_tokens = cache_read
+
+    @_fail_open_metering
+    def _capture_to_context(self) -> None:
+        if self._captured:
+            return
+        self._captured = True
+
+        from vetch.wrapper import auto_context_for_instrumented_call
+
+        ctx = get_active_context()
+        model = self._model
+        if ctx is not None and ctx.attribution_model:
+            model = ctx.attribution_model
+
+        if ctx is not None:
+            # Manual wrap() is active — capture to it; it emits on exit.
+            ctx.capture(
+                model=model,
+                provider=self._provider,
+                usage=self._final_usage,
+                is_stream=True,
+                accumulated_chars=self._accumulated_chars,
+                complete=self._complete,
+                error=self._error,
+                error_type=self._error_type,
+                cache_read_tokens=self._cache_read_tokens,
+                visible_output_chars=self._accumulated_chars,
+            )
+            return
+
+        # Instrumented mode — create an auto-context at stream completion.
+        with auto_context_for_instrumented_call(self._provider):
+            ctx = get_active_context()
+            if ctx is not None:
+                model = self._model
+                if ctx.attribution_model:
+                    model = ctx.attribution_model
+                ctx.capture(
+                    model=model,
+                    provider=self._provider,
+                    usage=self._final_usage,
+                    is_stream=True,
+                    accumulated_chars=self._accumulated_chars,
+                    complete=self._complete,
+                    error=self._error,
+                    error_type=self._error_type,
+                    cache_read_tokens=self._cache_read_tokens,
+                    visible_output_chars=self._accumulated_chars,
+                )
+
+    def __enter__(self) -> ResponsesStreamWrapper:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        if exc_type is not None:
+            self._error = True
+            self._error_type = exc_type.__name__
+        self._capture_to_context()
+        close = getattr(self._stream, "close", None)
+        if close:
+            close()
+
+
+class AsyncResponsesStreamWrapper(ResponsesStreamWrapper):
+    """Async wrapper for OpenAI Responses API streaming."""
+
+    def __aiter__(self) -> AsyncResponsesStreamWrapper:
+        return self
+
+    async def __anext__(self) -> Any:
+        try:
+            event = await self._stream.__anext__()
+            self._process_event(event)
+            return event
+        except StopAsyncIteration:
+            self._complete = True
+            self._capture_to_context()
+            raise
+        except Exception as e:
+            self._error = True
+            self._error_type = type(e).__name__
+            self._capture_to_context()
+            raise
+
+    async def __aenter__(self) -> AsyncResponsesStreamWrapper:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        if exc_type is not None:
+            self._error = True
+            self._error_type = exc_type.__name__
+        self._capture_to_context()
+        close = getattr(self._stream, "close", None)
+        if close:
+            try:
+                if hasattr(close, "__await__"):
+                    await close()
+                else:
+                    close()
+            except Exception:
+                pass
+
+
+def _restore_instance_method(obj: Any, method_name: str, original: Any) -> None:
+    """Restore a patched instance method to its pre-patch dispatch.
+
+    Patching shadows a class method with an instance attribute holding a Vetch
+    wrapper. We store the *unbound function* (``create.__func__``) so the weak
+    registry does not strongly reference the resource object; restoring that via
+    ``setattr`` would leave ``self`` unbound (the next real call would map the
+    first keyword — e.g. ``model=`` — onto ``self`` and break the client). So
+    when the original is a plain function we remove the instance-level shadow and
+    let class-method dispatch resume. Non-function originals (e.g. a test mock
+    assigned before patching) are restored as-is.
+
+    Used for chat completions, embeddings, and responses.
+    """
+    with contextlib.suppress(Exception):
+        if inspect.isfunction(original):
+            try:
+                delattr(obj, method_name)
+            except AttributeError:
+                setattr(obj, method_name, types.MethodType(original, obj))
+        else:
+            setattr(obj, method_name, original)
+
+
 def patch_openai_client(client: Any) -> bool:
     """Patch an OpenAI client instance.
 
@@ -1031,6 +1551,41 @@ def patch_openai_client(client: Any) -> bool:
                         embeddings.create = emb_wrapper
                         logger.debug("OpenAI embeddings endpoint patched successfully")
 
+        # 4. Patch responses.create / responses.parse if available (Responses API).
+        # `parse` does not route through `create` in the SDK, so both are patched.
+        responses = getattr(client, "responses", None)
+        if responses is not None:
+            for method_name in ("create", "parse"):
+                current = getattr(responses, method_name, None)
+                if current is None or is_vetch_patched(current):
+                    continue
+                with _client_lock:
+                    # Double-check inside lock (another thread may have patched)
+                    current = getattr(responses, method_name, None)
+                    if current is None or is_vetch_patched(current):
+                        continue
+                    originals = _responses_originals.setdefault(responses, {})
+                    # Store the unbound function (not the bound method) so the
+                    # weak-keyed registry does not strongly reference `responses`.
+                    originals[method_name] = (
+                        current.__func__ if hasattr(current, "__func__") else current
+                    )
+                    resp_wrapper: Any
+                    if inspect.iscoroutinefunction(current):
+                        resp_wrapper = _WeakAsyncResponsesWrapper(
+                            responses, _responses_originals, method_name,
+                            provider=inferred_provider,
+                        )
+                    else:
+                        resp_wrapper = _WeakResponsesWrapper(
+                            responses, _responses_originals, method_name,
+                            provider=inferred_provider,
+                        )
+                    resp_wrapper.vetch_patched = True
+                    resp_wrapper._vetch_original = originals[method_name]
+                    setattr(responses, method_name, resp_wrapper)
+                    logger.debug("OpenAI responses.%s patched successfully", method_name)
+
         logger.debug("OpenAI client patched successfully")
         return True
 
@@ -1062,16 +1617,25 @@ def unpatch_openai_client(client: Any) -> bool:
         # Thread-safe: retrieve and remove original for chat completions
         with _client_lock:
             original = _client_originals.pop(completions, None)
-            if original is not None:
-                completions.create = original
+        if original is not None:
+            _restore_instance_method(completions, "create", original)
 
         # Unpatch embeddings if it was patched
         embeddings = getattr(client, "embeddings", None)
         if embeddings:
             with _client_lock:
                 embeddings_original = _client_originals.pop(embeddings, None)
-                if embeddings_original is not None:
-                    embeddings.create = embeddings_original
+            if embeddings_original is not None:
+                _restore_instance_method(embeddings, "create", embeddings_original)
+
+        # Unpatch responses methods if patched
+        responses = getattr(client, "responses", None)
+        if responses is not None:
+            with _client_lock:
+                responses_originals = _responses_originals.pop(responses, None)
+            if responses_originals:
+                for method_name, original in responses_originals.items():
+                    _restore_instance_method(responses, method_name, original)
 
         logger.debug("OpenAI client unpatched successfully")
         return True
@@ -1219,10 +1783,16 @@ def uninstrument_openai_module() -> bool:
         # finish against originals), then restore __init__ (so new
         # clients stop getting patched), then clear registry.
         with _client_lock:
-            for completions, original_create in list(_client_originals.items()):
-                with contextlib.suppress(Exception):
-                    completions.create = original_create
+            # _client_originals holds both chat-completions and embeddings
+            # resource objects; both patch ``.create``.
+            for resource, original_create in list(_client_originals.items()):
+                _restore_instance_method(resource, "create", original_create)
             _client_originals.clear()
+
+            for responses, responses_originals in list(_responses_originals.items()):
+                for method_name, original in responses_originals.items():
+                    _restore_instance_method(responses, method_name, original)
+            _responses_originals.clear()
 
         # Restore original __init__ (after per-client cleanup)
         if _original_openai_init is not None:

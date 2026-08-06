@@ -634,6 +634,12 @@ def is_client_instrumented(client: object) -> bool:
         completions = getattr(chat, "completions", None)
         if completions is not None and is_vetch_patched(getattr(completions, "create", None)):
             return True
+    responses = getattr(client, "responses", None)
+    if responses is not None:
+        if is_vetch_patched(getattr(responses, "create", None)) or is_vetch_patched(
+            getattr(responses, "parse", None)
+        ):
+            return True
     models = getattr(client, "models", None)
     if models is not None:
         generate = getattr(models, "generate_content", None)
