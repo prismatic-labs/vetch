@@ -38,6 +38,7 @@ _DISABLED = _disabled_env or not _enabled_env
 _default_region: str | None = None  # Default region set via instrument()
 _default_tags: dict[str, str] | None = None  # Default tags set via instrument()
 _default_energy_override: dict[str, object] | None = None  # Default calibration override
+_default_provider_hint: str | None = None  # Default provider override set via instrument()
 # Only print kill-switch message if VETCH_VERBOSE=true (opt-in for debugging)
 if _DISABLED and os.environ.get("VETCH_VERBOSE", "").lower() in ("true", "1", "yes"):
     reason = "VETCH_DISABLED=true" if _disabled_env else "VETCH_ENABLED=false"
@@ -57,6 +58,7 @@ except _PNFError:
 __all__ = [
     "wrap",
     "awrap",
+    "record_usage",
     "Session",
     "instrument",
     "uninstrument",
@@ -220,10 +222,24 @@ def get_default_energy_override() -> dict[str, object] | None:
     return _default_energy_override
 
 
+def get_default_provider_hint() -> str | None:
+    """Get the default provider override set by ``instrument()``.
+
+    Applied to auto-instrumented calls so a whole deployment can be pinned to,
+    e.g., ``"self-hosted"`` without wrapping each call site.
+
+    Returns:
+        Default provider hint or None if not set.
+    """
+    global _default_provider_hint
+    return _default_provider_hint
+
+
 def instrument(
     region: str | None = None,
     tags: dict[str, str] | None = None,
     energy_override: dict[str, object] | None = None,
+    provider_hint: str | None = None,
 ) -> bool:
     """Auto-instrument all detected LLM SDK clients.
 
@@ -241,6 +257,8 @@ def instrument(
         region: Default grid region for carbon calculation.
         tags: Default tags to add to all events.
         energy_override: Default energy values for auto-instrumented calls.
+        provider_hint: Default provider override applied to auto-instrumented
+            calls (e.g. "self-hosted" to pin a whole deployment).
 
     Returns:
         True if any clients were instrumented, False otherwise.
@@ -268,6 +286,7 @@ def instrument(
         - Set VETCH_DISABLED=true or VETCH_ENABLED=false to disable
     """
     global _instrumented, _default_region, _default_tags, _default_energy_override
+    global _default_provider_hint
 
     if _DISABLED:
         return False
@@ -283,6 +302,8 @@ def instrument(
             add_global_tags(tags)
         if energy_override is not None:
             _default_energy_override = energy_override
+        if provider_hint is not None:
+            _default_provider_hint = provider_hint
 
         if _instrumented:
             return True
@@ -672,6 +693,7 @@ def wrap(
     energy_override: dict[str, object] | None = None,
     price_multiplier: float = 1.0,
     emit: bool = True,
+    provider_hint: str | None = None,
 ) -> VetchContext:
     """Context manager for tracking LLM inference energy and carbon.
 
@@ -688,6 +710,10 @@ def wrap(
         price_multiplier: Factor to adjust list pricing (e.g. 0.8 for 20% discount).
         emit: If True (default), emit JSON to configured output. Set False for
             quiet mode (metrics still available in ctx.event).
+        provider_hint: Explicit provider override (e.g. "self-hosted",
+            "openai-compatible"). Overrides the provider inferred from the model
+            name / SDK client, so a self-hosted model yields cost 0 with energy
+            and carbon still computed.
 
     Returns:
         VetchContext: Context manager that logs inference events.
@@ -710,12 +736,13 @@ def wrap(
     if _DISABLED:
         return VetchContext(
             region=region, tags=tags, energy_override=energy_override,
-            price_multiplier=price_multiplier, emit=emit, _disabled=True,
+            price_multiplier=price_multiplier, emit=emit,
+            provider_hint=provider_hint, _disabled=True,
         )
 
     return VetchContext(
         region=region, tags=tags, energy_override=energy_override,
-        price_multiplier=price_multiplier, emit=emit,
+        price_multiplier=price_multiplier, emit=emit, provider_hint=provider_hint,
     )
 
 
@@ -725,6 +752,7 @@ def awrap(
     energy_override: dict[str, object] | None = None,
     price_multiplier: float = 1.0,
     emit: bool = True,
+    provider_hint: str | None = None,
 ) -> AsyncContextManager[VetchContext]:
     """Async context manager for tracking LLM inference energy and carbon.
 
@@ -737,6 +765,8 @@ def awrap(
         energy_override: User-provided energy values.
         price_multiplier: Factor to adjust list pricing (e.g. 0.8 for 20% discount).
         emit: If True (default), emit JSON to configured output.
+        provider_hint: Explicit provider override (e.g. "self-hosted"). Overrides
+            the inferred provider that drives cost/PUE/water.
 
     Returns:
         Async context manager yielding VetchContext.
@@ -759,6 +789,7 @@ def awrap(
         energy_override=energy_override,
         price_multiplier=price_multiplier,
         emit=emit,
+        provider_hint=provider_hint,
         _disabled=_DISABLED,
     )
 
@@ -769,6 +800,10 @@ def __getattr__(name: str) -> object:
         from vetch.wrapper import VetchContext
 
         return VetchContext
+    if name == "record_usage":
+        from vetch.wrapper import record_usage
+
+        return record_usage
     if name == "Session":
         from vetch.session import Session
 

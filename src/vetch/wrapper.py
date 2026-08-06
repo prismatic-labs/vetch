@@ -159,7 +159,12 @@ def auto_context_for_instrumented_call(
     """
     # Import here to avoid circular dependency (vetch/__init__.py imports from this module)
     # These imports are cached by Python so the overhead is minimal
-    from vetch import get_default_energy_override, get_default_region, get_default_tags
+    from vetch import (
+        get_default_energy_override,
+        get_default_provider_hint,
+        get_default_region,
+        get_default_tags,
+    )
 
     # Check if manual wrap() context is already active
     ctx = get_active_context()
@@ -174,6 +179,7 @@ def auto_context_for_instrumented_call(
         tags=get_default_tags(),
         energy_override=get_default_energy_override(),
         emit=True,
+        provider_hint=get_default_provider_hint(),
     )
 
     # Use proper with statement for lifecycle management
@@ -210,7 +216,12 @@ async def async_auto_context_for_instrumented_call(
     """
     # Import here to avoid circular dependency (vetch/__init__.py imports from this module)
     # These imports are cached by Python so the overhead is minimal
-    from vetch import get_default_energy_override, get_default_region, get_default_tags
+    from vetch import (
+        get_default_energy_override,
+        get_default_provider_hint,
+        get_default_region,
+        get_default_tags,
+    )
 
     # Check if manual wrap() context is already active
     ctx = get_active_context()
@@ -225,6 +236,7 @@ async def async_auto_context_for_instrumented_call(
         tags=get_default_tags(),
         energy_override=get_default_energy_override(),
         emit=True,
+        provider_hint=get_default_provider_hint(),
     )
 
     # Use proper async with statement for lifecycle management
@@ -247,7 +259,10 @@ class VetchContext:
         energy_override: dict[str, object] | None = None,
         price_multiplier: float = 1.0,
         emit: bool = True,
+        provider_hint: str | None = None,
         _disabled: bool = False,
+        _manual: bool = False,
+        _manual_latency_ms: float | None = None,
     ) -> None:
         """Initialize tracking context.
 
@@ -257,16 +272,45 @@ class VetchContext:
             energy_override: User-provided energy values.
             price_multiplier: Factor to adjust list pricing (e.g. 0.8 for 20% discount).
             emit: If True, emit JSON to configured output. Set False for quiet mode.
+            provider_hint: Explicit provider override (e.g. "self-hosted",
+                "openai-compatible"). Overrides the provider inferred from the
+                model name / SDK client, driving the cost branch (self-hosted →
+                cost 0) and PUE/water lookups. An unrecognised value is used but
+                flagged in ``vetch_warnings`` (fail-loud).
             _disabled: Internal flag for kill switch (VETCH_DISABLED=true).
+            _manual: Internal flag for record_usage() — skip SDK client patching
+                (there is no live call to intercept, only supplied usage).
+            _manual_latency_ms: Internal — caller-supplied latency for a manual
+                record. Manual contexts do not time a live call, so the internal
+                stopwatch (which would measure only emit overhead) is not used.
         """
         self._emit = emit
         # P0: Kill switch - store disabled state for no-op behavior
         self._globally_disabled = _disabled
+        self._manual = _manual
+        self._manual_latency_ms = _manual_latency_ms
 
         from vetch.context import get_active_context
 
         # Check for active parent context
         parent = get_active_context()
+
+        # Explicit provider override for this context's emitted event. Normalised
+        # to lower case (provider labels are lower case) and validated so a typo
+        # like "selfhosted" is surfaced rather than silently billed at cloud
+        # rates. Applies to the context it is set on (not inherited via the
+        # TrackingContext parent chain).
+        self._provider_hint = provider_hint.strip().lower() if provider_hint else None
+        self._provider_hint_warning: str | None = None
+        if self._provider_hint:
+            from vetch.calculation import KNOWN_PROVIDERS
+
+            if self._provider_hint not in KNOWN_PROVIDERS:
+                self._provider_hint_warning = (
+                    f"Unrecognised provider_hint '{provider_hint}'; not one of "
+                    f"{sorted(KNOWN_PROVIDERS)}. Using it as-is — cost may be wrong "
+                    f"(e.g. 'self-hosted' zeroes cost, a typo does not)."
+                )
 
         # Set price multiplier, inheriting from parent if default
         self.price_multiplier = price_multiplier
@@ -299,6 +343,11 @@ class VetchContext:
         self._tracking_ctx: TrackingContext | None = None
         self._warnings: deque[str] = deque(maxlen=50)
         self._patched_clients: list[tuple[str, Any]] = []  # Per-context patched clients
+
+        # Fail-loud: surface an unrecognised provider_hint (validated above).
+        if self._provider_hint_warning:
+            self._warnings.append(self._provider_hint_warning)
+            logger.warning(self._provider_hint_warning)
 
         # Validate energy override if provided
         if energy_override is not None:
@@ -450,8 +499,10 @@ class VetchContext:
             self._tracking_ctx.warnings = list(self._warnings)  # Start with current warnings
             self._tracking_ctx.__enter__()
 
-            # 6. Set up SDK patches
-            self._setup_patches()
+            # 6. Set up SDK patches (skipped for manual record_usage() contexts,
+            # which have supplied usage and no live call to intercept).
+            if not self._manual:
+                self._setup_patches()
         except Exception as e:
             logger.warning(f"Vetch setup failed, tracking disabled: {e}")
             self._tracking_disabled = True
@@ -459,7 +510,13 @@ class VetchContext:
     def _teardown(self, exc_type: type[BaseException] | None) -> None:
         """Teardown context state."""
         latency_ms = None
-        if self._start_time is not None:
+        if self._manual:
+            # Manual record: there is no live call to time. Use the caller's
+            # supplied duration (or None) rather than the stopwatch, which would
+            # otherwise report a fraction of a millisecond of emit overhead as if
+            # it were inference latency.
+            latency_ms = self._manual_latency_ms
+        elif self._start_time is not None:
             latency_ms = (time.perf_counter() - self._start_time) * 1000
 
         try:
@@ -650,6 +707,12 @@ class VetchContext:
                 error = True
                 error_type = captured.error_type
 
+        # Explicit provider override (wrap(provider_hint=...) / instrument default).
+        # Wins over the provider inferred from the model name or SDK client, so a
+        # self-hosted model is not billed at cloud rates and PUE/water use the
+        # right coefficients. Applies even when nothing was captured.
+        if self._provider_hint:
+            provider = self._provider_hint
 
         # Extract image count from usage for VLM energy calculation
         n_images = _infer_n_images_from_usage(usage)
@@ -968,6 +1031,7 @@ def wrap(
     energy_override: dict[str, object] | None = None,
     price_multiplier: float = 1.0,
     emit: bool = True,
+    provider_hint: str | None = None,
 ) -> Generator[VetchContext, None, None]:
     """Context manager for tracking LLM inference.
 
@@ -979,6 +1043,7 @@ def wrap(
         tags: Key-value pairs for cost attribution.
         energy_override: User-provided energy values.
         price_multiplier: Factor to adjust list pricing (e.g., 0.8 for 20% discount).
+        provider_hint: Explicit provider override (e.g. "self-hosted").
         emit: If True (default), emit JSON to configured output.
               Set False for quiet mode (metrics still available in ctx.event).
 
@@ -994,6 +1059,7 @@ def wrap(
         energy_override=energy_override,
         price_multiplier=price_multiplier,
         emit=emit,
+        provider_hint=provider_hint,
     )
     with ctx:
         yield ctx
@@ -1006,6 +1072,7 @@ async def awrap(
     energy_override: dict[str, object] | None = None,
     price_multiplier: float = 1.0,
     emit: bool = True,
+    provider_hint: str | None = None,
     _disabled: bool = False,
 ) -> AsyncGenerator[VetchContext, None]:
     """Async context manager for tracking LLM inference.
@@ -1035,10 +1102,127 @@ async def awrap(
         energy_override=energy_override,
         price_multiplier=price_multiplier,
         emit=emit,
+        provider_hint=provider_hint,
         _disabled=_disabled,
     )
     async with ctx:
         yield ctx
+
+
+def record_usage(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    region: str | None = None,
+    provider_hint: str | None = None,
+    tags: dict[str, str] | None = None,
+    energy_override: dict[str, object] | None = None,
+    price_multiplier: float = 1.0,
+    reasoning_tokens: int | None = None,
+    cache_read_tokens: int | None = None,
+    cache_creation_tokens: int | None = None,
+    duration_ms: float | None = None,
+    emit: bool = True,
+) -> InferenceEvent | None:
+    """Meter a call Vetch did not intercept, from usage you already have.
+
+    The escape hatch for any model reached outside a supported SDK — e.g. a
+    self-hosted model called over raw HTTP — where the response body already
+    carries the token counts. Runs the same calculation and emit path as an
+    instrumented call, so the resulting event is schema-identical and flows into
+    the same aggregation, budgets, sessions, and exporters.
+
+    Each call emits exactly one event and returns it, independent of any active
+    ``wrap()``. Attach attribution with this function's own ``tags`` / ``region``
+    rather than wrapping it — ``wrap()`` is for intercepting live SDK calls, and
+    a ``wrap()`` placed around ``record_usage`` will additionally emit its own
+    (empty) event on exit.
+
+    Args:
+        model: Model identifier (used for registry / energy resolution).
+        input_tokens: Prompt (input) tokens.
+        output_tokens: Visible completion tokens, excluding reasoning.
+        region: Grid region for carbon. Falls back to VETCH_REGION / inference.
+        provider_hint: Explicit provider (e.g. ``"self-hosted"`` for cost 0 with
+            energy/carbon still computed, ``"openai-compatible"`` for unknown
+            cost). Defaults to the provider inferred from the model name. An
+            unrecognised value is used but flagged in ``vetch_warnings``.
+        tags: Attribution tags for this event.
+        energy_override: User-provided energy coefficients (see ``wrap``).
+        price_multiplier: Factor applied to list pricing (e.g. 0.8 for a 20%
+            discount). Ignored when cost is 0 (self-hosted) or unknown.
+        reasoning_tokens: Reasoning/thinking tokens, surfaced separately and
+            counted toward output energy (as for instrumented reasoning models).
+        cache_read_tokens: Prompt-cache read tokens (e.g. vLLM automatic prefix
+            caching). Charged at the cache-read energy factor (and, for priced
+            providers, the discounted cache-read price). Pass counts in the
+            resolved provider's native convention: for OpenAI-style / self-hosted
+            (the default), ``input_tokens`` INCLUDES the cached tokens (as vLLM
+            and OpenAI report ``prompt_tokens``); for Anthropic they are disjoint
+            (``input_tokens`` is the fresh, uncached count).
+        cache_creation_tokens: Prompt-cache write tokens, if the endpoint reports
+            them.
+        duration_ms: Measured latency of the call, if known. Manual events have
+            no live call to time, so ``latency_ms`` is otherwise ``None`` rather
+            than a fabricated value.
+        emit: If False, compute and return the event without emitting.
+
+    Returns:
+        The ``InferenceEvent``, or ``None`` when Vetch is disabled.
+    """
+    from vetch import _DISABLED  # kill switch (VETCH_DISABLED / VETCH_ENABLED)
+
+    if _DISABLED:
+        return None
+
+    from vetch.calculation import _infer_provider_from_model
+
+    in_tok = max(0, input_tokens)
+    out_tok = max(0, output_tokens)
+    reason_tok = max(0, reasoning_tokens) if reasoning_tokens is not None else 0
+
+    provider = provider_hint or _infer_provider_from_model(model) or "unknown"
+
+    usage: Usage = {
+        "text": {
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
+            "total_tokens": in_tok + out_tok + reason_tok,
+        }
+    }
+    if reason_tok > 0:
+        usage["reasoning"] = {
+            "input_tokens": 0,
+            "output_tokens": reason_tok,
+            "total_tokens": reason_tok,
+        }
+
+    # Always our own non-patching emit cycle: one event per call, returned to the
+    # caller, regardless of any active wrap(). A standalone VetchContext still
+    # inherits region/tags from a parent context via __init__ if one is open.
+    ctx = VetchContext(
+        region=region,
+        tags=tags,
+        energy_override=energy_override,
+        price_multiplier=price_multiplier,
+        emit=emit,
+        provider_hint=provider_hint,
+        _manual=True,
+        _manual_latency_ms=duration_ms,
+    )
+    with ctx:
+        active = get_active_context()
+        if active is not None:
+            active.capture(
+                model=model,
+                provider=provider,
+                usage=usage,
+                complete=True,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+            )
+    return ctx.event
 
 
 def get_tracking_stats() -> dict[str, int]:

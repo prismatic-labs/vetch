@@ -26,6 +26,25 @@ METHODOLOGY_VERSION = "1.3"
 _SELF_HOSTED_PROVIDERS = frozenset({"self-hosted", "ollama"})
 _UNKNOWN_PRICE_PROVIDERS = frozenset({"openai-compatible"})
 
+# Provider labels Vetch recognises for cost / PUE / water / self-hosted handling.
+# Used to validate an explicit provider_hint so a typo (e.g. "selfhosted") is
+# surfaced loudly rather than silently billed at cloud rates.
+KNOWN_PROVIDERS = frozenset(
+    {
+        "openai",
+        "anthropic",
+        "google",
+        "aws",
+        "azure",
+        "bedrock",
+        "deepseek",
+        "vertexai",
+        "self-hosted",
+        "ollama",
+        "openai-compatible",
+    }
+)
+
 # Providers that report cache-read tokens DISJOINT from input_tokens.
 # The cost/energy math (calculate_cost, calculate_energy) expects the OpenAI
 # convention where input_tokens already INCLUDES cache-read tokens (cached is a
