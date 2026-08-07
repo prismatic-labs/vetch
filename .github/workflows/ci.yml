@@ -60,6 +60,9 @@ jobs:
       - name: Run mypy
         run: mypy src/
 
+      - name: Check doc links
+        run: python scripts/check_doc_links.py
+
   calculator:
     runs-on: ubuntu-latest
     steps:
