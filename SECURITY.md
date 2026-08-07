@@ -2,10 +2,12 @@
 
 ## Supported Versions
 
+Vetch is pre-1.0. Security fixes land on the latest published minor release only; upgrade to the current version to receive them.
+
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.2.x   | :white_check_mark: |
-| 0.1.x   | :x:                |
+| 0.10.x  | :white_check_mark: |
+| < 0.10  | :x:                |
 
 ## Reporting a Vulnerability
 
