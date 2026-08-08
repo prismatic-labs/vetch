@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.5] - 2026-08-08
+
+Registry + resolver update: new model rows and a dotted-version-aware resolver,
+with the JS SDK registry regenerated to match.
+
+### Added — new registry rows (energy + pricing, live-verified prices)
+
+- OpenAI GPT-5.6 Sol / Terra / Luna: context-tier pricing (2× input / 1.5× output
+  above the 272k-token threshold), reasoning architecture, 1.25× cache-write.
+- Gemini 3.6 Flash: $1.50 / $7.50 per 1M input/output, plus `preview`/`latest`
+  aliases.
+- Gemma 4 31B Instruct (`gemma-4-31b-it`): self-hosted 30.7B dense — its own
+  energy row (no longer the `gemini-3.1-pro` large-cloud proxy) and a $0 list
+  price (cost is zeroed via `provider_hint="self-hosted"`).
+
+### Changed — dotted-version-aware resolver
+
+- A dotted minor-version bump with no exact/alias entry now degrades to its
+  major-version sibling (e.g. `gpt-5.6-sol` → `gpt-5`, `gpt-5.7` → `gpt-5`)
+  instead of hyphen-shortening to the generic family default, which could be a
+  whole generation behind (e.g. `gpt-4o`). Applies across vendors.
+
+### Changed — vetch-ai-sdk (JS)
+
+- Registry (energy / pricing / aliases) and resolver regenerated to stay in
+  lockstep with the Python registry.
+
 ## [0.10.4] - 2026-08-07
 
 Minor release: a public API for metering calls Vetch does not intercept, and an

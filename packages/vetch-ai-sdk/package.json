@@ -1,6 +1,6 @@
 {
   "name": "@prismatic-labs/vetch-ai-sdk",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "private": false,
   "license": "Apache-2.0",
   "type": "module",
