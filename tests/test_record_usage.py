@@ -1,4 +1,4 @@
-"""Tests for record_usage() (Item 2a) and provider_hint (Item 2b).
+"""Tests for record_usage() and provider_hint.
 
 record_usage is the escape hatch for calls Vetch does not intercept (e.g. a
 self-hosted model over raw HTTP): it runs the same calculation and emit path as
@@ -82,12 +82,14 @@ class TestProviderHintSelfHosted:
         # energy/carbon still computed
         assert ev["estimated_energy_wh"] and ev["estimated_energy_wh"] > 0
 
-    def test_without_hint_gemma_name_maps_to_cloud_cost(self, _emitter):
-        # Documents the Item 2b problem the hint solves: the gemma-* name infers
-        # google and is billed at cloud rates.
+    def test_without_hint_gemma_infers_google_but_not_cloud_billed(self, _emitter):
+        # gemma-4-31b-it is a first-class self-hosted row ($0 price),
+        # so even without the hint the name infers google but is NOT billed at
+        # cloud rates (the registry fix). provider_hint still adds the explicit
+        # self-hosted billing tier (see test_self_hosted_zeroes_cost_keeps_energy).
         ev = vetch.record_usage("gemma-4-31b-it", 1000, 200, region="us-east-1")
         assert ev["provider"] == "google"
-        assert ev["estimated_cost_usd"] and ev["estimated_cost_usd"] > 0
+        assert ev["estimated_cost_usd"] == 0.0
 
     def test_openai_compatible_leaves_cost_unknown(self, _emitter):
         ev = vetch.record_usage(

@@ -1,263 +1,132 @@
 {
-  "gpt-4": {
-    "usd_per_1k_input": 0.03,
-    "usd_per_1k_output": 0.06
-  },
-  "gpt-4-turbo": {
-    "usd_per_1k_input": 0.01,
-    "usd_per_1k_output": 0.03
-  },
-  "gpt-4o": {
-    "usd_per_1k_input": 0.0025,
-    "usd_per_1k_output": 0.010,
-    "cache_read_discount": 0.5,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-4o-mini": {
-    "usd_per_1k_input": 0.00015,
-    "usd_per_1k_output": 0.0006,
-    "cache_read_discount": 0.5,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-4.1": {
-    "usd_per_1k_input": 0.002,
-    "usd_per_1k_output": 0.008,
-    "cache_read_discount": 0.25,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-4.1-mini": {
-    "usd_per_1k_input": 0.0004,
-    "usd_per_1k_output": 0.0016,
-    "cache_read_discount": 0.25,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-4.1-nano": {
-    "usd_per_1k_input": 0.0001,
-    "usd_per_1k_output": 0.0004,
-    "cache_read_discount": 0.25,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-4.5": {
-    "usd_per_1k_input": 0.075,
-    "usd_per_1k_output": 0.150
-  },
-  "gpt-3.5-turbo": {
-    "usd_per_1k_input": 0.0005,
-    "usd_per_1k_output": 0.0015
-  },
-  "gpt-5": {
-    "usd_per_1k_input": 0.00125,
-    "usd_per_1k_output": 0.010,
+  "claude-3-haiku": {
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
     "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-5-mini": {
     "usd_per_1k_input": 0.00025,
-    "usd_per_1k_output": 0.002,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-5-nano": {
-    "usd_per_1k_input": 0.00005,
-    "usd_per_1k_output": 0.0004,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-5-pro": {
-    "usd_per_1k_input": 0.015,
-    "usd_per_1k_output": 0.120
-  },
-  "gpt-5.1": {
-    "usd_per_1k_input": 0.00125,
-    "usd_per_1k_output": 0.010,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-5.2": {
-    "usd_per_1k_input": 0.00175,
-    "usd_per_1k_output": 0.014,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-5.2-pro": {
-    "usd_per_1k_input": 0.021,
-    "usd_per_1k_output": 0.168
-  },
-  "gpt-5.4": {
-    "usd_per_1k_input": 0.0025,
-    "usd_per_1k_output": 0.015,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-5.4-mini": {
-    "usd_per_1k_input": 0.00075,
-    "usd_per_1k_output": 0.0045,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-5.4-nano": {
-    "usd_per_1k_input": 0.0002,
-    "usd_per_1k_output": 0.00125,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.0
-  },
-  "gpt-5.4-pro": {
-    "usd_per_1k_input": 0.030,
-    "usd_per_1k_output": 0.180
-  },
-  "o1": {
-    "usd_per_1k_input": 0.015,
-    "usd_per_1k_output": 0.060,
-    "cache_read_discount": 0.5
-  },
-  "o1-mini": {
-    "usd_per_1k_input": 0.0011,
-    "usd_per_1k_output": 0.0044,
-    "cache_read_discount": 0.5
-  },
-  "o1-pro": {
-    "usd_per_1k_input": 0.150,
-    "usd_per_1k_output": 0.600
-  },
-  "o3": {
-    "usd_per_1k_input": 0.002,
-    "usd_per_1k_output": 0.008,
-    "cache_read_discount": 0.25
-  },
-  "o3-mini": {
-    "usd_per_1k_input": 0.0011,
-    "usd_per_1k_output": 0.0044,
-    "cache_read_discount": 0.5
-  },
-  "o3-pro": {
-    "usd_per_1k_input": 0.020,
-    "usd_per_1k_output": 0.080
-  },
-  "o4-mini": {
-    "usd_per_1k_input": 0.0011,
-    "usd_per_1k_output": 0.0044,
-    "cache_read_discount": 0.25
+    "usd_per_1k_output": 0.00125
   },
   "claude-3-opus": {
-    "usd_per_1k_input": 0.015,
-    "usd_per_1k_output": 0.075,
-    "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.015,
+    "usd_per_1k_output": 0.075
   },
   "claude-3-sonnet": {
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
     "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
-  },
-  "claude-3-haiku": {
-    "usd_per_1k_input": 0.00025,
-    "usd_per_1k_output": 0.00125,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
-  },
-  "claude-3.5-sonnet": {
-    "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
+    "usd_per_1k_output": 0.015
   },
   "claude-3.5-haiku": {
-    "usd_per_1k_input": 0.0008,
-    "usd_per_1k_output": 0.004,
-    "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.0008,
+    "usd_per_1k_output": 0.004
+  },
+  "claude-3.5-sonnet": {
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015
   },
   "claude-3.7-sonnet": {
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
     "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
-  },
-  "claude-haiku-4-5": {
-    "usd_per_1k_input": 0.001,
-    "usd_per_1k_output": 0.005,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
-  },
-  "claude-sonnet-4": {
-    "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
-  },
-  "claude-sonnet-4-5": {
-    "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0,
-    "as_of": "2026-06-23"
-  },
-  "claude-sonnet-4-6": {
-    "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0,
-    "as_of": "2026-06-23"
-  },
-  "claude-opus-4-5": {
-    "usd_per_1k_input": 0.005,
-    "usd_per_1k_output": 0.025,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0,
-    "as_of": "2026-06-23"
-  },
-  "claude-opus-4-6": {
-    "usd_per_1k_input": 0.005,
-    "usd_per_1k_output": 0.025,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0,
-    "as_of": "2026-06-23"
-  },
-  "claude-opus-4-7": {
-    "usd_per_1k_input": 0.005,
-    "usd_per_1k_output": 0.025,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0,
-    "as_of": "2026-06-23"
-  },
-  "claude-opus-4-8": {
-    "usd_per_1k_input": 0.005,
-    "usd_per_1k_output": 0.025,
-    "cache_read_discount": 0.1,
-    "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0,
-    "as_of": "2026-06-23"
+    "usd_per_1k_output": 0.015
   },
   "claude-3.7-sonnet-thinking": {
-    "usd_per_1k_input": 0.003,
-    "usd_per_1k_output": 0.015,
-    "cache_read_discount": 0.1,
     "cache_creation_premium": 1.25,
-    "cache_creation_premium_1h": 2.0
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015
   },
-  "gemini-1.5-pro": {
-    "usd_per_1k_input": 0.00125,
-    "usd_per_1k_output": 0.005,
-    "tier_threshold": 128000,
-    "tier_multiplier": 2.0
+  "claude-haiku-4-5": {
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.001,
+    "usd_per_1k_output": 0.005
+  },
+  "claude-opus-4-5": {
+    "as_of": "2026-06-23",
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.025
+  },
+  "claude-opus-4-6": {
+    "as_of": "2026-06-23",
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.025
+  },
+  "claude-opus-4-7": {
+    "as_of": "2026-06-23",
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.025
+  },
+  "claude-opus-4-8": {
+    "as_of": "2026-06-23",
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.025
+  },
+  "claude-sonnet-4": {
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015
+  },
+  "claude-sonnet-4-5": {
+    "as_of": "2026-06-23",
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015
+  },
+  "claude-sonnet-4-6": {
+    "as_of": "2026-06-23",
+    "cache_creation_premium": 1.25,
+    "cache_creation_premium_1h": 2.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.003,
+    "usd_per_1k_output": 0.015
+  },
+  "deepseek-r1": {
+    "usd_per_1k_input": 0.00055,
+    "usd_per_1k_output": 0.00219
+  },
+  "deepseek-v3": {
+    "usd_per_1k_input": 0.00027,
+    "usd_per_1k_output": 0.0011
   },
   "gemini-1.5-flash": {
     "usd_per_1k_input": 0.00035,
     "usd_per_1k_output": 0.00105
+  },
+  "gemini-1.5-pro": {
+    "tier_multiplier": 2.0,
+    "tier_threshold": 128000,
+    "usd_per_1k_input": 0.00125,
+    "usd_per_1k_output": 0.005
   },
   "gemini-2.0-flash": {
     "usd_per_1k_input": 0.0001,
@@ -268,48 +137,189 @@
     "usd_per_1k_output": 0.0004
   },
   "gemini-2.5-pro": {
-    "usd_per_1k_input": 0.00125,
-    "usd_per_1k_output": 0.010,
-    "tier_threshold": 200000,
-    "tier_multiplier_input": 2.0,
-    "tier_multiplier_output": 1.5
-  },
-  "gemini-3-flash": {
-    "usd_per_1k_input": 0.0005,
-    "usd_per_1k_output": 0.003,
-    "cache_read_discount": 0.1,
-    "as_of": "2026-06-23"
-  },
-  "gemini-3.5-flash": {
-    "usd_per_1k_input": 0.0015,
-    "usd_per_1k_output": 0.009,
-    "cache_read_discount": 0.1,
-    "as_of": "2026-06-23"
-  },
-  "gemini-3.1-flash-lite": {
-    "usd_per_1k_input": 0.00025,
-    "usd_per_1k_output": 0.0015,
-    "cache_read_discount": 0.1,
-    "as_of": "2026-06-23"
-  },
-  "gemini-3.1-pro": {
-    "usd_per_1k_input": 0.002,
-    "usd_per_1k_output": 0.012,
-    "tier_threshold": 200000,
     "tier_multiplier_input": 2.0,
     "tier_multiplier_output": 1.5,
+    "tier_threshold": 200000,
+    "usd_per_1k_input": 0.00125,
+    "usd_per_1k_output": 0.01
+  },
+  "gemini-3-flash": {
+    "as_of": "2026-06-23",
     "cache_read_discount": 0.1,
-    "as_of": "2026-06-23"
+    "usd_per_1k_input": 0.0005,
+    "usd_per_1k_output": 0.003
+  },
+  "gemini-3.1-flash-lite": {
+    "as_of": "2026-06-23",
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.00025,
+    "usd_per_1k_output": 0.0015
+  },
+  "gemini-3.1-pro": {
+    "as_of": "2026-06-23",
+    "cache_read_discount": 0.1,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5,
+    "tier_threshold": 200000,
+    "usd_per_1k_input": 0.002,
+    "usd_per_1k_output": 0.012
+  },
+  "gemini-3.5-flash": {
+    "as_of": "2026-06-23",
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.0015,
+    "usd_per_1k_output": 0.009
+  },
+  "gemini-3.6-flash": {
+    "as_of": "2026-08-07",
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.0015,
+    "usd_per_1k_output": 0.0075
+  },
+  "gemma-4-31b-it": {
+    "as_of": "2026-08-08",
+    "cost_scope": "model_license_only",
+    "notes": "No provider list price. Self-hosted infrastructure and electricity costs are excluded.",
+    "usd_per_1k_input": 0.0,
+    "usd_per_1k_output": 0.0
+  },
+  "gpt-3.5-turbo": {
+    "usd_per_1k_input": 0.0005,
+    "usd_per_1k_output": 0.0015
+  },
+  "gpt-4": {
+    "usd_per_1k_input": 0.03,
+    "usd_per_1k_output": 0.06
+  },
+  "gpt-4-turbo": {
+    "usd_per_1k_input": 0.01,
+    "usd_per_1k_output": 0.03
+  },
+  "gpt-4.1": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.25,
+    "usd_per_1k_input": 0.002,
+    "usd_per_1k_output": 0.008
+  },
+  "gpt-4.1-mini": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.25,
+    "usd_per_1k_input": 0.0004,
+    "usd_per_1k_output": 0.0016
+  },
+  "gpt-4.1-nano": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.25,
+    "usd_per_1k_input": 0.0001,
+    "usd_per_1k_output": 0.0004
+  },
+  "gpt-4.5": {
+    "usd_per_1k_input": 0.075,
+    "usd_per_1k_output": 0.15
+  },
+  "gpt-4o": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.5,
+    "usd_per_1k_input": 0.0025,
+    "usd_per_1k_output": 0.01
+  },
+  "gpt-4o-mini": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.5,
+    "usd_per_1k_input": 0.00015,
+    "usd_per_1k_output": 0.0006
+  },
+  "gpt-5": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.00125,
+    "usd_per_1k_output": 0.01
+  },
+  "gpt-5-mini": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.00025,
+    "usd_per_1k_output": 0.002
+  },
+  "gpt-5-nano": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 5e-05,
+    "usd_per_1k_output": 0.0004
+  },
+  "gpt-5-pro": {
+    "usd_per_1k_input": 0.015,
+    "usd_per_1k_output": 0.12
+  },
+  "gpt-5.1": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.00125,
+    "usd_per_1k_output": 0.01
+  },
+  "gpt-5.2": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.00175,
+    "usd_per_1k_output": 0.014
+  },
+  "gpt-5.2-pro": {
+    "usd_per_1k_input": 0.021,
+    "usd_per_1k_output": 0.168
+  },
+  "gpt-5.4": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.0025,
+    "usd_per_1k_output": 0.015
+  },
+  "gpt-5.4-mini": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.00075,
+    "usd_per_1k_output": 0.0045
+  },
+  "gpt-5.4-nano": {
+    "cache_creation_premium": 1.0,
+    "cache_read_discount": 0.1,
+    "usd_per_1k_input": 0.0002,
+    "usd_per_1k_output": 0.00125
+  },
+  "gpt-5.4-pro": {
+    "usd_per_1k_input": 0.03,
+    "usd_per_1k_output": 0.18
+  },
+  "gpt-5.6-luna": {
+    "as_of": "2026-08-07",
+    "cache_creation_premium": 1.25,
+    "cache_read_discount": 0.1,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5,
+    "tier_threshold": 272000,
+    "usd_per_1k_input": 0.0002,
+    "usd_per_1k_output": 0.0012
+  },
+  "gpt-5.6-sol": {
+    "as_of": "2026-08-07",
+    "cache_creation_premium": 1.25,
+    "cache_read_discount": 0.1,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5,
+    "tier_threshold": 272000,
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.03
+  },
+  "gpt-5.6-terra": {
+    "as_of": "2026-08-07",
+    "cache_creation_premium": 1.25,
+    "cache_read_discount": 0.1,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5,
+    "tier_threshold": 272000,
+    "usd_per_1k_input": 0.002,
+    "usd_per_1k_output": 0.012
   },
   "llama-3-70b": {
-    "usd_per_1k_input": 0.0,
-    "usd_per_1k_output": 0.0
-  },
-  "llama-3.1-8b": {
-    "usd_per_1k_input": 0.0,
-    "usd_per_1k_output": 0.0
-  },
-  "llama-3.1-70b": {
     "usd_per_1k_input": 0.0,
     "usd_per_1k_output": 0.0
   },
@@ -317,11 +327,15 @@
     "usd_per_1k_input": 0.0,
     "usd_per_1k_output": 0.0
   },
-  "llama-3.3-70b": {
+  "llama-3.1-70b": {
     "usd_per_1k_input": 0.0,
     "usd_per_1k_output": 0.0
   },
-  "mixtral-8x7b": {
+  "llama-3.1-8b": {
+    "usd_per_1k_input": 0.0,
+    "usd_per_1k_output": 0.0
+  },
+  "llama-3.3-70b": {
     "usd_per_1k_input": 0.0,
     "usd_per_1k_output": 0.0
   },
@@ -329,12 +343,41 @@
     "usd_per_1k_input": 0.0,
     "usd_per_1k_output": 0.0
   },
-  "deepseek-r1": {
-    "usd_per_1k_input": 0.00055,
-    "usd_per_1k_output": 0.00219
+  "mixtral-8x7b": {
+    "usd_per_1k_input": 0.0,
+    "usd_per_1k_output": 0.0
   },
-  "deepseek-v3": {
-    "usd_per_1k_input": 0.00027,
-    "usd_per_1k_output": 0.0011
+  "o1": {
+    "cache_read_discount": 0.5,
+    "usd_per_1k_input": 0.015,
+    "usd_per_1k_output": 0.06
+  },
+  "o1-mini": {
+    "cache_read_discount": 0.5,
+    "usd_per_1k_input": 0.0011,
+    "usd_per_1k_output": 0.0044
+  },
+  "o1-pro": {
+    "usd_per_1k_input": 0.15,
+    "usd_per_1k_output": 0.6
+  },
+  "o3": {
+    "cache_read_discount": 0.25,
+    "usd_per_1k_input": 0.002,
+    "usd_per_1k_output": 0.008
+  },
+  "o3-mini": {
+    "cache_read_discount": 0.5,
+    "usd_per_1k_input": 0.0011,
+    "usd_per_1k_output": 0.0044
+  },
+  "o3-pro": {
+    "usd_per_1k_input": 0.02,
+    "usd_per_1k_output": 0.08
+  },
+  "o4-mini": {
+    "cache_read_discount": 0.25,
+    "usd_per_1k_input": 0.0011,
+    "usd_per_1k_output": 0.0044
   }
 }

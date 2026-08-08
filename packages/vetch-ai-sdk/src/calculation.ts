@@ -438,14 +438,18 @@ export function resolveModelMatch(model: string): ModelMatch {
   }
 
   const parts = modelLower.split("-");
-  for (let i = parts.length - 1; i > 0; i -= 1) {
+  for (let i = parts.length; i > 0; i -= 1) {
     const prefix = parts.slice(0, i).join("-");
-    if (prefix in ENERGY) {
-      return { resolvedModel: prefix, known: true, precision: "prefix" };
-    }
-    const prefixAlias = ALIASES[prefix];
-    if (prefixAlias && prefixAlias in ENERGY) {
-      return { resolvedModel: prefixAlias, known: true, precision: "prefix" };
+    const degraded = prefix.replace(/(\d+)\.\d+$/, "$1");
+    const candidates = degraded === prefix ? [prefix] : [prefix, degraded];
+    for (const candidate of candidates) {
+      if (candidate in ENERGY) {
+        return { resolvedModel: candidate, known: true, precision: "prefix" };
+      }
+      const prefixAlias = ALIASES[candidate];
+      if (prefixAlias && prefixAlias in ENERGY) {
+        return { resolvedModel: prefixAlias, known: true, precision: "prefix" };
+      }
     }
   }
 
@@ -623,12 +627,21 @@ function calculateCost(
   const tierMultiplierOutput = entry.tier_multiplier_output ?? entry.tier_multiplier ?? null;
   const cacheReadDiscount = entry.cache_read_discount ?? 0.1;
   const cacheCreationPremium = entry.cache_creation_premium ?? 1.0;
+  const longContext = tierThreshold !== null && inputTokens > tierThreshold;
+  const inputTierMultiplier = longContext && tierMultiplierInput !== null
+    ? tierMultiplierInput
+    : 1.0;
 
   const cacheTokens = Math.min(Math.max(0, cacheReadTokens), Math.max(0, inputTokens));
   const effectiveInput = Math.max(0, inputTokens) - cacheTokens;
-  const cacheReadCost = cacheTokens * entry.usd_per_1k_input * cacheReadDiscount / 1000;
+  const cacheReadCost = cacheTokens *
+    entry.usd_per_1k_input *
+    inputTierMultiplier *
+    cacheReadDiscount /
+    1000;
   const cacheWriteCost = Math.max(0, cacheCreationTokens) *
     entry.usd_per_1k_input *
+    inputTierMultiplier *
     cacheCreationPremium /
     1000;
   const inputCost = calculateTieredCost(
@@ -636,12 +649,14 @@ function calculateCost(
     entry.usd_per_1k_input,
     tierThreshold,
     tierMultiplierInput,
+    inputTokens,
   ) + cacheReadCost + cacheWriteCost;
   const outputCost = calculateTieredCost(
     Math.max(0, outputTokens),
     entry.usd_per_1k_output,
     tierThreshold,
     tierMultiplierOutput,
+    inputTokens,
   );
 
   return {
@@ -659,11 +674,12 @@ function calculateTieredCost(
   baseRatePer1k: number,
   tierThreshold: number | null,
   tierMultiplier: number | null,
+  thresholdTokens: number = tokens,
 ): number {
   if (tierThreshold === null || tierMultiplier === null) {
     return tokens * baseRatePer1k / 1000;
   }
-  if (tokens <= tierThreshold) {
+  if (thresholdTokens <= tierThreshold) {
     return tokens * baseRatePer1k / 1000;
   }
   return tokens * baseRatePer1k * tierMultiplier / 1000;

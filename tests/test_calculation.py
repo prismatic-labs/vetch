@@ -427,6 +427,19 @@ class TestTieredPricing:
         )
         assert abs(cost - 4.00) < 0.01
 
+    def test_output_tier_can_be_selected_by_prompt_length(self) -> None:
+        """A short output uses the long-context rate when the prompt crosses the tier."""
+        from vetch.calculation import _calculate_tiered_cost
+
+        cost = _calculate_tiered_cost(
+            tokens=1000,
+            base_rate_per_1k=0.010,
+            tier_threshold=128000,
+            tier_multiplier=1.5,
+            threshold_tokens=200000,
+        )
+        assert cost == pytest.approx(0.015)
+
     def test_calculate_tiered_cost_zero_tokens(self) -> None:
         """Test tiered cost with zero tokens."""
         from vetch.calculation import _calculate_tiered_cost

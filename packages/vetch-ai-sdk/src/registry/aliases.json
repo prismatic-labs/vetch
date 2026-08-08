@@ -32,6 +32,7 @@
   "gpt-5.4-2026-03-26": "gpt-5.4",
   "gpt-5.4-mini-2026-03-26": "gpt-5.4-mini",
   "gpt-5.4-nano-2026-03-26": "gpt-5.4-nano",
+  "gpt-5.6": "gpt-5.6-sol",
 
   "o1-mini-2024-09-12": "o1-mini",
   "o3-mini-2025-01-31": "o3-mini",
@@ -100,6 +101,9 @@
   "gemini-flash-3": "gemini-3-flash",
   "gemini-3.5-flash-preview": "gemini-3.5-flash",
   "gemini-3.5-flash-latest": "gemini-3.5-flash",
+  "gemini-3.6-flash-preview": "gemini-3.6-flash",
+  "gemini-3.6-flash-latest": "gemini-3.6-flash",
+  "gemini-flash-3.6": "gemini-3.6-flash",
   "gemini-3.1-flash-lite-preview": "gemini-3.1-flash-lite",
   "gemini-3.1-flash-lite-latest": "gemini-3.1-flash-lite",
   "gemini-3.1-pro-preview": "gemini-3.1-pro",

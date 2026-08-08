@@ -389,16 +389,29 @@ def resolve_model_match(model: str) -> ModelMatch:
         if resolved in _ENERGY:
             return ModelMatch(resolved, True, "alias")
 
-    # 3. Prefix matching (gpt-4-0613 -> gpt-4): low-confidence proxy
+    # 3. Prefix matching (gpt-4-0613 -> gpt-4): low-confidence proxy.
+    # Hyphen splitting alone cannot reach a major-version registry key from a
+    # dotted minor version: for example, "vendor-5.6-preview" yields "vendor-5.6"
+    # then "vendor", never "vendor-5". For each prefix candidate, also try
+    # dropping a trailing dotted minor so any existing same-family major key can
+    # act as the conservative landing pad.
+    # Range includes the full name (i == len) so a bare minor bump with no
+    # suffix (gpt-5.7 -> gpt-5) also degrades; the full-name exact/alias case is
+    # already handled above, so only its degraded form can newly match here.
     parts = model_lower.split("-")
-    for i in range(len(parts) - 1, 0, -1):
+    for i in range(len(parts), 0, -1):
         prefix = "-".join(parts[:i])
-        if prefix in _ENERGY:
-            return ModelMatch(prefix, True, "prefix")
-        if prefix in _ALIASES:
-            resolved = _ALIASES[prefix]
-            if resolved in _ENERGY:
-                return ModelMatch(resolved, True, "prefix")
+        candidates = [prefix]
+        degraded = re.sub(r"(\d+)\.\d+$", r"\1", prefix)
+        if degraded != prefix:  # only when the minor version actually degrades
+            candidates.append(degraded)
+        for candidate in candidates:
+            if candidate in _ENERGY:
+                return ModelMatch(candidate, True, "prefix")
+            if candidate in _ALIASES:
+                resolved = _ALIASES[candidate]
+                if resolved in _ENERGY:
+                    return ModelMatch(resolved, True, "prefix")
 
     # 4. Deterministic family fallback before the generic one
     family_match = _family_fallback(model_lower)
@@ -1208,6 +1221,8 @@ def _calculate_tiered_cost(
     base_rate_per_1k: float,
     tier_threshold: int | None,
     tier_multiplier: float | None,
+    *,
+    threshold_tokens: int | None = None,
 ) -> float:
     """Calculate cost with optional threshold-based tiered pricing.
 
@@ -1219,6 +1234,9 @@ def _calculate_tiered_cost(
         base_rate_per_1k: Base rate per 1000 tokens
         tier_threshold: Token count where higher tier kicks in (None = no tiers)
         tier_multiplier: Multiplier for ALL tokens when over threshold (None = no tiers)
+        threshold_tokens: Token count used to select the tier. Defaults to
+            ``tokens`` for backwards compatibility. Pass prompt/input tokens
+            when both input and output rates are selected by prompt length.
 
     Returns:
         Total cost in USD
@@ -1246,7 +1264,8 @@ def _calculate_tiered_cost(
         # No tiering - standard calculation
         return (tokens * base_rate_per_1k) / 1000
 
-    if tokens <= tier_threshold:
+    tier_basis = tokens if threshold_tokens is None else threshold_tokens
+    if tier_basis <= tier_threshold:
         # Under threshold - base rate for all tokens
         return (tokens * base_rate_per_1k) / 1000
 
@@ -1296,10 +1315,10 @@ def calculate_cost(
 
         >>> # Tiered model (Gemini 2.5 Pro): 300k input, 1k output (threshold pricing)
         >>> # Input: 300k @ $2.50/M (base × 2.0 over 200k threshold) = $0.75
-        >>> # Output: 1k @ $10/M (under threshold) = $0.01
-        >>> # Total: $0.76
+        >>> # Output: 1k @ $15/M (prompt over threshold; base × 1.5) = $0.015
+        >>> # Total: $0.765
         >>> calculate_cost(300000, 1000, "gemini-2.5-pro")
-        (0.76, 0.75, 0.01, 0.0, 0.0, 'list')
+        (0.765, 0.75, 0.015, 0.0, 0.0, 'list')
     """
     resolved_model, known = resolve_model(model)
     _load_registry()
@@ -1331,6 +1350,10 @@ def calculate_cost(
     # 2.0x vs 1.25x input). Fall back to the 5-minute premium when a model does
     # not distinguish the two tiers.
     cache_creation_premium_1h = entry.get("cache_creation_premium_1h", cache_creation_premium)
+    long_context = tier_threshold is not None and input_tokens > tier_threshold
+    input_tier_multiplier = (
+        float(tier_multiplier_input) if long_context and tier_multiplier_input else 1.0
+    )
 
     # Base input tokens (excluding cached tokens)
     effective_input = input_tokens
@@ -1340,7 +1363,9 @@ def calculate_cost(
     if cache_read_tokens and cache_read_tokens > 0:
         # Subtract cache read tokens from base input, add discounted cost
         effective_input = max(0, input_tokens - cache_read_tokens)
-        cache_read_cost = (cache_read_tokens * rate_in * cache_read_discount) / 1000
+        cache_read_cost = (
+            cache_read_tokens * rate_in * input_tier_multiplier * cache_read_discount
+        ) / 1000
 
     if cache_creation_tokens and cache_creation_tokens > 0:
         # Cache creation tokens cost extra on top of normal input cost. Split the
@@ -1349,20 +1374,30 @@ def calculate_cost(
         create_1h = min(max(0, cache_creation_1h_tokens or 0), cache_creation_tokens)
         create_5m = cache_creation_tokens - create_1h
         cache_write_cost = (
-            create_5m * rate_in * cache_creation_premium
-            + create_1h * rate_in * cache_creation_premium_1h
+            create_5m * rate_in * input_tier_multiplier * cache_creation_premium
+            + create_1h * rate_in * input_tier_multiplier * cache_creation_premium_1h
         ) / 1000
 
     # Calculate input cost with tiered pricing
     cost_in = (
-        _calculate_tiered_cost(effective_input, rate_in, tier_threshold, tier_multiplier_input)
+        _calculate_tiered_cost(
+            effective_input,
+            rate_in,
+            tier_threshold,
+            tier_multiplier_input,
+            threshold_tokens=input_tokens,
+        )
         + cache_write_cost
         + cache_read_cost
     )
 
     # Calculate output cost with tiered pricing
     cost_out = _calculate_tiered_cost(
-        output_tokens, rate_out, tier_threshold, tier_multiplier_output
+        output_tokens,
+        rate_out,
+        tier_threshold,
+        tier_multiplier_output,
+        threshold_tokens=input_tokens,
     )
 
     total_cost = cost_in + cost_out

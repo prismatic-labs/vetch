@@ -34,7 +34,8 @@ GOLDEN_PRECISION = {
     "gemini-3-flash-preview": "alias",
     "claude-sonnet-4-6-experimental": "prefix",  # not a curated alias -> algorithmic shorten
     "gemini-9-ultra": "family",  # unknown google -> family proxy
-    "gemma-4-31b-it": "family",  # unknown google open model -> family proxy
+    "gemma-4-31b-it": "exact",  # first-class self-hosted registry row
+    "gemma-9-31b-it": "family",  # unknown google open model -> family proxy (31b -> large)
     "totally-unknown-model-xyz": "fallback",
 }
 
@@ -58,7 +59,9 @@ class TestCaseInsensitivity:
 
     def test_mixed_case_family(self) -> None:
         # Regression: "31b" must not match the "1b" small hint; mid-size biases large.
-        match = resolve_model_match("Gemma-4-31b-it")
+        # Uses an UNKNOWN gemma (gemma-4-31b-it is now a first-class row) so the
+        # family-proxy heuristic is still exercised.
+        match = resolve_model_match("Gemma-9-31b-it")
         assert match.precision == "family"
         assert match.name == "gemini-3.1-pro"  # conservative (larger) representative
 
@@ -101,6 +104,32 @@ class TestConservativeFamilyFallback:
     def test_unknown_family_is_fallback(self) -> None:
         # qwen has no provider family mapping
         assert resolve_model_match("qwen-72b").precision == "fallback"
+
+
+class TestDottedVersionDegrade:
+    """A dotted minor-version bump with no exact/alias entry degrades to its
+    major-version sibling when that sibling exists, rather than jumping to a
+    generic family default. Covers multiple vendors and identifier shapes so
+    this remains a resolver invariant, not a model-specific accommodation.
+    """
+
+    @pytest.mark.parametrize(
+        "model,expected",
+        [
+            ("gpt-5.9-experimental", "gpt-5"),
+            ("gpt-5.8", "gpt-5"),
+            ("claude-sonnet-4.7-experimental", "claude-sonnet-4"),
+            ("deepseek-r1.5", "deepseek-r1"),
+        ],
+    )
+    def test_dotted_bump_degrades_to_existing_major(
+        self, model: str, expected: str
+    ) -> None:
+        match = resolve_model_match(model)
+        assert (match.name, match.precision) == (expected, "prefix")
+
+    def test_does_not_fall_through_to_family_default(self) -> None:
+        assert resolve_model_match("gpt-5.9-experimental").name != "gpt-4o"
 
 
 class TestPropertyInvariants:

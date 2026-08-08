@@ -33,6 +33,11 @@ NEW_PRICED_ROWS = [
     ("claude-opus-4-6", 0.005, 0.025),
     ("claude-opus-4-7", 0.005, 0.025),
     ("claude-opus-4-8", 0.005, 0.025),
+    ("gpt-5.6-sol", 0.005, 0.03),
+    ("gpt-5.6-terra", 0.002, 0.012),
+    ("gpt-5.6-luna", 0.0002, 0.0012),
+    ("gemini-3.6-flash", 0.0015, 0.0075),
+    ("gemma-4-31b-it", 0.0, 0.0),  # self-hosted: no list price (cost via provider)
 ]
 
 
@@ -82,6 +87,63 @@ class TestNewRegistryRows:
         match = resolve_model_match("claude-sonnet-4-6-latest")
         assert match.name == "claude-sonnet-4-6"
         assert match.precision == "alias"
+
+    @pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])
+    def test_gpt_5_6_reasoning_and_context_tier(self, model: str) -> None:
+        from vetch.calculation import _is_reasoning_compute_model
+
+        assert _is_reasoning_compute_model(model) is True
+        # >272k input selects the long-context rates for the full request:
+        # input at 2x and output at 1.5x.
+        short = calculate_cost(100_000, 1000, model)
+        long = calculate_cost(300_000, 1000, model)
+        short_in = short[1] / 100_000
+        long_in = long[1] / 300_000
+        assert long_in == pytest.approx(short_in * 2.0)
+        assert long[2] == pytest.approx(short[2] * 1.5)
+
+    def test_gpt_5_6_long_context_cache_uses_long_input_rate(self) -> None:
+        _, _, _, cache_write, cache_read, _ = calculate_cost(
+            300_000,
+            1000,
+            "gpt-5.6-sol",
+            cache_read_tokens=100_000,
+            cache_creation_tokens=100_000,
+        )
+        assert cache_read == pytest.approx(0.1)  # 100k × $10/M × 0.1
+        assert cache_write == pytest.approx(1.25)  # 100k × $10/M × 1.25
+
+    def test_gpt_5_6_public_alias_routes_to_sol(self) -> None:
+        match = resolve_model_match("gpt-5.6")
+        assert match.name == "gpt-5.6-sol"
+        assert match.precision == "alias"
+
+    def test_gemini_3_6_flash_preview_alias(self) -> None:
+        match = resolve_model_match("gemini-3.6-flash-preview")
+        assert match.name == "gemini-3.6-flash"
+        assert match.precision == "alias"
+
+    def test_undisclosed_hosted_model_metadata_is_not_invented(self) -> None:
+        energy = _load("energy.json")
+        for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+            assert "quantization" not in energy[model]
+
+        gemini = energy["gemini-3.6-flash"]
+        for field in ("architecture", "total_params_b", "active_params_b", "quantization"):
+            assert field not in gemini
+        assert "discloses no Wh/token" in gemini["basis"]
+
+    def test_gemma_zero_price_excludes_infrastructure_cost(self) -> None:
+        pricing = _load("pricing.json")["gemma-4-31b-it"]
+        assert pricing["cost_scope"] == "model_license_only"
+        assert "infrastructure and electricity costs are excluded" in pricing["notes"]
+
+    def test_gemma_4_31b_it_energy_is_own_row_not_cloud_proxy(self) -> None:
+        # A self-hosted 30.7B dense model must use its own standardized proxy,
+        # not the Gemini large-cloud proxy it fell back to without a row.
+        gemma, *_ = calculate_energy(1000, 500, "gemma-4-31b-it")
+        pro, *_ = calculate_energy(1000, 500, "gemini-3.1-pro")
+        assert gemma < pro
 
 
 class TestRegistryParity:

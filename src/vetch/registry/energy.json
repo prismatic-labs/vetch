@@ -212,6 +212,27 @@
     "quantization": "bf16",
     "basis": "Estimated. Proxied from GPT-4.1-nano medium values. Tier 3 ±1000%."
   },
+  "gpt-5.6-sol": {
+    "wh_per_1k_input": 0.63,
+    "wh_per_1k_output": 1.88,
+    "tier": 3,
+    "architecture": "reasoning",
+    "basis": "Estimated proxy, not a measurement. No per-model Wh/token disclosure. Proxied from gpt-5.4 (frontier class, same vendor); architecture=reasoning enables reasoning-token accounting. OpenAI reported >15% better token-generation efficiency and 20% lower end-to-end serving cost on 2026-07-29, but neither figure is electrical energy and neither supports changing this coefficient. Tier 3 ±1000%. Source: https://openai.com/index/gpt-5-6-frontier-intelligence-efficiency/"
+  },
+  "gpt-5.6-terra": {
+    "wh_per_1k_input": 0.63,
+    "wh_per_1k_output": 1.88,
+    "tier": 3,
+    "architecture": "reasoning",
+    "basis": "Estimated proxy, not a measurement. No model-specific Wh/token or hardware disclosure. Conservatively proxied from gpt-5.6-sol rather than inferring compute or energy from API price; actual energy may be lower. Tier 3 ±1000%. Family efficiency context published 2026-07-29: https://openai.com/index/gpt-5-6-frontier-intelligence-efficiency/"
+  },
+  "gpt-5.6-luna": {
+    "wh_per_1k_input": 0.63,
+    "wh_per_1k_output": 1.88,
+    "tier": 3,
+    "architecture": "reasoning",
+    "basis": "Estimated proxy, not a measurement. No model-specific Wh/token or hardware disclosure. Conservatively proxied from gpt-5.6-sol rather than inferring compute or energy from API price; actual energy may be lower. Tier 3 ±1000%. Family efficiency context published 2026-07-29: https://openai.com/index/gpt-5-6-frontier-intelligence-efficiency/"
+  },
   "gpt-5.4-pro": {
     "wh_per_1k_input": 5.4,
     "wh_per_1k_output": 16.1,
@@ -536,6 +557,12 @@
     "quantization": "bf16",
     "basis": "Estimated. No published energy figures or Jegham measurement for Gemini 3.5 Flash. Proxied from gemini-2.5-flash (nearest Flash-class entry). Direction uncertain. Tier 3 ±1000%."
   },
+  "gemini-3.6-flash": {
+    "wh_per_1k_input": 0.068,
+    "wh_per_1k_output": 0.205,
+    "tier": 3,
+    "basis": "Estimated proxy, not a measurement. Google's model card, published 2026-07-21, says Gemini 3.6 Flash is based on Gemini 3.5 Flash and is more token-efficient, but discloses no Wh/token, parameter count, architecture, serving hardware, or quantization. Proxied from gemini-3.5-flash; fewer tokens per task reduce total estimated energy through observed usage but do not justify changing energy per token. Tier 3 ±1000%. Source: https://deepmind.google/models/model-cards/gemini-3-6-flash/"
+  },
   "gemini-3.1-flash-lite": {
     "wh_per_1k_input": 0.034,
     "wh_per_1k_output": 0.103,
@@ -617,6 +644,16 @@
     "active_params_b": 70,
     "quantization": "bf16",
     "basis": "Jegham et al. (2025). ~4x more efficient than llama-3.1-70b. Jegham-reported values post-PUE ×1.14 (AWS). Registry values divided by 1.14 to store IT equipment energy only (pre-PUE). Vetch applies PUE separately in calculate_carbon(). Source: arXiv:2505.09598"
+  },
+  "gemma-4-31b-it": {
+    "wh_per_1k_input": 0.053,
+    "wh_per_1k_output": 0.132,
+    "tier": 3,
+    "architecture": "dense",
+    "total_params_b": 30.7,
+    "active_params_b": 30.7,
+    "quantization": "bf16",
+    "basis": "Standardized BF16 proxy for relative comparison, not representative self-hosting energy. Gemma 4 31B is a 30.7B dense Apache-2.0 model, but Google publishes no Wh/token figure. Values scale the llama-3-70b proxy (0.12/0.30 Wh per 1k tokens, pre-PUE) by 30.7/70. Published Gemma 4 benchmarks show energy varies materially with hardware, precision, context, batching, and serving engine, so deployments should replace this with a Tier-0 local calibration. Tier 3 ±1000%. Model source: https://ai.google.dev/gemma/docs/core/model_card_4 ; measurement guidance: https://ml.energy/data/"
   },
   "mixtral-8x7b": {
     "wh_per_1k_input": 0.037,

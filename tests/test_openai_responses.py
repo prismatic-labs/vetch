@@ -1,4 +1,4 @@
-"""Tests for OpenAI Responses API instrumentation (Item 1).
+"""Tests for OpenAI Responses API instrumentation.
 
 Covers:
 - Usage extraction from the Responses shape (input/output/reasoning/cache tokens)

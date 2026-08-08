@@ -12,7 +12,8 @@ const GOLDEN_PRECISION = {
   "gemini-3-flash-preview": "alias",
   "claude-sonnet-4-6-experimental": "prefix",
   "gemini-9-ultra": "family",
-  "gemma-4-31b-it": "family",
+  "gemma-4-31b-it": "exact",
+  "gemma-9-31b-it": "family",
   "totally-unknown-model-xyz": "fallback",
 };
 
@@ -52,9 +53,55 @@ describe("case-insensitivity", () => {
   }
 
   it("'31b' does not match the '1b' small hint; mid-size biases large", () => {
-    const m = resolveModelMatch("Gemma-4-31b-it");
+    const m = resolveModelMatch("Gemma-9-31b-it");
     expect(m.precision).toBe("family");
     expect(m.resolvedModel).toBe("gemini-3.1-pro");
+  });
+});
+
+describe("dotted-version degrade (parity with Python)", () => {
+  for (const [model, expected] of [
+    ["gpt-5.9-experimental", "gpt-5"],
+    ["gpt-5.8", "gpt-5"],
+    ["claude-sonnet-4.7-experimental", "claude-sonnet-4"],
+    ["deepseek-r1.5", "deepseek-r1"],
+  ]) {
+    it(`${model} degrades to ${expected}`, () => {
+      const match = resolveModelMatch(model);
+      expect(match.resolvedModel).toBe(expected);
+      expect(match.precision).toBe("prefix");
+    });
+  }
+
+  it("the public gpt-5.6 alias resolves to Sol", () => {
+    const match = resolveModelMatch("gpt-5.6");
+    expect(match.resolvedModel).toBe("gpt-5.6-sol");
+    expect(match.precision).toBe("alias");
+  });
+});
+
+describe("long-context pricing (parity with Python)", () => {
+  it("prompt length selects output and cache rates for the full request", async () => {
+    const event = await createVetchEvent({
+      operation: "generate",
+      model: { provider: "openai", modelId: "gpt-5.6-sol" },
+      params: {},
+      result: generateResult({
+        inputTokens: {
+          total: 300000,
+          noCache: 200000,
+          cacheRead: 100000,
+          cacheWrite: 100000,
+        },
+        outputTokens: { total: 1000, text: 1000, reasoning: 0 },
+      }),
+      startTimeMs: Date.now(),
+      options: {},
+    });
+
+    expect(event.estimated_cost_output_usd).toBeCloseTo(0.045);
+    expect(event.estimated_cost_cache_read_usd).toBeCloseTo(0.1);
+    expect(event.estimated_cost_cache_write_usd).toBeCloseTo(1.25);
   });
 });
 

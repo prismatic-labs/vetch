@@ -105,6 +105,36 @@
     "usd_per_1k_input": 0.030,
     "usd_per_1k_output": 0.180
   },
+  "gpt-5.6-sol": {
+    "usd_per_1k_input": 0.005,
+    "usd_per_1k_output": 0.03,
+    "tier_threshold": 272000,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-08-07"
+  },
+  "gpt-5.6-terra": {
+    "usd_per_1k_input": 0.002,
+    "usd_per_1k_output": 0.012,
+    "tier_threshold": 272000,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-08-07"
+  },
+  "gpt-5.6-luna": {
+    "usd_per_1k_input": 0.0002,
+    "usd_per_1k_output": 0.0012,
+    "tier_threshold": 272000,
+    "tier_multiplier_input": 2.0,
+    "tier_multiplier_output": 1.5,
+    "cache_read_discount": 0.1,
+    "cache_creation_premium": 1.25,
+    "as_of": "2026-08-07"
+  },
   "o1": {
     "usd_per_1k_input": 0.015,
     "usd_per_1k_output": 0.060,
@@ -286,6 +316,12 @@
     "cache_read_discount": 0.1,
     "as_of": "2026-06-23"
   },
+  "gemini-3.6-flash": {
+    "usd_per_1k_input": 0.0015,
+    "usd_per_1k_output": 0.0075,
+    "cache_read_discount": 0.1,
+    "as_of": "2026-08-07"
+  },
   "gemini-3.1-flash-lite": {
     "usd_per_1k_input": 0.00025,
     "usd_per_1k_output": 0.0015,
@@ -304,6 +340,13 @@
   "llama-3-70b": {
     "usd_per_1k_input": 0.0,
     "usd_per_1k_output": 0.0
+  },
+  "gemma-4-31b-it": {
+    "usd_per_1k_input": 0.0,
+    "usd_per_1k_output": 0.0,
+    "cost_scope": "model_license_only",
+    "notes": "No provider list price. Self-hosted infrastructure and electricity costs are excluded.",
+    "as_of": "2026-08-08"
   },
   "llama-3.1-8b": {
     "usd_per_1k_input": 0.0,
