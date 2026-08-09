@@ -34,11 +34,14 @@ class TestNestedContext:
         emitter = BufferedEmitter()
         set_test_emitter(emitter)
 
+        from vetch.context import get_active_context
+
+        _usage = {"text": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}
         try:
             with VetchContext(region="us-east-1", tags={"layer": "outer"}):
                 with VetchContext(region="us-east-1", tags={"layer": "inner"}):
-                    # Simulate an LLM call would happen here
-                    pass
+                    get_active_context().capture(model="gpt-4o", provider="openai", usage=_usage)
+                get_active_context().capture(model="gpt-4o", provider="openai", usage=_usage)
 
             # Should have 2 events
             assert len(emitter) == 2

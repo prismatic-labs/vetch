@@ -937,6 +937,30 @@ class VetchContext:
             request_fingerprint=request_fingerprint,
         )
 
+        # Empty wrap(): a context that intercepted no call, hit no error, is not a
+        # manual record, and was not tracking-disabled has nothing to report. Keep
+        # self._event populated so callers inspecting ctx.event still get a
+        # placeholder, but do not push this unknown/unknown event into the
+        # emitted / stored / exported / session stream, where it would otherwise
+        # pollute aggregation. Error and compliance (tracking_disabled) events,
+        # and manual record_usage() events, still flow through below.
+        if (
+            captured is None
+            and not error
+            and not self._manual
+            and not self._tracking_disabled
+        ):
+            # Breadcrumb (debug-only, no spam): if a real inference actually ran
+            # inside this wrap() but nothing was captured, the client likely
+            # wasn't instrumented. Surface it for debugging without emitting a
+            # misleading unknown/unknown event into the stream.
+            logger.debug(
+                "wrap() closed with no intercepted call; no event emitted. If an "
+                "inference ran here, instrument the client (vetch.instrument()) "
+                "or meter it explicitly with vetch.record_usage()."
+            )
+            return
+
         # Budget checking (warn-only, never blocks)
         try:
             from vetch.budget import check_budgets

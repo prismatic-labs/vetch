@@ -77,9 +77,15 @@ def test_wrap_event_leaks_no_filtered_tag_key_or_value(category, buf):
     secret = SENSITIVE[category][0]
     prev_allowlist = config._tag_allowlist
     try:
+        from vetch.context import get_active_context
+
         vetch.set_tag_allowlist(["feature"])
         with vetch.wrap(tags={"feature": "ok", secret: "1", "detail": secret}, emit=True):
-            pass
+            get_active_context().capture(
+                model="gpt-4o",
+                provider="openai",
+                usage={"text": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}},
+            )
         assert buf.events, "no event emitted"
         blob = serialize_event(buf.events[-1])
         assert secret not in blob, f"{category} tag leaked into event: {secret!r}"
@@ -99,9 +105,15 @@ def test_wrap_event_redacts_sensitive_tag_value(category, buf):
     prev_allowlist = config._tag_allowlist
     try:
         config._tag_allowlist = None  # no allowlist: keep the tag but redact its value
+        from vetch.context import get_active_context
+
         vetch.set_redacted_tags(["detail"])
         with vetch.wrap(tags={"detail": secret}, emit=True):
-            pass
+            get_active_context().capture(
+                model="gpt-4o",
+                provider="openai",
+                usage={"text": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}},
+            )
         assert buf.events, "no event emitted"
         blob = serialize_event(buf.events[-1])
         assert secret not in blob, f"{category} tag value leaked (not redacted): {secret!r}"

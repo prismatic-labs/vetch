@@ -200,9 +200,15 @@ class TestPublicAPI:
         emitter = BufferedEmitter()
         set_test_emitter(emitter)
 
+        from vetch.context import get_active_context
+
         try:
             with wrap(region="eu-central-1"):
-                pass
+                get_active_context().capture(
+                    model="gpt-4o",
+                    provider="openai",
+                    usage={"text": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}},
+                )
 
             assert len(emitter) == 1
             assert emitter.events[0]["region"] == "eu-central-1"

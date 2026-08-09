@@ -203,11 +203,17 @@ class TestTagAllowlist:
         set_test_emitter(buf)
         before = get_tracking_stats().get("allowlist_filtered", 0)
         try:
+            from vetch.context import get_active_context
+
             vetch.set_tag_allowlist(["feature"])
             with vetch.wrap(
                 tags={"feature": "x", "secret_internal_key": "1"}, emit=True
             ):
-                pass
+                get_active_context().capture(
+                    model="gpt-4o",
+                    provider="openai",
+                    usage={"text": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}},
+                )
             serialized = serialize_event(buf.events[-1])
             assert "secret_internal_key" not in serialized
             # Counter still increments because the warning keeps "not in allowlist".

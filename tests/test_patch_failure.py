@@ -24,16 +24,18 @@ class TestPatchFailureGracefulDegradation:
 
         try:
             with VetchContext(region="us-east-1") as ctx:
-                # Simulate user code
+                # Simulate user code — no LLM call is intercepted here
                 result = 1 + 1
 
             # Context should complete without error
             assert result == 2
+            # ctx.event stays populated for introspection even when nothing ran...
             assert ctx.event is not None
             assert ctx.event["region"] == "us-east-1"
 
-            # Event should be emitted
-            assert len(emitter) == 1
+            # ...but an empty wrap() that intercepted no call emits nothing, so it
+            # cannot pollute the aggregation stream (empty-wrap-no-emit contract).
+            assert len(emitter) == 0
         finally:
             set_test_emitter(None)
 
