@@ -1,4 +1,4 @@
-"""Vetch v0.4.0 Circuit Breaker — live web dashboard demo.
+"""Vetch Circuit Breaker — live web dashboard demo.
 
 A single-file, no-external-deps demo built for live presentation. Opens a
 browser dashboard on http://localhost:8765 showing real-time cost, energy,
@@ -295,7 +295,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="header">
   <div class="brand">
     <span class="brand-name">VETCH</span>
-    <span class="brand-version" id="brand-version">v0.4.0</span>
+    <span class="brand-version" id="brand-version"></span>
     <span class="brand-tag">Circuit Breaker · Live Demo</span>
   </div>
   <div class="live"><span class="live-dot"></span> LIVE</div>
@@ -464,7 +464,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     $('action-value').textContent = cfg.action || 'log';
     $('mode-value').textContent = cfg.mode || 'mock';
     $('model-value').textContent = cfg.primary_model || '—';
-    $('brand-version').textContent = 'v' + (cfg.version || '0.4.0');
+    $('brand-version').textContent = cfg.version ? ('v' + cfg.version) : '';
   });
 
   evtSource.addEventListener('inference_event', (e) => {

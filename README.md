@@ -21,7 +21,7 @@ vetch.set_stall_action("kill")  # or "warn", or "reroute"
 # vetch.StallDetected before more money is wasted.
 ```
 
-- **[Live demo: kill a runaway agent](examples/circuit_breaker_demo.py)**
+- **[Live demo: kill a runaway agent](examples/circuit_breaker_demo_web.py)** — browser dashboard (mock mode needs no API key); CLI twin: [`circuit_breaker_demo.py`](examples/circuit_breaker_demo.py)
 - **[Get started in 60 seconds (Cloud APIs)](QUICKSTART.md)**
 - **[Vercel AI SDK (Next.js / Edge)](QUICKSTART-VERCEL.md)**: [`@prismatic-labs/vetch-ai-sdk`](packages/vetch-ai-sdk/)
 - **[Track local models (Ollama, vLLM, llama.cpp)](QUICKSTART-LOCAL.md)**

@@ -245,6 +245,18 @@ whole-GPU energy with the NVML board-energy counter.
   ```bash
   vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000
   ```
+- **Pin your serving stack.** `pip install vllm` can pull a newer `transformers`
+  that fails to load some recent models (e.g. a per-layer-config error on
+  Gemma). Install them together, and prefer a box whose driver is new enough for
+  vLLM's Torch build (or use the official `vllm/vllm-openai` image):
+  ```bash
+  pip install "vllm==0.26.0" "transformers==5.5.3"
+  ```
+- **For a reproducible profile, lock the GPU clocks** before calibrating, or
+  boost clocks will vary the energy run-to-run:
+  ```bash
+  sudo nvidia-smi -lgc <MHz>   # e.g. a fixed graphics clock; calibration also records clocks
+  ```
 
 **Run it** (batch=1 — the reproducible default):
 ```bash
@@ -254,7 +266,7 @@ vetch calibrate-cuda \
   --serving-engine vllm \
   --model Qwen/Qwen2.5-7B-Instruct \
   --precision bf16 \
-  --base-url http://localhost:8000
+  --base-url http://localhost:8000/v1
 ```
 
 This writes a versioned, identity-keyed record under `~/.vetch/calibrations/`,
@@ -491,8 +503,14 @@ For production workloads with vLLM:
 import vetch
 from openai import OpenAI
 
-# vLLM also uses OpenAI-compatible API
-vetch.instrument(region="us-east-1", tags={"env": "prod", "framework": "vllm"})
+# vLLM uses an OpenAI-compatible API. provider_hint="self-hosted" zeros list
+# pricing and lines up with calibrate-cuda identities (do not leave this as
+# bare "openai" or cloud $/token will attach to local traffic).
+vetch.instrument(
+    region="us-east-1",
+    provider_hint="self-hosted",
+    tags={"env": "prod", "framework": "vllm"},
+)
 
 client = OpenAI(
     base_url="http://localhost:8000/v1",
@@ -503,7 +521,7 @@ response = client.chat.completions.create(
     model="meta-llama/Llama-3.1-8B-Instruct",
     messages=[{"role": "user", "content": "Hello!"}]
 )
-# ✅ Tracked automatically
+# ✅ Tracked automatically (energy/carbon; cost $0 with self-hosted hint)
 ```
 
 ---

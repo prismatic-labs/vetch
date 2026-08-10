@@ -74,10 +74,11 @@ vetch.set_stall_action("kill")   # or "warn" or "reroute"
 
 # Your existing agent loop — unchanged.
 # Vetch raises StallDetected before the next wasted call.
-try:
-    response = client.chat.completions.create(...)
-except vetch.StallDetected:
-    session.clear_stall()        # human-in-the-loop, then resume
+with vetch.Session() as session:
+    try:
+        response = client.chat.completions.create(...)
+    except vetch.StallDetected:
+        session.clear_stall()    # human-in-the-loop, then resume
 ```
 
 **Reroute to a cheaper model automatically:**

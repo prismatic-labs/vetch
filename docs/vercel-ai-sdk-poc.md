@@ -2,7 +2,7 @@
 
 **User-facing quickstart:** [`QUICKSTART-VERCEL.md`](../QUICKSTART-VERCEL.md)
 
-The TypeScript package is `packages/vetch-ai-sdk` (`@prismatic-labs/vetch-ai-sdk`, version **0.8.1**). It attaches `LanguageModelV3Middleware` via `wrapLanguageModel` (`wrapGenerate` / `wrapStream`).
+The TypeScript package is `packages/vetch-ai-sdk` (`@prismatic-labs/vetch-ai-sdk`, version **0.10.5**). It attaches `LanguageModelV3Middleware` via `wrapLanguageModel` (`wrapGenerate` / `wrapStream`).
 
 ## What it provides
 

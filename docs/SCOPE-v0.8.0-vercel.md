@@ -1,8 +1,10 @@
 # Scope: `@prismatic-labs/vetch-ai-sdk` for Vercel AI SDK
 
-**Status:** published on npm (`@prismatic-labs/vetch-ai-sdk`). Design-partner / production pilot ready.
+**Status:** published on npm (`@prismatic-labs/vetch-ai-sdk`, currently **0.10.5**).
+Design-partner / production pilot ready for AI SDK middleware. Python Vetch may
+be ahead on calibration/confidence (e.g. **0.11.x**); see the parity matrix.
 
-Honest read of what the promise covers and what it does not. For **v0.8.1** parity notes see [CHANGELOG](../CHANGELOG.md).
+Honest read of what the promise covers and what it does not.
 
 ## What it is
 
@@ -41,6 +43,11 @@ metadata, and emits one schema v2 Vetch event per model `generate` or consumed
 - **Not full Python parity.** No JS session rollup for RAG-001, ZOMBIE, CTX; no
   rolling session budget accumulation; no `vetch audit` / savings + interventions
   reporting (Python only).
+- **No Python 0.11+ calibration / confidence surfaces yet.** The CUDA Tier-0
+  identity store, `calibration_match`, multimodal `energy_completeness`, and
+  session confidence floors live in Python only. JS keeps **registry** parity
+  for cloud Wh/$/gCO2e estimates; Node can still load legacy
+  `~/.vetch/calibrations/` flats via `loadLocalCalibration` / `energyOverride`.
 - **No live grid data.** Regional carbon uses bundled static intensities (no live
   Electricity Maps in TS).
 - **No local calibrations on Edge.** Tier-0 hardware energy needs an explicit
@@ -59,6 +66,8 @@ metadata, and emits one schema v2 Vetch event per model `generate` or consumed
 | Per-call budget flags + BUDGET-001 advisory | Partial (session alerts) | Per-call thresholds + advisory |
 | Automatic stall kill / reroute | Yes (`set_stall_action`) | No (advisories only) |
 | `vetch audit` / savings report | Yes | No |
+| CUDA / Apple Tier-0 identity store + `calibration_match` | Yes (0.11+) | Not yet (registry + optional Node flat load) |
+| Multimodal `energy_completeness` / confidence floors | Yes (0.11+) | Not yet |
 | Edge runtime | N/A | Yes (`waitUntil` + emitter) |
 | npm install | n/a (PyPI) | `@prismatic-labs/vetch-ai-sdk` |
 

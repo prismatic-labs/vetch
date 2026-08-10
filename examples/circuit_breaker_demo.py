@@ -1,7 +1,10 @@
-"""Vetch v0.4.0 Circuit Breaker — live demo.
+"""Vetch Circuit Breaker — live CLI demo.
 
 Runs a deliberately-stalled agent loop. Vetch detects the stall (STALL-001)
 after ~16 calls and stops the loop before more money is wasted.
+
+For a browser dashboard (mock mode, no API key), see
+``examples/circuit_breaker_demo_web.py``.
 
 Three modes you can try (change ``ACTION`` below):
 

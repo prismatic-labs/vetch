@@ -51,9 +51,13 @@ Publish: [`docs/NPM_PUBLISH.md`](../../docs/NPM_PUBLISH.md). Next.js reference: 
 
 ## Current Limits
 
-- The bundled registries are snapshots copied from Python Vetch; run `python scripts/sync_ai_sdk_registries.py` from the repo root after registry edits (CI enforces parity).
+- Package version follows the **JS** release train (e.g. **0.10.5** on npm) and
+  may lag Python Vetch (e.g. **0.11.x** CUDA Tier-0 store, `calibration_match`,
+  multimodal completeness, confidence floors). Cloud **registry** snapshots stay
+  in lockstep via `python scripts/sync_ai_sdk_registries.py` (CI enforces parity).
 - Live grid lookups are not performed in this package. Region-aware fallback intensities from `global_averages.json` are used, with `signal_quality: "blind"` when a region is supplied and `"unknown"` without one.
 - There is no local SQLite storage path; send events to a collector with `createFetchEmitter` or a custom emitter.
+- No stall kill/reroute intervention (advisories only). See [`docs/SCOPE-v0.8.0-vercel.md`](../../docs/SCOPE-v0.8.0-vercel.md).
 
 ## Why this belongs in the AI SDK layer
 

@@ -2,7 +2,14 @@
 
 Observe Vercel AI SDK 6.x calls with **Vetch schema v2** events: token usage, energy/carbon/cost estimates, cache savings, and workflow advisories - **without** storing prompts or completions.
 
-**Requirements:** Node 22+, `ai` ^6.x, `@ai-sdk/provider` ^3.x.
+**Requirements:** Node 20+ (22+ recommended), `ai` ^6.x, `@ai-sdk/provider` ^3.x.
+
+**Version note:** npm `@prismatic-labs/vetch-ai-sdk` tracks the JS package version
+(currently **0.10.5**). Python Vetch may be ahead (e.g. **0.11.x** CUDA Tier-0
+store, `calibration_match`, multimodal `energy_completeness`, confidence floors).
+The JS package keeps **registry parity** with Python for cloud estimates; those
+Python-only calibration/confidence surfaces are not in this middleware yet.
+Honest capability matrix: [`docs/SCOPE-v0.8.0-vercel.md`](docs/SCOPE-v0.8.0-vercel.md).
 
 ---
 
@@ -24,7 +31,7 @@ cd vetch/packages/vetch-ai-sdk && npm ci && npm run build
 npm install /absolute/path/to/vetch/packages/vetch-ai-sdk   # from your app root
 ```
 
-Publish steps: [`docs/NPM_PUBLISH.md`](docs/NPM_PUBLISH.md). Honest scope: [`docs/SCOPE-v0.8.0-vercel.md`](docs/SCOPE-v0.8.0-vercel.md).
+Publish steps: [`docs/NPM_PUBLISH.md`](docs/NPM_PUBLISH.md).
 
 ---
 

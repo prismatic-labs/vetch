@@ -2,11 +2,34 @@
 
 This directory contains examples demonstrating vetch usage patterns.
 
+## Circuit Breaker (kill a runaway agent)
+
+**Files:** [`circuit_breaker_demo_web.py`](circuit_breaker_demo_web.py), [`circuit_breaker_demo.py`](circuit_breaker_demo.py)
+
+Live STALL-001 demo: a deliberately stalled agent loop until Vetch warns, kills, or reroutes.
+
+```bash
+# Browser dashboard (default: mock events, no API key)
+python examples/circuit_breaker_demo_web.py
+# Then open http://localhost:8765
+
+# Real OpenAI calls in the dashboard
+python examples/circuit_breaker_demo_web.py --real
+
+# CLI-only twin (requires OPENAI_API_KEY)
+python examples/circuit_breaker_demo.py
+```
+
 ## Auto-Instrumentation Example
 
 **File**: [`auto_instrument_example.py`](auto_instrument_example.py)
 
 Demonstrates the simplest way to use vetch: call `vetch.instrument()` once at startup and all LLM calls are automatically tracked.
+
+```bash
+export OPENAI_API_KEY=your_key_here   # and/or other provider keys
+python examples/auto_instrument_example.py
+```
 
 ## OpenTelemetry Integration Example
 
@@ -21,21 +44,10 @@ Demonstrates how to export vetch inference events to OpenTelemetry for integrati
 - Vertex AI (`google-cloud-aiplatform`)
 - Azure OpenAI (via `openai` with `azure_endpoint`)
 
-**Usage**:
 ```bash
-# Set your API keys
-export GOOGLE_API_KEY=your_key_here
 export OPENAI_API_KEY=your_key_here
-export ANTHROPIC_API_KEY=your_key_here
-
-# Run the example
-python auto_instrument_example.py
+python examples/opentelemetry_example.py
 ```
-
-**What you'll see**:
-- Automatic tracking of LLM calls without context managers
-- JSON events logged to stderr with cost, energy, and carbon
-- Works with chat completions and embeddings
 
 ## Environment Variables
 
@@ -49,5 +61,6 @@ Vetch respects these environment variables:
 
 For additional examples and use cases, see:
 - [QUICKSTART.md](../QUICKSTART.md) - 60-second cloud API guide
-- [QUICKSTART-LOCAL.md](../QUICKSTART-LOCAL.md) - Local model tracking
+- [QUICKSTART-LOCAL.md](../QUICKSTART-LOCAL.md) - Local / self-hosted model tracking
+- [QUICKSTART-VERCEL.md](../QUICKSTART-VERCEL.md) - Vercel AI SDK (JS/TS)
 - [demo.ipynb](../demo.ipynb) - Interactive Jupyter notebook
