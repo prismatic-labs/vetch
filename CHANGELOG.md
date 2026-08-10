@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-10
+
 ### Added — multimodal media split + record_usage visuals
 
 - Non-text modalities (`image` / `audio` / `video`) share one media sub-total for
@@ -18,8 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session confidence rollup surfaces `below_min_confidence_*` when
   `set_min_match_confidence` / `VETCH_MIN_MATCH_CONFIDENCE` is set (fail-open at
   emit; quarantine is explicit in the summary).
-- `vetch calibrate-cuda --modality {image,audio,video}` generates unique synthetic
-  media per request (measurement on hardware is separate).
+- `vetch calibrate-cuda --modality {image,audio,video}`: **experimental preview**
+  for audio/video. It prepares per-request synthetic payloads, but probe/warmup
+  and the record identity remain image-keyed, so audio/video runs are not attested
+  Tier-0. Use it for plumbing, not published coefficients.
+- Accuracy: fractional media units are no longer inflated by an integer ceiling;
+  per-bucket unit count takes the max of `image_count` / `visual_units`; a bare
+  `visual_modality` no longer creates an empty bucket; the below-min confidence
+  rollup also tracks carbon.
 
 ## [0.11.0] - 2026-08-10
 
