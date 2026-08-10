@@ -5,6 +5,102 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.11.0] - 2026-08-10
+
+### Fixed — pre-release hardening
+
+- **Cloud-provider calibration refusal now covers all hosted vendors**, not just
+  `openai`: calibration entrypoints and the resolver cap key on a cloud blocklist
+  (anthropic/azure/bedrock/vertexai/…), so local coefficients can never resolve as
+  an `exact` Tier-0 measurement for metered cloud traffic.
+- **Asserted serving hints no longer silently fall back to a community prior.** If
+  `VETCH_CALIB_*` hints match nothing, resolve stays fail-loud (registry, not a
+  borrowed community record); community priors are capped at `proxy`.
+- **`calibrate-cuda --batched` generates a unique prompt (and image) per request**,
+  so vLLM prefix caching / vision-encoder caching cannot skip prefill/encode and
+  understate energy. Marked an explicit experimental preview (not Tier-0).
+- **Fit coefficients whose bootstrap 95% CI straddles zero are floored to 0** (CI
+  kept in provenance) instead of reported as false precision; a small ε-band stops
+  a benign near-zero negative intercept from rejecting a fit.
+- **Batched mode carries the whole-device contamination / multi-GPU guards** and a
+  real before/after idle-drift sample; the tautological achieved-concurrency
+  estimate was removed (reports `null` when metrics are unavailable).
+- Legacy Apple calibration filenames are sanitized against path traversal.
+- `VETCH_CALIB_CONCURRENCY=1` now matches a batch=1 grid record (`concurrency=null`).
+- Methodology doc corrected: batching stated as saturating `a/C + b` (not pure
+  `1/C`); the Jegham cross-comparison reframed as suggestive (precision-confounded),
+  not a validation; prefill figure corrected; scale constant marked GPU-dependent.
+
+### Added — NVIDIA CUDA Tier-0 calibration store (v1)
+
+- `vetch calibrate-cuda`: NVML energy-counter (or power-sampling fallback) path
+  that reuses the Apple Silicon grid/fit and writes a **versioned identity-keyed
+  record** under `~/.vetch/calibrations/` (`schema_version: 1`).
+- Identity is `(provider, model, gpu, backend, precision)` — coefficients for the
+  same model on different GPUs / stacks / quantizations no longer collide.
+- Resolver (`calibration_store.resolve`): same-provider unambiguous → Tier 0
+  `exact` / `energy_source=local_calibration`; multi-identity ambiguity →
+  tier-capped `proxy`; cross-provider reuse only among self-hosted labels
+  (`ollama`/`vllm`/`self-hosted`/…) and always tier-capped as
+  `reused_calibration`. Bare `openai` events never cross-match a local file.
+- `--precision` is **required**; `--serving-engine` is required when
+  `--backend openai`. Default `--provider` is `self-hosted` so it lines up with
+  `instrument(provider_hint="self-hosted")`.
+- Provenance includes energy domain (gpu_board), idle baselines, power limit,
+  clocks, grid design id, and a privacy-safe `raw_run_table`.
+- Store ops: in-process index by dir mtime (skips `archive/`); overwrite archives
+  prior file to `archive/<slug>.<UTC>.json`; `profile_hash` (identity+coeffs) and
+  run-noise-stable `content_hash`; unknown/heuristic GPUs never stay exact Tier 0.
+- First-class `calibration_match` on events + `vetch.calibration_match` on OTel;
+  confidence rollups / strict mode floor on `min(model_match, calibration_match)`.
+- Apple Silicon (`calibrate-apple-silicon`) writes the same v1 store; `--precision`
+  required (same honesty as CUDA). Shared `commit_calibration` /
+  `measurement_provenance_core` write API; identity field is `serving_engine`
+  (legacy `backend` key still readable). Optional `ResolveHints` /
+  `VETCH_CALIB_{GPU,SERVING_ENGINE,PRECISION}` disambiguate multi-identity hosts.
+- GPU aliases and self-hosted provider equivalence are data files under
+  `vetch.data` (`VETCH_SELF_HOSTED_PROVIDERS` extends the class; cloud vendors
+  including `openai` never cross-reuse).
+- Honesty hardening: ambiguity includes model + forward-compat dims; hint miss
+  refuses attach; untrusted env hints max out at `curated` unless
+  `VETCH_CALIB_HINTS_TRUSTED`; missing `gpu_known` / stringy bools fail closed;
+  `provider=openai` refused at calibrate write and never `exact` at resolve;
+  same-provider legacy no longer globally suppressed by unrelated v1 records.
+- Batched calibration (`vetch calibrate-cuda --batched`): concurrency sweep
+  measuring Wh/1k_output(C), amortization fit `a/C+b`, concurrency-keyed
+  identity + `VETCH_CALIB_CONCURRENCY` hint; batch=1 path unchanged.
+
+### Added — multimodal energy accounting
+
+- Responses API usage extraction now surfaces visual input as a first-class
+  quantity (`usage["image"]`) when the provider itemizes it under
+  `input_tokens_details`, degrading cleanly to text-only when it does not.
+- Registry VLM rows may declare `wh_per_visual_unit` / `visual_tokens_per_unit`;
+  when present, `calculate_energy` prices the visual portion separately and
+  removes its tokens from the text total (mirrors the calibration `wh_per_image`
+  path). No shipped row declares one yet — populate only from a live-verified
+  measurement or Tier-0 calibration.
+- New `energy_completeness` event field ("complete" / "text_only"). A call with
+  visual input but no visual coefficient is flagged `text_only` and warns,
+  rather than emitting a partial energy figure as if it were the whole.
+- `ImageUsage` gained `visual_units` and `tiling_class` for resolution-aware
+  normalized visual counts. Methodology bumped to 1.3.
+
+### Added — confidence-aware resolution + strict reporting
+
+- Match-confidence taxonomy (`schema.confidence_class` / `meets_min_confidence`)
+  collapsing `model_match` onto exact / curated / proxy / none.
+- Session and events-based confidence roll-up: `SessionStats.summary()`
+  gains a `confidence` block; `rollup_confidence_from_events` mirrors it for a
+  list of events. Reports high-confidence energy/cost fractions and text-only
+  energy fraction.
+- Opt-in strict mode: `set_min_match_confidence()` /
+  `VETCH_MIN_MATCH_CONFIDENCE`, with `filter_events_by_confidence` (quarantine)
+  and `require_confidence` (fail-loud via new `ConfidenceError`).
+- `energy_completeness` and confidence classes exported to OpenTelemetry spans.
+
 ## [0.10.5] - 2026-08-08
 
 Registry + resolver update: new model rows and a dotted-version-aware resolver,

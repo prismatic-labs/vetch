@@ -54,7 +54,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("vetch")
 except _PNFError:
-    __version__ = "0.10.5"  # fallback when running from source; keep in sync with pyproject.toml
+    __version__ = "0.11.0"  # fallback when running from source; keep in sync with pyproject.toml
 __all__ = [
     "wrap",
     "awrap",
