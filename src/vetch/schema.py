@@ -163,6 +163,9 @@ class AudioUsage(TypedDict, total=False):
     total_tokens: int
     input_seconds: float  # Duration of input audio in seconds
     output_seconds: float  # Duration of output audio in seconds
+    # Optional normalized media units (same semantics as ImageUsage.visual_units)
+    # so audio can participate in the shared visual-coefficient split.
+    visual_units: float
 
 
 class VideoUsage(TypedDict, total=False):
@@ -177,6 +180,8 @@ class VideoUsage(TypedDict, total=False):
     total_tokens: int
     input_seconds: float
     output_seconds: float
+    # Optional normalized media units (same semantics as ImageUsage.visual_units).
+    visual_units: float
 
 
 class Usage(TypedDict, total=False):

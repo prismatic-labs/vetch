@@ -751,6 +751,64 @@ def _unique_image_b64(seed: int, size: int = CALIBRATION_IMAGE_SIZE_PX) -> str:
     return base64.b64encode(png).decode()
 
 
+def _unique_audio_b64(seed: int, n_samples: int = 256) -> str:
+    """Generate a unique minimal WAV (PCM16 mono 8 kHz) as base64.
+
+    Synthetic only — hardware measurement validates server acceptance. Each seed
+    produces distinct PCM so serving-side caches cannot collapse requests.
+    """
+    import struct
+
+    rng = random.Random(seed)
+    pcm = bytearray()
+    for i in range(n_samples):
+        # Deterministic unique samples from seed + index.
+        sample = int(rng.randint(-16000, 16000)) ^ (i & 0xFF)
+        sample = max(-32768, min(32767, sample))
+        pcm += struct.pack("<h", sample)
+
+    data_size = len(pcm)
+    byte_rate = 8000 * 2  # mono 16-bit
+    wav = bytearray()
+    wav += b"RIFF"
+    wav += struct.pack("<I", 36 + data_size)
+    wav += b"WAVEfmt "
+    wav += struct.pack("<IHHIIHH", 16, 1, 1, 8000, byte_rate, 2, 16)
+    wav += b"data"
+    wav += struct.pack("<I", data_size)
+    wav += pcm
+    return base64.b64encode(bytes(wav)).decode()
+
+
+def _unique_video_b64(seed: int) -> str:
+    """Generate a unique synthetic video-shaped payload as base64.
+
+    Not a real codec bitstream — a seed-tagged container so each request is
+    unique for calibration. Hardware runs validate whether the serving stack
+    accepts the payload; unit tests only assert uniqueness and non-empty output.
+    """
+    rng = random.Random(seed)
+    # Minimal ISO BMFF-ish 'ftyp' + 'mdat' with unique payload.
+    brand = b"isom"
+    ftyp = b"ftyp" + brand + (b"\x00" * 4) + brand
+    ftyp_box = (8 + len(ftyp)).to_bytes(4, "big") + ftyp
+    payload = bytes(rng.randint(0, 255) for _ in range(64))
+    # Embed seed so uniqueness is obvious even if RNG collides across platforms.
+    payload = seed.to_bytes(4, "big", signed=False) + payload
+    mdat = b"mdat" + payload
+    mdat_box = (8 + len(mdat)).to_bytes(4, "big") + mdat
+    return base64.b64encode(ftyp_box + mdat_box).decode()
+
+
+def _unique_media_b64(modality: str, seed: int) -> str:
+    """Dispatch to the synthetic generator for ``image`` / ``audio`` / ``video``."""
+    if modality == "audio":
+        return _unique_audio_b64(seed)
+    if modality == "video":
+        return _unique_video_b64(seed)
+    return _unique_image_b64(seed)
+
+
 def _warmup_image_b64(model_is_vlm: bool, image_pool: list[str]) -> str | None:
     """Return the warm-up image only when the probed model supports images."""
     if not model_is_vlm:

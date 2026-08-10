@@ -115,19 +115,19 @@ def _infer_region() -> tuple[str | None, str | None]:
 
 
 def _infer_n_images_from_usage(usage: Usage | None) -> int:
-    """Infer image count from schema v2 usage for VLM energy (wh_per_image)."""
-    if not usage:
+    """Infer media unit count from schema v2 usage (image + audio + video).
+
+    Returns an int for historical call sites; fractional ``visual_units`` are
+    rounded up so a partial unit still marks media as present.
+    """
+    from vetch.calculation import media_units_from_usage
+
+    units = media_units_from_usage(usage)
+    if units <= 0:
         return 0
-    image_usage = usage.get("image")
-    if not isinstance(image_usage, dict):
-        return 0
-    count = image_usage.get("image_count")
-    if isinstance(count, int) and count > 0:
-        return count
-    input_tokens = image_usage.get("input_tokens")
-    if isinstance(input_tokens, int) and input_tokens > 0:
-        return 1
-    return 0
+    # Ceiling without importing math: smallest int >= units.
+    as_int = int(units)
+    return as_int if as_int == units else as_int + 1
 
 
 @contextmanager
@@ -1151,6 +1151,9 @@ def record_usage(
     cache_read_tokens: int | None = None,
     cache_creation_tokens: int | None = None,
     duration_ms: float | None = None,
+    visual_input_tokens: int | None = None,
+    visual_units: float | None = None,
+    visual_modality: Literal["image", "video", "audio"] | None = None,
     emit: bool = True,
 ) -> InferenceEvent | None:
     """Meter a call Vetch did not intercept, from usage you already have.
@@ -1194,6 +1197,14 @@ def record_usage(
         duration_ms: Measured latency of the call, if known. Manual events have
             no live call to time, so ``latency_ms`` is otherwise ``None`` rather
             than a fabricated value.
+        visual_input_tokens: Non-text media input tokens (image/audio/video).
+            Populates ``usage[visual_modality]`` and flows through the same
+            media energy split as intercepted calls.
+        visual_units: Discrete media unit count (images / normalized visual
+            units). When set without tokens, still marks media as present for
+            the shared visual coefficient.
+        visual_modality: Which usage bucket to populate (``image``, ``video``,
+            or ``audio``). Defaults to ``image`` when any visual quantity is set.
         emit: If False, compute and return the event without emitting.
 
     Returns:
@@ -1225,6 +1236,36 @@ def record_usage(
             "output_tokens": reason_tok,
             "total_tokens": reason_tok,
         }
+
+    has_visual = (
+        (visual_input_tokens is not None and visual_input_tokens > 0)
+        or (visual_units is not None and visual_units > 0)
+    )
+    if has_visual:
+        modality: Literal["image", "video", "audio"] = visual_modality or "image"
+        if modality not in ("image", "video", "audio"):
+            modality = "image"
+        media_tok = max(0, int(visual_input_tokens)) if visual_input_tokens is not None else 0
+        media_bucket: dict[str, Any] = {
+            "input_tokens": media_tok,
+            "output_tokens": 0,
+            "total_tokens": media_tok,
+        }
+        if visual_units is not None and visual_units > 0:
+            media_bucket["visual_units"] = float(visual_units)
+            if modality == "image":
+                # Prefer an integer image_count when units are whole numbers.
+                as_int = int(visual_units)
+                if as_int == visual_units and as_int > 0:
+                    media_bucket["image_count"] = as_int
+        elif media_tok > 0 and modality == "image":
+            media_bucket["image_count"] = 1
+        if modality == "image":
+            usage["image"] = cast(Any, media_bucket)
+        elif modality == "audio":
+            usage["audio"] = cast(Any, media_bucket)
+        else:
+            usage["video"] = cast(Any, media_bucket)
 
     # Always our own non-patching emit cycle: one event per call, returned to the
     # caller, regardless of any active wrap(). A standalone VetchContext still

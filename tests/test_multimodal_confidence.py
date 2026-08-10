@@ -144,6 +144,95 @@ class TestEnergyCompleteness:
         assert m.energy_completeness == "text_only"
         assert any("text portion" in w for w in m.warnings)
 
+    def test_video_only_routes_to_visual_coefficient(self, synthetic_vlm_entry):
+        usage = {
+            "text": {"input_tokens": 1000, "output_tokens": 0, "total_tokens": 1000},
+            "video": {"input_tokens": 200},
+        }
+        m = calc.prepare_inference_metrics(
+            model=synthetic_vlm_entry,
+            provider="openai",
+            usage=usage,
+            accumulated_chars=0,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=0,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+            n_images=0,
+        )
+        assert m.energy_completeness == "complete"
+        # Same math as image_input_tokens=200: text 0.8 + visual 1.0 = 1.8
+        assert m.energy_wh is not None and abs(m.energy_wh - 1.8) < 1e-9
+
+    def test_audio_only_routes_to_visual_coefficient(self, synthetic_vlm_entry):
+        usage = {
+            "text": {"input_tokens": 1000, "output_tokens": 0, "total_tokens": 1000},
+            "audio": {"input_tokens": 100},
+        }
+        m = calc.prepare_inference_metrics(
+            model=synthetic_vlm_entry,
+            provider="openai",
+            usage=usage,
+            accumulated_chars=0,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=0,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+        )
+        assert m.energy_completeness == "complete"
+        # 100 audio tokens = 1 unit @ 100 tok/unit → text 0.9 + visual 0.5 = 1.4
+        assert m.energy_wh is not None and abs(m.energy_wh - 1.4) < 1e-9
+
+    def test_mixed_modalities_sum_units(self, synthetic_vlm_entry):
+        usage = {
+            "text": {"input_tokens": 1000, "output_tokens": 0, "total_tokens": 1000},
+            "image": {"input_tokens": 100, "image_count": 1},
+            "video": {"input_tokens": 100},
+            "audio": {"input_tokens": 100},
+        }
+        # 300 media tokens = 3 units; text 0.7 + visual 1.5 = 2.2
+        e, *_ = calc.calculate_energy(
+            1000, 0, synthetic_vlm_entry,
+            n_images=calc.media_units_from_usage(usage),
+            image_input_tokens=calc.media_input_tokens_from_usage(usage),
+        )
+        assert abs(e - 2.2) < 1e-9
+        assert calc.media_input_tokens_from_usage(usage) == 300
+        assert calc.media_units_from_usage(usage) == 3.0
+
+    def test_media_without_coefficient_is_text_only(self):
+        usage = {
+            "text": {"input_tokens": 500, "output_tokens": 10, "total_tokens": 510},
+            "video": {"input_tokens": 400},
+        }
+        m = calc.prepare_inference_metrics(
+            model="gpt-4o",
+            provider="openai",
+            usage=usage,
+            accumulated_chars=0,
+            region=None,
+            price_multiplier=1.0,
+            energy_override=None,
+            cache_read_tokens=0,
+            cache_creation_tokens=None,
+            existing_warnings=[],
+        )
+        assert m.energy_completeness == "text_only"
+        assert any("image/audio/video" in w for w in m.warnings)
+
+    def test_no_double_count_media_tokens(self, synthetic_vlm_entry):
+        # Media tokens must leave the text coefficient (not priced twice).
+        with_media, *_ = calc.calculate_energy(
+            1000, 0, synthetic_vlm_entry, n_images=0, image_input_tokens=200
+        )
+        text_only, *_ = calc.calculate_energy(800, 0, synthetic_vlm_entry)
+        # with_media = 0.8 text + 1.0 visual = 1.8; text_only alone = 0.8
+        assert abs(with_media - (text_only + 1.0)) < 1e-9
+
     def test_complete_when_no_visual_input(self):
         usage = {"text": {"input_tokens": 1000, "output_tokens": 50, "total_tokens": 1050}}
         m = calc.prepare_inference_metrics(
@@ -305,6 +394,21 @@ class TestStrictMode:
         included, quarantined = filter_events_by_confidence(events)
         assert len(included) == 1  # only exact meets an "exact" floor
         assert len(quarantined) == 1
+
+    def test_session_stats_surfaces_below_min_confidence(self):
+        """Setting the floor alone quarantines in the rollup (fail-open at emit)."""
+        vetch.set_min_match_confidence("curated")
+        stats = SessionStats(fire_advisory_hooks=False)
+        stats.update(_event("exact", energy=2.0, cost=0.02))
+        stats.update(_event("alias", energy=1.0, cost=0.01))
+        stats.update(_event("family", energy=5.0, cost=0.05))  # proxy — below curated
+        conf = stats.summary()["confidence"]
+        assert conf["min_match_confidence"] == "curated"
+        assert conf["below_min_confidence_count"] == 1
+        assert conf["below_min_confidence_energy_wh"] == 5.0
+        assert conf["below_min_confidence_cost_usd"] == 0.05
+        # Totals still include the below-floor event (fail-open).
+        assert stats.total_energy_wh == 8.0
 
     def test_env_var_fallback(self, monkeypatch):
         monkeypatch.setenv("VETCH_MIN_MATCH_CONFIDENCE", "curated")

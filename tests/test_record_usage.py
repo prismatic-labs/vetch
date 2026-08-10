@@ -272,3 +272,70 @@ class TestSchemaParity:
         # Same schema (key set), even if values differ.
         assert set(manual.keys()) == set(instrumented.keys())
         assert manual["schema_version"] == instrumented["schema_version"]
+
+
+class TestRecordUsageVisual:
+    def test_video_modality_splits_like_intercepted(self, _emitter):
+        from vetch import calculation as calc
+
+        calc._load_registry()
+        assert calc._ENERGY is not None
+        key = "synthetic-vlm-record-usage"
+        calc._ENERGY[key] = {
+            "tier": 1,
+            "wh_per_1k_input": 1.0,
+            "wh_per_1k_output": 2.0,
+            "wh_per_visual_unit": 0.5,
+            "visual_tokens_per_unit": 100,
+            "basis": "synthetic",
+        }
+        try:
+            intercepted = calc.prepare_inference_metrics(
+                model=key,
+                provider="self-hosted",
+                usage={
+                    "text": {
+                        "input_tokens": 1000,
+                        "output_tokens": 50,
+                        "total_tokens": 1050,
+                    },
+                    "video": {"input_tokens": 200, "visual_units": 2},
+                },
+                accumulated_chars=0,
+                region=None,
+                price_multiplier=1.0,
+                energy_override=None,
+                cache_read_tokens=0,
+                cache_creation_tokens=None,
+                existing_warnings=[],
+            )
+            manual = vetch.record_usage(
+                key,
+                1000,
+                50,
+                provider_hint="self-hosted",
+                visual_input_tokens=200,
+                visual_units=2,
+                visual_modality="video",
+                emit=False,
+            )
+            assert manual is not None
+            assert manual["usage"].get("video", {}).get("input_tokens") == 200
+            assert manual["energy_completeness"] == "complete"
+            assert intercepted.energy_wh is not None
+            assert abs(manual["estimated_energy_wh"] - intercepted.energy_wh) < 1e-9
+        finally:
+            calc._ENERGY.pop(key, None)
+
+    def test_visual_without_coeff_is_text_only(self, _emitter):
+        ev = vetch.record_usage(
+            "gpt-4o",
+            500,
+            10,
+            visual_input_tokens=300,
+            visual_modality="audio",
+            emit=False,
+        )
+        assert ev is not None
+        assert ev["energy_completeness"] == "text_only"
+        assert "audio" in (ev.get("usage") or {})

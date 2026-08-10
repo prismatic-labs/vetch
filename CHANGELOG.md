@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — multimodal media split + record_usage visuals
+
+- Non-text modalities (`image` / `audio` / `video`) share one media sub-total for
+  the visual energy coefficient: tokens and units are summed, subtracted from the
+  text total (no double-count), and drive `energy_completeness` when no
+  coefficient is present.
+- `record_usage(..., visual_input_tokens=, visual_units=, visual_modality=)` meters
+  self-hosted vision/video/audio calls over raw HTTP through the same split.
+- Session confidence rollup surfaces `below_min_confidence_*` when
+  `set_min_match_confidence` / `VETCH_MIN_MATCH_CONFIDENCE` is set (fail-open at
+  emit; quarantine is explicit in the summary).
+- `vetch calibrate-cuda --modality {image,audio,video}` generates unique synthetic
+  media per request (measurement on hardware is separate).
+
 ## [0.11.0] - 2026-08-10
 
 ### Fixed — pre-release hardening

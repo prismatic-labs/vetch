@@ -233,20 +233,70 @@ def _clear_calibration_cache() -> None:
     _calibration_cache.clear()
 
 
+# Non-text modalities priced by the shared visual coefficient (v1: one coeff).
+_MEDIA_USAGE_KEYS = ("image", "audio", "video")
+
+
+def media_input_tokens_from_usage(usage: Any) -> int:
+    """Sum provider-reported input tokens across image + audio + video."""
+    if not isinstance(usage, dict):
+        return 0
+    total = 0
+    for key in _MEDIA_USAGE_KEYS:
+        bucket = usage.get(key)
+        if isinstance(bucket, dict):
+            total += _int_or_zero(bucket.get("input_tokens"))
+    return total
+
+
+def media_units_from_usage(usage: Any) -> float:
+    """Sum discrete media units across image + audio + video.
+
+    Image prefers ``image_count`` / ``visual_units``; audio and video prefer
+    ``visual_units`` when present, else 1.0 when the bucket has input tokens
+    (schema has no native audio/video count field yet).
+    """
+    if not isinstance(usage, dict):
+        return 0.0
+    units = 0.0
+    for key in _MEDIA_USAGE_KEYS:
+        bucket = usage.get(key)
+        if not isinstance(bucket, dict):
+            continue
+        # Take the largest available unit signal for the bucket, so a coarse
+        # image_count never shadows a finer visual_units count (or vice-versa).
+        cand = 0.0
+        count = bucket.get("image_count")
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+            cand = max(cand, float(count))
+        vu = bucket.get("visual_units")
+        if isinstance(vu, (int, float)) and not isinstance(vu, bool) and vu > 0:
+            cand = max(cand, float(vu))
+        if cand == 0.0 and _int_or_zero(bucket.get("input_tokens")) > 0:
+            cand = 1.0  # tokens present but no explicit count: mark one unit
+        units += cand
+    return units
+
+
 def _effective_text_input_tokens(
     input_tokens: int,
-    n_images: int,
+    n_images: float,
     image_input_tokens: int,
     visual_tokens_per_image: int | None,
 ) -> int:
-    """Text-only input tokens for Tier-0 coeffs fit on decoupled prompt counts."""
+    """Text-only input tokens for Tier-0 coeffs fit on decoupled prompt counts.
+
+    ``n_images`` / ``image_input_tokens`` are the aggregated media unit count and
+    media token sub-total (image + audio + video), kept under the historical
+    parameter names for call-site compatibility.
+    """
     in_tokens = max(0, input_tokens)
     if not visual_tokens_per_image or visual_tokens_per_image <= 0:
         return in_tokens
-    visual_total = max(0, n_images) * visual_tokens_per_image
+    visual_total = max(0.0, float(n_images)) * visual_tokens_per_image
     if image_input_tokens > 0:
-        visual_total = max(visual_total, int(image_input_tokens))
-    return max(0, in_tokens - visual_total)
+        visual_total = max(visual_total, float(image_input_tokens))
+    return max(0, in_tokens - int(visual_total))
 
 
 def _coerce_nonneg_float(value: Any) -> float | None:
@@ -728,11 +778,16 @@ def calculate_energy(
     model: str,
     energy_override: dict[str, Any] | None = None,
     cache_read_tokens: int = 0,
-    n_images: int = 0,
+    n_images: float = 0,
     image_input_tokens: int = 0,
     _match: ModelMatch | None = None,
 ) -> tuple[float, int, int, str, str, bool]:
     """Calculate energy consumption in Watt-hours.
+
+    ``n_images`` / ``image_input_tokens`` accept the aggregated media unit count
+    and media token sub-total (image + audio + video). The shared visual
+    coefficient prices that sub-total; one coeff for all non-text modalities in
+    v1.
 
     Supports prompt-length-aware coefficients (non-linear model):
     - Short prompts (< 1000 input tokens)
@@ -1600,7 +1655,7 @@ def prepare_inference_metrics(
     existing_warnings: list[str],
     accumulated_tik_tokens: int = 0,
     content_type_hint: str = "en",
-    n_images: int = 0,
+    n_images: float = 0,
     cache_creation_1h_tokens: int | None = None,
 ) -> InferenceMetrics:
     """Compute all energy/carbon/cost metrics for a single inference call.
@@ -1754,10 +1809,18 @@ def prepare_inference_metrics(
         if text:
             in_tokens = _int_or_zero(text.get("input_tokens"))
             out_tokens = _int_or_zero(text.get("output_tokens"))
-            image_input_tokens = 0
-            image = usage.get("image")
-            if isinstance(image, dict):
-                image_input_tokens = _int_or_zero(image.get("input_tokens"))
+            # Aggregate image + audio + video into one media sub-total. v1 uses a
+            # single shared visual coefficient for all non-text modalities.
+            media_input_tokens = media_input_tokens_from_usage(usage)
+            # Prefer the exact (possibly fractional) unit count derived from the
+            # usage record; fall back to the caller-supplied n_images only when
+            # the usage carries no media buckets. Do NOT max() them: n_images is a
+            # ceiled integer, and max() would let that ceiling inflate a genuine
+            # fractional count (e.g. 1.5 tiling units -> 2.0).
+            _media_units_usage = media_units_from_usage(usage)
+            media_units = (
+                _media_units_usage if _media_units_usage > 0 else float(max(0, n_images))
+            )
 
             # Include reasoning tokens (o1/o3 thinking, Gemini thinking).
             # These are generated (decode), so they count as output for energy.
@@ -1807,33 +1870,34 @@ def prepare_inference_metrics(
                 model,
                 cast("dict[str, Any]", energy_override),
                 cache_read_tokens=_cache_tokens,
-                n_images=n_images,
-                image_input_tokens=image_input_tokens,
+                n_images=media_units,
+                image_input_tokens=media_input_tokens,
                 _match=match,
             )
 
-            # Honest incompleteness: if the call carried visual input but no
+            # Honest incompleteness: if the call carried non-text media but no
             # visual coefficient priced it, the energy figure covers only the
             # text portion. Flag it text_only and warn, rather than emitting a
             # partial number as if it were the whole. For this workload the
-            # visual term can dominate, so a silent text-only figure understates
+            # media term can dominate, so a silent text-only figure understates
             # true energy by a potentially large multiple.
-            has_visual_input = n_images > 0 or image_input_tokens > 0
+            has_visual_input = media_units > 0 or media_input_tokens > 0
             if has_visual_input and not visual_coefficient_present(
                 match, cast("dict[str, Any]", energy_override)
             ):
                 metrics.energy_completeness = "text_only"
                 metrics.warnings.append(
-                    "Visual input present but no visual energy coefficient for "
-                    f"model '{model}'; estimated_energy_wh covers the text portion "
-                    "only (energy_completeness='text_only'). Add a VLM calibration "
+                    "Non-text media input (image/audio/video) present but no "
+                    f"visual energy coefficient for model '{model}'; "
+                    "estimated_energy_wh covers the text portion only "
+                    "(energy_completeness='text_only'). Add a VLM calibration "
                     "or registry visual coefficient for a complete figure."
                 )
 
             baseline_energy_wh: float | None = None
 
             # Compute cache energy saving vs. uncached baseline.
-            # n_images is passed so image energy cancels symmetrically on both sides.
+            # Media units are passed so visual energy cancels symmetrically on both sides.
             if _cache_tokens > 0 and metrics.energy_wh is not None:
                 (baseline_energy_wh, *_) = calculate_energy(
                     billable_in_tokens,
@@ -1841,8 +1905,8 @@ def prepare_inference_metrics(
                     model,
                     cast("dict[str, Any]", energy_override),
                     cache_read_tokens=0,
-                    n_images=n_images,
-                    image_input_tokens=image_input_tokens,
+                    n_images=media_units,
+                    image_input_tokens=media_input_tokens,
                 )
                 if baseline_energy_wh is not None:
                     metrics.cache_energy_saving_wh = baseline_energy_wh - metrics.energy_wh

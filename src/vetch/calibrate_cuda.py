@@ -39,6 +39,7 @@ from vetch.calibrate_metal import (
     _load_image_set,
     _ollama_generate,
     _unique_image_b64,
+    _unique_media_b64,
     _unique_prompt,
     _warmup_image_b64,
     grid_design_id,
@@ -144,14 +145,15 @@ def _openai_compat_generate(
     *,
     min_tokens: int | None = None,
     ignore_eos: bool = False,
+    modality: str = "image",
 ) -> tuple[int, int]:
     """One OpenAI-compatible ``/chat/completions`` call (vLLM, Ollama ``/v1``…).
 
     Returns ``(prompt_tokens, completion_tokens)`` from the response ``usage``.
-    Images are sent as a base64 PNG data URI placed BEFORE the text (Gemma
-    expects image-first). Temperature is pinned to 0 and Gemma's thinking is
-    disabled so output length is deterministic and not inflated by reasoning
-    tokens during calibration.
+    Non-text media is sent as a base64 data URI placed BEFORE the text (Gemma
+    expects image-first). ``modality`` selects the MIME / content-part shape
+    (``image`` / ``audio`` / ``video``). Temperature is pinned to 0 and Gemma's
+    thinking is disabled so output length is deterministic.
 
     For batched calibration, pass ``min_tokens=max_tokens`` and
     ``ignore_eos=True`` so output length is held constant (vLLM).
@@ -162,10 +164,26 @@ def _openai_compat_generate(
 
     content: list[dict[str, Any]] = []
     if image_b64 is not None:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{image_b64}"},
-        })
+        mod = (modality or "image").lower()
+        if mod == "audio":
+            # OpenAI-compatible audio input part (vLLM multimodal extension).
+            content.append({
+                "type": "input_audio",
+                "input_audio": {
+                    "data": image_b64,
+                    "format": "wav",
+                },
+            })
+        elif mod == "video":
+            content.append({
+                "type": "video_url",
+                "video_url": {"url": f"data:video/mp4;base64,{image_b64}"},
+            })
+        else:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+            })
     content.append({"type": "text", "text": prompt})
 
     payload: dict[str, Any] = {
@@ -397,6 +415,7 @@ def calibrate_cuda(
     backend: str = "ollama",
     precision: str | None = None,
     serving_engine: str | None = None,
+    modality: str = "image",
 ) -> CalibrationResult:
     """Measure NVIDIA GPU energy coefficients for a locally-served model.
 
@@ -422,11 +441,25 @@ def calibrate_cuda(
         serving_engine: Serving stack label for the identity (``vllm``,
             ``sglang``, …). Required when ``backend="openai"`` so vLLM/SGLang
             do not collide under a generic ``openai`` backend key.
+        modality: Non-text media for the visual grid (``image`` / ``audio`` /
+            ``video``). Synthetic unique payloads per request. Audio/video
+            require ``backend="openai"``.
 
     Returns:
         CalibrationResult with wh_per_1k_input/output, wh_per_image (VLMs),
         visual_tokens_per_image, and intercept_wh. Tier 0 (hardware-measured).
     """
+    modality = (modality or "image").strip().lower()
+    if modality not in ("image", "audio", "video"):
+        raise ValueError(
+            f"modality must be 'image', 'audio', or 'video'; got {modality!r}"
+        )
+    if modality != "image" and backend != "openai":
+        raise ValueError(
+            f"modality={modality!r} requires backend='openai' "
+            "(Ollama native /api only accepts images)."
+        )
+
     assert_cuda()
     _require_numpy()
 
@@ -441,7 +474,28 @@ def calibrate_cuda(
     precision = str(precision).strip()
 
     if backend == "openai":
-        generate: Any = _openai_compat_generate
+        _raw_generate = _openai_compat_generate
+
+        def _openai_generate_with_modality(
+            base_url: str,
+            model: str,
+            prompt: str,
+            image_b64: str | None = None,
+            max_tokens: int = 32,
+            **kwargs: Any,
+        ) -> tuple[int, int]:
+            try:
+                return _raw_generate(
+                    base_url, model, prompt, image_b64, max_tokens,
+                    modality=modality, **kwargs,
+                )
+            except TypeError:
+                # Test doubles / older generate() shims may omit modality=.
+                return _raw_generate(
+                    base_url, model, prompt, image_b64, max_tokens, **kwargs,
+                )
+
+        generate: Any = _openai_generate_with_modality
         health_check = _check_openai_server
         default_base = VLLM_DEFAULT_BASE_URL
         # OpenAI-compatible is an API shape, not a serving stack. Without an
@@ -474,6 +528,7 @@ def calibrate_cuda(
         print(f"  Provider: {provider}  (must match production provider_hint for Tier 0)")
         print(f"  Backend:  {backend} / engine={engine} @ {base_url}  ({server_version})")
         print(f"  Precision:{precision}")
+        print(f"  Modality: {modality}")
 
         # Multi-GPU hosts: we meter device_id, but the server chooses its own
         # GPU. If they differ, the coefficients are meaningless. We can't force
@@ -528,7 +583,10 @@ def calibrate_cuda(
         for i, spec in enumerate(grid):
             run_seed = i + 100
             run_images.append(
-                [_unique_image_b64(seed=run_seed + j * 1000) for j in range(spec.n_images)]
+                [
+                    _unique_media_b64(modality, seed=run_seed + j * 1000)
+                    for j in range(spec.n_images)
+                ]
             )
         total_runs = len(grid)
 

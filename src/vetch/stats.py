@@ -86,6 +86,14 @@ class SessionStats:
     energy_text_only_wh: float = 0.0
     energy_text_only_count: int = 0
 
+    # Min-confidence floor roll-up (v0.11.x). When get_min_match_confidence() is
+    # set, events below the floor are still counted (fail-open at emit) but
+    # surfaced so a consumer can quarantine without dropping the event path.
+    below_min_confidence_count: int = 0
+    below_min_confidence_energy_wh: float = 0.0
+    below_min_confidence_cost_usd: float = 0.0
+    below_min_confidence_carbon_g: float = 0.0
+
     # Capability observability (v0.10.0)
     expected_capabilities: list[str] | None = None
     function_tools_offered: set[str] = field(default_factory=set)
@@ -197,13 +205,26 @@ class SessionStats:
         # Confidence roll-up: floor of registry model_match and calibration_match
         # (see schema.event_confidence_class) so a reused/proxy calibration cannot
         # hide behind an exact registry hit in aggregates.
-        from vetch.schema import event_confidence_class
+        from vetch.schema import event_confidence_class, meets_event_min_confidence
 
         conf = event_confidence_class(event)
         self.confidence_counts[conf] += 1
         self.confidence_energy_wh[conf] += call_energy
         self.confidence_cost_usd[conf] += call_cost
         self.confidence_carbon_g[conf] += call_carbon
+
+        # Opt-in floor: surface sub-threshold events without blocking emit.
+        try:
+            from vetch.config import get_min_match_confidence
+
+            floor = get_min_match_confidence()
+        except Exception:
+            floor = None
+        if floor is not None and not meets_event_min_confidence(event, floor):  # type: ignore[arg-type]
+            self.below_min_confidence_count += 1
+            self.below_min_confidence_energy_wh += call_energy
+            self.below_min_confidence_cost_usd += call_cost
+            self.below_min_confidence_carbon_g += call_carbon
 
         # Energy-completeness roll-up: a "text_only" figure priced a visual call's
         # text portion alone, so track it separately from complete measurements.
@@ -448,6 +469,12 @@ class SessionStats:
         )
         total_energy = sum(self.confidence_energy_wh.values())
         total_cost = sum(self.confidence_cost_usd.values())
+        try:
+            from vetch.config import get_min_match_confidence
+
+            floor = get_min_match_confidence()
+        except Exception:
+            floor = None
         return {
             "by_class": by_class,
             "high_confidence_energy_fraction": (
@@ -463,6 +490,11 @@ class SessionStats:
                 if self.total_energy_wh > 0
                 else None
             ),
+            "min_match_confidence": floor,
+            "below_min_confidence_count": self.below_min_confidence_count,
+            "below_min_confidence_energy_wh": round(self.below_min_confidence_energy_wh, 6),
+            "below_min_confidence_cost_usd": round(self.below_min_confidence_cost_usd, 6),
+            "below_min_confidence_carbon_g": round(self.below_min_confidence_carbon_g, 6),
         }
 
     def summary(self) -> dict[str, Any]:

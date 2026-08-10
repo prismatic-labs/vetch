@@ -798,6 +798,7 @@ def calibrate_cuda_cmd(args: argparse.Namespace) -> None:
             backend=args.backend,
             precision=args.precision,
             serving_engine=args.serving_engine,
+            modality=getattr(args, "modality", "image") or "image",
         )
     except SystemExit:
         raise
@@ -1529,6 +1530,14 @@ def main() -> None:
     cal_cuda_parser.add_argument(
         "--iterations", type=int, default=1,
         help="Grid iteration multiplier (default: 1, ~22 runs)",
+    )
+    cal_cuda_parser.add_argument(
+        "--modality",
+        choices=["image", "audio", "video"],
+        default="image",
+        help="Non-text media modality for the visual grid (default: image). "
+             "audio/video require --backend openai; payloads are synthetic and "
+             "unique per request (hardware measurement validates acceptance).",
     )
     cal_cuda_parser.add_argument(
         "--batched", action="store_true",

@@ -783,3 +783,31 @@ def test_calibrate_cuda_batched_writes_curve(monkeypatch, tmp_path):
         fit = r["provenance"]["amortization_fit"]
         assert abs(fit["a"] - a) < 1e-6
         assert abs(fit["b"] - b) < 1e-6
+
+
+def test_unique_media_generators_are_distinct_per_seed():
+    from vetch.calibrate_metal import (
+        _unique_audio_b64,
+        _unique_media_b64,
+        _unique_video_b64,
+    )
+
+    assert _unique_audio_b64(1) != _unique_audio_b64(2)
+    assert _unique_video_b64(1) != _unique_video_b64(2)
+    assert _unique_media_b64("audio", 7) == _unique_audio_b64(7)
+    assert _unique_media_b64("video", 7) == _unique_video_b64(7)
+    assert len(_unique_media_b64("image", 7)) > 0
+
+
+def test_calibrate_cuda_rejects_audio_on_ollama_backend():
+    import pytest
+
+    from vetch import calibrate_cuda as cc
+
+    with pytest.raises(ValueError, match="backend='openai'"):
+        cc.calibrate_cuda(
+            "m",
+            precision="bf16",
+            backend="ollama",
+            modality="audio",
+        )
