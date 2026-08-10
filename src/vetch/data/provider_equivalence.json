@@ -1,0 +1,16 @@
+{
+  "self_hosted": [
+    "ollama",
+    "vllm",
+    "sglang",
+    "tgi",
+    "llamacpp",
+    "tensorrt-llm",
+    "self-hosted",
+    "local",
+    "transformers"
+  ],
+  "notes": {
+    "openai_excluded": "Ambiguous (real OpenAI API vs OpenAI-compatible local). Never cross-reuse; same-provider exact match still honored."
+  }
+}

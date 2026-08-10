@@ -154,3 +154,24 @@ class TestPropertyInvariants:
         _, _, exact_unc, *_ = calculate_energy(1000, 500, "gpt-4o")
         _, _, proxy_unc, *_ = calculate_energy(1000, 500, f"gpt-4o-{suffix}-99")
         assert proxy_unc >= exact_unc
+
+
+class TestHFOrgPrefix:
+    """HF/hub ids carry an org prefix that bare registry keys don't; the resolver
+    must strip it (and casefold) so a self-hosted model tagged with its repo id
+    resolves exactly instead of a wrong-family proxy."""
+
+    def test_org_prefixed_resolves_exact(self):
+        m = resolve_model_match("google/gemma-4-31B-it")
+        assert m.precision == "exact" and m.name == "gemma-4-31b-it"
+
+    def test_org_prefix_various(self):
+        assert resolve_model_match("openai/gpt-4o").precision == "exact"
+        assert resolve_model_match("google/gemini-3.1-pro").name == "gemini-3.1-pro"
+
+    def test_bare_key_still_exact(self):
+        assert resolve_model_match("gemma-4-31b-it").precision == "exact"
+
+    def test_unknown_org_prefixed_does_not_false_match(self):
+        # A genuinely-unknown org/model must not be forced to exact.
+        assert resolve_model_match("acme/not-a-real-model-xyz").precision in ("family", "fallback")

@@ -1,0 +1,19 @@
+{
+  "nvidia h100 80gb hbm3": "h100-sxm-80gb",
+  "nvidia h100 sxm": "h100-sxm-80gb",
+  "nvidia h100 pcie": "h100-pcie-80gb",
+  "nvidia h100 nvl": "h100-nvl-94gb",
+  "nvidia a100-sxm4-80gb": "a100-sxm-80gb",
+  "nvidia a100-sxm4-40gb": "a100-sxm-40gb",
+  "nvidia a100-pcie-80gb": "a100-pcie-80gb",
+  "nvidia a100-pcie-40gb": "a100-pcie-40gb",
+  "nvidia l40s": "l40s",
+  "nvidia l4": "l4",
+  "nvidia a10g": "a10g",
+  "nvidia a10": "a10",
+  "nvidia t4": "t4",
+  "tesla t4": "t4",
+  "nvidia rtx 4090": "rtx-4090",
+  "nvidia geforce rtx 4090": "rtx-4090",
+  "nvidia v100-sxm2-16gb": "v100-sxm-16gb"
+}

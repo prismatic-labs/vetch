@@ -67,6 +67,60 @@ VALID_STALL_ACTIONS: frozenset[str] = frozenset({"log", "warn", "kill", "reroute
 # threshold name → numeric override. Unknown keys are silently ignored.
 _advisory_thresholds: dict[str, dict[str, float]] = {}
 
+# v0.10.x: Strict match-confidence floor for the reporting path. None (default)
+# is permissive — every record flows into aggregates regardless of how its model
+# resolved. When set to a confidence class (exact/curated/proxy), the reporting
+# helpers in vetch.stats quarantine or refuse records below the floor, so an
+# approximated figure cannot silently enter an audited total. Opt-in only; the
+# inference path is never blocked by this (fail-open).
+_VALID_CONFIDENCE_CLASSES: frozenset[str] = frozenset({"exact", "curated", "proxy", "none"})
+_min_match_confidence: str | None = None
+
+
+def set_min_match_confidence(level: str | None) -> None:
+    """Set the minimum model-match confidence for the reporting path.
+
+    Args:
+        level: One of ``"exact"``, ``"curated"``, ``"proxy"``, or ``None`` to
+            disable enforcement (the permissive default). A record whose
+            ``model_match`` resolves below this class is quarantined out of, or
+            refused from, an aggregate by the ``vetch.stats`` reporting helpers
+            (``filter_events_by_confidence`` / ``require_confidence``).
+
+    Raises:
+        ConfigurationError: If ``level`` is not a valid confidence class.
+
+    Example::
+
+        # Compliance report: only exact or curated resolutions may contribute.
+        vetch.set_min_match_confidence("curated")
+    """
+    from vetch.exceptions import ConfigurationError
+
+    global _min_match_confidence
+    if level is not None and level not in _VALID_CONFIDENCE_CLASSES:
+        raise ConfigurationError(
+            f"Invalid confidence level: {level!r}. Must be one of "
+            f"{sorted(_VALID_CONFIDENCE_CLASSES)} or None.",
+            field="level",
+        )
+    _min_match_confidence = level
+
+
+def get_min_match_confidence() -> str | None:
+    """Return the configured minimum match confidence.
+
+    Falls back to the ``VETCH_MIN_MATCH_CONFIDENCE`` environment variable when no
+    value was set programmatically. Invalid env values are ignored (treated as
+    unset) rather than crashing the reporting path.
+    """
+    if _min_match_confidence is not None:
+        return _min_match_confidence
+    env = os.environ.get("VETCH_MIN_MATCH_CONFIDENCE")
+    if env and env in _VALID_CONFIDENCE_CLASSES:
+        return env
+    return None
+
 
 def set_advisory_thresholds(overrides: dict[str, dict[str, float]]) -> None:
     """Override detection thresholds for specific advisories.
@@ -753,6 +807,7 @@ def _reset_config() -> None:
     global _tag_combination_limit_exceeded, _last_combination_warning
     global _cached_hmac_key, _hmac_key_loaded
     global _stall_action, _stall_fallback_model, _advisory_thresholds
+    global _min_match_confidence
     _required_tags = set()
     _global_tags = {}
     _tag_cardinality_limit = 1000
@@ -769,3 +824,4 @@ def _reset_config() -> None:
     _stall_action = "log"
     _stall_fallback_model = None
     _advisory_thresholds = {}
+    _min_match_confidence = None

@@ -35,8 +35,9 @@ This means the tracking boundary is the individual API call, not a manually deli
 ## Methodology Version
 This document is versioned. If we change the energy heuristics (e.g., input:output ratio from 1:3 to 1:2.5), methodology_version will increment. Check this field to understand why historical data may differ from current calculations.
 
-**Current: methodology_version 1.2**
+**Current: methodology_version 1.3**
 
+- **1.3 (v0.10.x):** Extended the visual energy term to the registry path and added honest-incompleteness reporting. Registry VLM rows may declare `wh_per_visual_unit` (Wh per normalized visual unit) and `visual_tokens_per_unit`; when present, the visual portion is priced separately and its tokens are removed from the text total (`energy_wh += wh_per_visual_unit × visual_units`, mirroring the calibration path's `wh_per_image`). A call that carries visual input but has no visual coefficient is flagged `energy_completeness="text_only"` and warns, rather than emitting a text-only figure as if it were complete. No shipped registry row declares a visual coefficient yet — populate one only from a live-verified measurement or a Tier-0 calibration (see registry hygiene in CLAUDE.md); until then visual calls on cloud VLMs are correctly reported as text-only partials.
 - **1.2 (v0.8.0):** Added VLM image energy term (`wh_per_image`), Apple Silicon powermetrics Tier-0 calibration, and per-request fixed overhead intercept (`intercept_wh`). Energy formula now optionally includes `n_images × wh_per_image + intercept_wh` for VLM providers.
 - **1.1:** Reasoning token path, schema v2, session advisory engine.
 
@@ -76,6 +77,24 @@ This is our largest uncertainty.
 
 **Tier 0 (Measured)**: Available when users run local GPU inference (Ollama, vLLM, llama.cpp) and use hardware sensors to capture actual power draw. Limitations: Requires compatible GPU (NVIDIA via pynvml, AMD via rocm-smi), baseline subtraction introduces noise, short inferences are less accurate.
 
+#### Local hardware calibration records (v1)
+
+NVIDIA (`vetch calibrate-cuda`) and Apple Silicon (`vetch calibrate-apple-silicon`) produce Tier-0 coefficients for **your** stack. CUDA writes a versioned record (`schema_version: 1`) keyed by a full **identity** — `(provider, model, canonical_gpu, backend, precision)` — so the same model on H100-SXM vs A100, or BF16 vs FP8, cannot silently overwrite each other. At inference the SDK only has `(provider, model)`, so `calibration_store.resolve` is deliberately honest:
+
+| Situation | `energy_source` | Tier | `calibration_match` |
+|-----------|-----------------|------|---------------------|
+| One same-provider identity | `local_calibration` | measured (0) | `exact` |
+| Several same-provider identities (e.g. bf16 **and** fp8) | `reused_calibration` | capped ≥ 1 | `proxy` |
+| Same, but env hints uniquely select one **without** `VETCH_CALIB_HINTS_TRUSTED` | `reused_calibration` | capped ≥ 1 | `curated` |
+| Same, with `VETCH_CALIB_HINTS_TRUSTED=1` | `local_calibration` | measured (0) | `exact` |
+| Hints set but match nothing | _(none)_ | — | refuse attach |
+| Cross-label among self-hosted providers only | `reused_calibration` | capped ≥ 1 | `curated` / `proxy` |
+| Heuristic / unknown / missing `gpu_known` | (never exact Tier 0) | capped ≥ 1 | `proxy` |
+| Event / calib provider `openai` | `reused_calibration` or refuse write | capped ≥ 1 | `curated` (never exact) |
+| Cloud event with no same-provider file | _(none)_ | — | `null` |
+
+Events also carry `calibration_match` (and `vetch.calibration_match` on OTel). Session confidence rollups / strict mode use `min(registry model_match, calibration_match)`. Ambiguity includes the stored model string and forward-compat identity dims (`instance_type`, …) so `:latest` variants cannot collapse to false exact. Calibrate under the label your events emit (`--provider self-hosted`; `openai` is refused at write). Both CUDA and Apple require `--precision`. Identity JSON uses `serving_engine`. Overwrites archive under `archive/`. Legacy flats still resolve for a provider when that provider has no v1 record.
+
 **Tier 1 (Vendor-Published)**: The gold standard. Academic measurements on specific hardware with rigorous methodology qualify for Tier 1. As of v0.3.0, 21 models have Tier 1 data from Jegham et al. (2025).
 
 **Tier 2 (Validated)**: Aggregated from multiple crowdsourced Tier 0 measurements or independent academic studies. Example: "Llama 3.1 8B averages 0.12 Wh/1k tokens across 47 user submissions (std dev 0.03)."
@@ -87,6 +106,27 @@ This is our largest uncertainty.
 - Price-tier proxying from architecturally similar measured models
 
 Tier 3 estimates should be treated as order-of-magnitude guidance (±1000%), not precise measurements.
+
+### Match Confidence (how the model was resolved)
+
+Energy tier answers *how good is the coefficient*. Match confidence answers a separate question: *is this even the right model's coefficient*. Every event carries `model_match`, recording how the model name resolved against the registry. For aggregation and reporting these five precisions collapse onto four confidence classes:
+
+| `model_match` | Confidence class | Meaning |
+|---------------|------------------|---------|
+| `exact` | **exact** | Exact registry identity. |
+| `alias` | **curated** | A curated, trusted one-to-one equivalence. |
+| `prefix`, `family` | **proxy** | An approximate stand-in; energy tier is also floored to 3. |
+| `fallback` | **none** | No match; conservative generic fallback. |
+
+Because energy/cost/carbon are summed, confidence aggregates too. `SessionStats.summary()["confidence"]` (and `rollup_confidence_from_events`) report per-class totals plus the fraction of energy and cost derived from exact-or-curated resolutions versus proxies, and the fraction of energy that is a `text_only` partial. A consumer uses these to judge whether a total is fit to report.
+
+For an audited figure, silent substitution is a liability: once summed, an approximated value and a measured one are indistinguishable. Strict mode makes it enforceable and is opt-in (the default stays permissive for observability):
+
+- `vetch.set_min_match_confidence("curated")` (or `VETCH_MIN_MATCH_CONFIDENCE`) sets a floor.
+- `filter_events_by_confidence(events)` quarantines below-floor records out of the aggregate.
+- `require_confidence(events)` fails loudly (`ConfidenceError`) if any below-floor record is present.
+
+The safe direction under uncertainty is disclosure — flag, quarantine, or refuse — never presenting an estimate with the authority of a measurement.
 
 ### Architecture-Aware Estimation
 
@@ -213,7 +253,9 @@ else:
 
 1. **Jegham, N., et al. (2025).** "How Hungry is AI? Benchmarking Energy, Water, and Carbon Footprint of LLM Inference."
    - Published: May 2025 (arXiv:2505.09598)
-   - Methodology: Hardware measurements (pynvml) in commercial datacenters
+   - Methodology: infrastructure-aware **estimation** combining public API
+     behavior with modeled hardware/utilization assumptions (the authors do not
+     have sensor access inside third-party production datacenters)
    - Coverage: 30 models including GPT-4o, Claude-3.7, o3, DeepSeek-R1
    - Impact: First infrastructure-aware benchmark at scale
    - URL: https://arxiv.org/abs/2505.09598
@@ -230,11 +272,14 @@ else:
    - Methodology: Analytical model based on MoE architecture assumptions
    - URL: https://epoch.ai/gradient-updates/how-much-energy-does-chatgpt-use
 
-**Why Jegham (2025) is Authoritative:**
-- **Infrastructure-aware:** Accounts for batching, memory bandwidth, idle capacity
-- **Production environments:** Commercial datacenters, not lab setups
-- **Reproducible:** Published methodology and measurement scripts
-- **Peer-reviewed:** Academic rigor with clear error bounds
+**Why we use Jegham (2025) as our Tier-1 source (with caveats):**
+- **Infrastructure-aware:** Models batching, memory bandwidth, and idle capacity
+  rather than a flat per-token figure
+- **Broad, consistent coverage:** 30 models benchmarked with one methodology
+- **Published methodology:** arXiv preprint (arXiv:2505.09598), not yet
+  peer-reviewed; the figures are *modeled estimates*, not in-datacenter sensor
+  measurements, so we label them Tier 1 (vendor/academic-published) rather than
+  Tier 0 (our own hardware measurement)
 
 **Comparison with Earlier Estimates:**
 Earlier widely-cited research (de Vries, 2023) estimated ~3 Wh per GPT-3 query. Jegham's measurements show GPT-4o at ~0.3 Wh for short queries—**10x more efficient** than earlier estimates, reflecting both architectural improvements and measurement accuracy.
@@ -244,17 +289,19 @@ Earlier widely-cited research (de Vries, 2023) estimated ~3 Wh per GPT-3 query. 
 We plan to enable crowdsourced energy measurements from local inference users:
 
 ```bash
-# Calibrate your local setup (requires pynvml)
-vetch calibrate --provider ollama --model llama3.1:8b
+# NVIDIA (identity-keyed v1 record; precision required)
+vetch calibrate-cuda \
+  --provider self-hosted \
+  --backend openai --serving-engine vllm \
+  --precision bf16 \
+  --model google/gemma-4-31B-it \
+  --base-url http://127.0.0.1:8000/v1
 
-# Output:
-# Baseline: 145W | Inference: 287W (delta 142W) | Duration: 3.2s
-# Energy: 0.126 Wh / 1k tokens (vs registry: 0.089 Wh, Tier 3)
-#
-# Submit to Vetch Registry? [y/N]
+# Apple Silicon (same v1 store; --precision required, e.g. apple-native)
+sudo vetch calibrate-apple-silicon --model moondream:latest --precision apple-native
 ```
 
-Anonymized submissions (model + tokens + energy + hardware) will aggregate into Tier 2 estimates. No prompt content is ever transmitted.
+Records land in `~/.vetch/calibrations/` (prior files for the same identity move to `archive/`) and auto-load when the event's provider/model matches (see Tier 0 section above). Anonymized community aggregation into Tier 2 remains a separate path (`scripts/aggregate_calibrations.py`); no prompt content is ever transmitted.
 
 ## PUE (Power Usage Effectiveness)
 
@@ -370,3 +417,66 @@ We want better data. If you have inference energy measurements—from internal b
 - Email to marco@prismaticlabs.ai
 - Open an issue with the data
 - (Coming soon) `vetch calibrate --submit` for automated Tier 0 -> Tier 2 aggregation
+
+## Serving-configuration sensitivity (batching, precision, scale)
+
+Per-token energy is not a single number for a model — it depends on how the model
+is served. A hardware calibration (`calibrate-cuda` / `calibrate-apple-silicon`)
+is deliberately measured at **batch size 1, single stream** (the record stamps
+`batch_size=1`, `concurrency=1`, `tensor_parallel_size=null`). That makes it
+reproducible and an honest **upper bound** on per-token decode energy at a given
+precision. It is *not* representative of batched production serving, where
+per-request energy is substantially lower.
+
+The shipped batch=1 records (H100 SXM 80 GB, vLLM, bf16) measure, for Wh/1k
+output:
+
+| model | Wh/1k out (batch=1, H100) |
+|---|---|
+| Qwen2.5-7B-Instruct | 0.50 |
+| NousResearch Llama-3.1-8B-Instruct | 0.54 |
+| Qwen2.5-VL-7B-Instruct | 0.51 |
+| Qwen2.5-32B-Instruct | 2.37 |
+
+These four records ship as `active:false` audit artifacts (their fits were gated
+by the quality checks below). They document the measurement; they are not
+auto-resolved defaults.
+
+### Observed qualitatively (direction only — not shipped as records)
+Exploratory runs on rented H100 and A100 GPUs — **not committed as calibration
+records** — show three mechanistic patterns. We state them as direction, not as
+calibrated coefficients:
+
+- **Batching amortizes decode energy toward a floor.** Wh/1k output falls with
+  serving concurrency and is well fit by `Wh/1k(C) ≈ a/C + b`. Pure `1/C` holds
+  only at low concurrency and saturates above it; a batch=1 value can overstate
+  per-request energy at high concurrency by roughly an order of magnitude. The
+  normalized curve was consistent across a ~4x model-size range in our runs.
+- **Precision is a roughly multiplicative lever.** fp8 was about half of bf16
+  energy per token, roughly stable across concurrency.
+- **Decode energy scales ~linearly with active parameter count** (decode is
+  memory-bandwidth bound). The slope is GPU-dependent, so we do not publish a
+  universal per-1B constant. The shipped record set is consistent with ~linear
+  scaling among these dense models (MoE untested).
+
+**Prefill/input energy** is much smaller per token than decode, but not
+negligible: in our records the input coefficient sits near the regression floor
+and is flagged rather than reported with false precision. (An earlier internal
+"~0.0002 Wh/1k" figure was a prefix-cache measurement artifact and is withdrawn.)
+
+### Batched calibration mode (`--batched`) — experimental preview
+`vetch calibrate-cuda --batched` sweeps serving concurrency and fits
+`Wh/1k_out(C) ≈ a/C + b`. This mode is an **experimental preview**: no batched
+records are shipped, and its output must not be treated as Tier-0. Use the batch=1
+path for reproducible calibration.
+
+### Relationship to published API estimates
+Our batch=1 bf16 figures run higher than published API-based estimates such as
+Jegham et al. (2025). We do **not** claim the two reconcile. The gap is confounded
+by precision (an fp8 batch=1 measurement alone can close much of it) and by
+unknown serving concurrency, and those axes are not separately identifiable from
+the published numbers. Treat any cross-comparison as suggestive only.
+
+Because serving conditions dominate, the record captures them in provenance: a
+coefficient is only comparable to another measured under the same
+batch/precision/GPU/stack.

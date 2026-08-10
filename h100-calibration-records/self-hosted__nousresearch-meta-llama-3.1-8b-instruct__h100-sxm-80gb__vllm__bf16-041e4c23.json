@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "provider": "self-hosted",
+    "model": "NousResearch/Meta-Llama-3.1-8B-Instruct",
+    "gpu": "h100-sxm-80gb",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "instance_type": null,
+    "visual_token_budget": null
+  },
+  "gpu_raw": "NVIDIA H100 80GB HBM3",
+  "coefficients": {
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 0.5382334545971682,
+    "wh_per_image": null,
+    "visual_tokens_per_image": null,
+    "intercept_wh": 0.0
+  },
+  "provenance": {
+    "tier": 0,
+    "samples": 11,
+    "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
+    "measurement_basis": "nvml_gpu_energy",
+    "energy_domain": "gpu_board",
+    "energy_domain_includes": [
+      "gpu_core",
+      "hbm"
+    ],
+    "energy_domain_excludes": [
+      "host_cpu",
+      "host_dram",
+      "nvlink_switch",
+      "nic",
+      "storage",
+      "psu_loss",
+      "cooling"
+    ],
+    "not_wall_power": true,
+    "pue_applied": false,
+    "grid_applied": false,
+    "idle_subtracted": true,
+    "idle_subtraction_method": "pre_post_average",
+    "idle_watts_before": 122.816,
+    "idle_watts_after": 123.366,
+    "idle_drift_pct": 0.448,
+    "concurrency": 1,
+    "batch_size": 1,
+    "fit": {
+      "r2": 0.992,
+      "condition_number": 5.14,
+      "input_ci95": [
+        -0.008198936030988174,
+        0.007179068083511625
+      ],
+      "output_ci95": [
+        0.49211652497030745,
+        0.5721844659801656
+      ],
+      "image_ci95": [
+        0.0,
+        0.0
+      ],
+      "residuals_structured": false
+    },
+    "fit_engine": "numpy",
+    "ci_method": "bootstrap_500",
+    "raw_run_table": [
+      {
+        "n_images": 0,
+        "text_tokens": 404,
+        "output_tokens": 5,
+        "energy_wh": 0.0,
+        "raw_energy_wh": 0.0034127777777777776,
+        "duration_ms": 101.01077604293823,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 404,
+        "output_tokens": 77,
+        "energy_wh": 0.03939006754070586,
+        "raw_energy_wh": 0.07734694444444444,
+        "duration_ms": 1110.1116629838943,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 35,
+        "output_tokens": 64,
+        "energy_wh": 0.03246006283870792,
+        "raw_energy_wh": 0.06373,
+        "duration_ms": 914.5410469770432,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 116,
+        "output_tokens": 110,
+        "energy_wh": 0.053046439271498345,
+        "raw_energy_wh": 0.10323444444444445,
+        "duration_ms": 1467.8312450647354,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 116,
+        "output_tokens": 5,
+        "energy_wh": 0.0012746619761264634,
+        "raw_energy_wh": 0.0034830555555555556,
+        "duration_ms": 64.58812391757965,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 116,
+        "output_tokens": 32,
+        "energy_wh": 0.013692596922845825,
+        "raw_energy_wh": 0.023916944444444446,
+        "duration_ms": 299.0279589891434,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 35,
+        "output_tokens": 133,
+        "energy_wh": 0.07179319797144554,
+        "raw_energy_wh": 0.11145111111111111,
+        "duration_ms": 1159.861281991005,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 116,
+        "output_tokens": 64,
+        "energy_wh": 0.03596353070384201,
+        "raw_energy_wh": 0.05537527777777778,
+        "duration_ms": 567.7286590337753,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 116,
+        "output_tokens": 32,
+        "energy_wh": 0.017402317614656302,
+        "raw_energy_wh": 0.027537222222222223,
+        "duration_ms": 296.41205298900604,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 35,
+        "output_tokens": 5,
+        "energy_wh": 0.0,
+        "raw_energy_wh": 0.0,
+        "duration_ms": 64.24986898899078,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 404,
+        "output_tokens": 64,
+        "energy_wh": 0.03316468784629635,
+        "raw_energy_wh": 0.052805,
+        "duration_ms": 574.4134229421616,
+        "replicate": false
+      }
+    ],
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "gpu_canonical": "h100-sxm-80gb",
+    "gpu_known": true,
+    "serving_engine": "vllm",
+    "server_version": "openai-compatible (NousResearch/Meta-Llama-3.1-8B-Instruct)",
+    "image_set": "vetch_standard_v1",
+    "image_resolution_px": 378,
+    "model_supports_images": false,
+    "visual_tokens_assumed": 729,
+    "visual_tokens_assumed_source": "assumed_default",
+    "vetch_version": "0.10.5",
+    "methodology_version": "1.3",
+    "measured_at": "2026-08-10T01:01:53Z",
+    "measured_by": null,
+    "samples_per_modality": {
+      "text_only": 11,
+      "image": 0
+    },
+    "tensor_parallel_size": null,
+    "sampler_cadence_ms": null,
+    "integration_method": "energy_counter",
+    "token_accounting_basis": "prompt_tokens",
+    "image_token_accounting": "unsupported",
+    "calibrated_range": {
+      "text_tokens": [
+        35,
+        404
+      ],
+      "output_tokens": [
+        5,
+        133
+      ],
+      "n_images": [
+        0,
+        0
+      ]
+    },
+    "enforced_power_limit_w": 525.0,
+    "clocks": {
+      "sm_clock_mhz": 1980,
+      "sm_max_clock_mhz": 1980,
+      "mem_clock_mhz": 2619,
+      "applications_sm_clock_mhz": 1980
+    },
+    "sm_clock_locked": null,
+    "grid_design_id": "sym-d733b0d4",
+    "grid_seed": 20240808,
+    "memory_total_mb": 81559,
+    "driver_version": "595.71.05",
+    "device_id": 0,
+    "device_count": 1,
+    "compute_process_count_at_idle": 1,
+    "gpu_shared_warning": false,
+    "api_backend": "openai",
+    "model_revision": null,
+    "timestamp": 1786323713.393809
+  },
+  "active": false,
+  "rejection_reasons": [
+    "intercept_wh=-0.00162526 is negative (regression artifact; clamped to 0)",
+    "wh_per_1k_input=-0.001070 is negative"
+  ],
+  "timestamp": 1786323713.393809,
+  "profile_hash": "sha256:ba1cfb34b92aadf38bcbf0b4cea4b1c1c770f2e32fa5bae53bec700a0b7ac14b",
+  "content_hash": "sha256:669d088ecc5207ae181da0da3c2f428d89639dfed4796f21245c2140978d450a"
+}

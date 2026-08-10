@@ -13,11 +13,105 @@ Schema version 2 changes:
 - Added ImageUsage, AudioUsage, and VideoUsage TypedDicts
 - Added multimodal flag to InferenceEvent
 - Updated Usage container to support image, audio, and video modalities
+
+Schema v2.2 changes (additive, no version bump — fields may be added):
+- ImageUsage gained ``visual_units`` and ``tiling_class`` so a visual input
+  carries a normalized, resolution-aware count rather than a flat per-image
+  constant.
+- InferenceEvent gained ``energy_completeness`` so a call whose visual portion
+  was not priced is flagged text-only rather than emitted as a whole number.
+- Added a match-confidence taxonomy (``confidence_class`` /
+  ``meets_min_confidence``) mapping the resolver's ``model_match`` precision onto
+  a coarse class that survives aggregation and drives strict-mode reporting.
 """
 
-from typing import Literal, TypedDict, Union
+from collections.abc import Mapping
+from typing import Any, Literal, TypedDict, Union
 
 SCHEMA_VERSION = "2"
+
+# Match-confidence taxonomy (v0.10.x).
+#
+# ``model_match`` on each event records how the model name resolved against the
+# registry (see ``calculation.MatchPrecision``). For aggregation and reporting we
+# collapse those five precisions onto four coarse confidence classes that map
+# directly onto the consumer categories: an exact identity, a curated one-to-one
+# equivalent, an approximate proxy, and no match at all. The class is what a
+# roll-up sums over and what strict mode enforces a floor on.
+ConfidenceClass = Literal["exact", "curated", "proxy", "none"]
+
+_CONFIDENCE_CLASS_BY_MATCH: dict[str, ConfidenceClass] = {
+    "exact": "exact",      # exact registry identity
+    "alias": "curated",    # curated, trusted one-to-one equivalence
+    "prefix": "proxy",     # approximate proxy (algorithmic shorten)
+    "family": "proxy",     # approximate proxy (family stand-in)
+    "fallback": "none",    # no match — conservative generic fallback
+}
+
+# Ordered least → most trusted, for min-confidence comparisons.
+CONFIDENCE_ORDER: dict[ConfidenceClass, int] = {
+    "none": 0,
+    "proxy": 1,
+    "curated": 2,
+    "exact": 3,
+}
+
+
+def confidence_class(model_match: Union[str, None]) -> ConfidenceClass:
+    """Collapse a ``model_match`` precision onto its coarse confidence class.
+
+    Unknown / missing precisions are treated as ``"none"`` (least trusted) so an
+    unrecognized value can never be mistaken for a high-confidence match.
+    """
+    if not model_match:
+        return "none"
+    return _CONFIDENCE_CLASS_BY_MATCH.get(model_match, "none")
+
+
+def calibration_confidence_class(
+    calibration_match: Union[str, None],
+) -> Union[ConfidenceClass, None]:
+    """Map ``calibration_match`` onto a confidence class, or None if absent.
+
+    ``calibration_match`` is already exact/curated/proxy (or null when no
+    hardware calibration applied). Null means "axis not in play" — callers
+    should not treat it as ``none``.
+    """
+    if not calibration_match:
+        return None
+    if calibration_match in CONFIDENCE_ORDER:
+        return calibration_match
+    return "none"
+
+
+def event_confidence_class(event: Mapping[str, Any]) -> ConfidenceClass:
+    """Combined honesty for an event: min(registry match, calibration match).
+
+    Registry ``model_match`` answers "is this the right model row?". Calibration
+    match answers "is this the right measured coefficient?". A report that only
+    looked at registry match could greenlight ``exact`` model resolution while
+    energy came from a ``reused_calibration`` / ``proxy`` — so the floor of the
+    two axes is what rollups and strict mode use.
+    """
+    registry = confidence_class(event.get("model_match"))
+    cal = calibration_confidence_class(event.get("calibration_match"))
+    if cal is None:
+        return registry
+    if CONFIDENCE_ORDER[cal] < CONFIDENCE_ORDER[registry]:
+        return cal
+    return registry
+
+
+def meets_min_confidence(model_match: Union[str, None], minimum: ConfidenceClass) -> bool:
+    """True if ``model_match`` is at least as trusted as ``minimum``."""
+    return CONFIDENCE_ORDER[confidence_class(model_match)] >= CONFIDENCE_ORDER[minimum]
+
+
+def meets_event_min_confidence(
+    event: Mapping[str, Any], minimum: ConfidenceClass
+) -> bool:
+    """True if the event's combined confidence is at least ``minimum``."""
+    return CONFIDENCE_ORDER[event_confidence_class(event)] >= CONFIDENCE_ORDER[minimum]
 
 
 class CapabilityRef(TypedDict):
@@ -47,6 +141,15 @@ class ImageUsage(TypedDict, total=False):
     total_tokens: int
     image_count: int  # Number of images processed
     total_pixels: int  # Total pixels across all images (for energy estimation)
+    # Normalized visual work, decoupled from raw image count. One image expands
+    # into a variable number of visual units as a function of resolution and
+    # tiling, so a flat per-image constant is wrong at both high and low res.
+    # ``visual_units`` is the count in whatever normalized unit the provider or
+    # calibration uses (tiles / patches / visual sub-tokens); ``tiling_class``
+    # is a coarse resolution/tiling label (e.g. "low", "high", "512px-tile")
+    # preserved so the count can map onto a per-visual-unit coefficient.
+    visual_units: float
+    tiling_class: str
 
 
 class AudioUsage(TypedDict, total=False):
@@ -154,9 +257,21 @@ class InferenceEvent(TypedDict, total=False):
     energy_p95_wh: Union[float, None]
     carbon_p5_g: Union[float, None]
     carbon_p95_g: Union[float, None]
-    energy_source: str  # "registry", "override", "fallback", "calibrated"
+    # "registry" | "override" | "fallback" | "local_calibration" |
+    # "reused_calibration" | "community_calibration"
+    energy_source: str
     energy_override_source: Union[str, None]
     energy_basis: Union[str, None]
+    # How a local/hardware calibration resolved for this event (None = no calib).
+    # Distinct from model_match (registry name resolution).
+    calibration_match: Union[Literal["exact", "curated", "proxy"], None]
+    # Modality completeness of the energy figure (v2.2). "complete" means either
+    # the call had no visual input, or the visual portion was priced with a
+    # visual coefficient. "text_only" means the call carried visual input that
+    # was NOT priced (no visual coefficient available for this model), so the
+    # emitted energy covers the text portion alone and is a partial measurement,
+    # not the whole. Never emit a visual call's text-only energy as "complete".
+    energy_completeness: Literal["complete", "text_only"]
 
     # Grid data
     grid_intensity_gco2e_kwh: Union[float, None]

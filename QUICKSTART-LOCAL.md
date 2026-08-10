@@ -225,6 +225,75 @@ Confidence:      Tier 0 (Measured)
 
 **What happens**: Calibration results are saved to `~/.vetch/calibrations/` and automatically used for future calls with this model.
 
+### NVIDIA GPU calibration for self-hosted servers (`calibrate-cuda`)
+
+The `calibrate_model` path above wraps individual calls. If you serve open models
+behind an OpenAI-compatible server (vLLM, SGLang, or Ollama's `/v1`), use
+`vetch calibrate-cuda` instead — it drives an already-running server and meters
+whole-GPU energy with the NVML board-energy counter.
+
+> **"Local" here means self-hosted and self-metered, not on-prem.** A GPU you
+> **rent** by the hour (Vast.ai, Lambda, RunPod, …) and SSH into counts: you run
+> the server and read the board's own energy counter, so the measurement is
+> yours. A **hosted inference API** (OpenAI, Anthropic, Bedrock, …) does not
+> count — you cannot read its power, so those stay Tier-1/Tier-3 estimates and
+> `calibrate-cuda` refuses them. Tier-0 is about self-metering, not location.
+
+**Requirements**
+- An NVIDIA GPU that is **dedicated** (idle apart from your server), plus `pynvml`.
+- Your model already being served, for example:
+  ```bash
+  vllm serve Qwen/Qwen2.5-7B-Instruct --port 8000
+  ```
+
+**Run it** (batch=1 — the reproducible default):
+```bash
+vetch calibrate-cuda \
+  --provider self-hosted \
+  --backend openai \
+  --serving-engine vllm \
+  --model Qwen/Qwen2.5-7B-Instruct \
+  --precision bf16 \
+  --base-url http://localhost:8000
+```
+
+This writes a versioned, identity-keyed record under `~/.vetch/calibrations/`,
+stamped with GPU, serving engine, precision, and `batch_size=1`. It is picked up
+automatically at inference for matching self-hosted events.
+
+**Read these caveats — they are the honest part:**
+- **batch=1 is an upper bound.** It measures one request at a time, the
+  least-amortized case. Real batched serving uses far less energy per request, so
+  treat the batch=1 number as a ceiling, not your production figure.
+- **Precision is an identity dimension.** Calibrate each precision (bf16, fp8, …)
+  separately; they differ by roughly 2x.
+- **Dedicated GPU only.** The board-energy counter sums every process on the
+  device, so a co-tenant inflates the reading. Calibration warns if it detects
+  other compute processes or multiple visible GPUs.
+- **Cloud providers are refused.** `--provider openai/anthropic/azure/bedrock/...`
+  is rejected on purpose: local coefficients must never attach to metered cloud
+  traffic.
+
+**Batched mode is an experimental preview.** `vetch calibrate-cuda --batched
+--concurrency 1,4,8,16` sweeps concurrency and fits `Wh/1k ≈ a/C + b`, but it
+ships no records and is **not** Tier-0 yet. Use it for exploration, not attested
+numbers.
+
+**Pin a record to a specific stack.** If you keep several records (per GPU or
+precision), assert which one applies:
+```bash
+export VETCH_CALIB_GPU=h100-sxm-80gb
+export VETCH_CALIB_SERVING_ENGINE=vllm
+export VETCH_CALIB_PRECISION=bf16
+```
+If the hints match nothing, Vetch stays fail-loud: it will not silently borrow a
+community prior in place of the stack you asserted.
+
+**Share it.** The public calibration set is still Apple-Silicon-heavy, so NVIDIA
+records are exactly what's wanted. Open a GitHub issue or PR with your
+`~/.vetch/calibrations/*.json` — it contains only GPU / model / token-count /
+energy metadata (no prompts, no secrets) — to grow the community defaults.
+
 ---
 
 ## Understanding Energy in Tangible Terms

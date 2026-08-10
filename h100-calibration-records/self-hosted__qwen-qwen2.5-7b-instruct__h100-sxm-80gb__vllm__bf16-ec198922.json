@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "provider": "self-hosted",
+    "model": "Qwen/Qwen2.5-7B-Instruct",
+    "gpu": "h100-sxm-80gb",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "instance_type": null,
+    "visual_token_budget": null
+  },
+  "gpu_raw": "NVIDIA H100 80GB HBM3",
+  "coefficients": {
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 0.49630716162921584,
+    "wh_per_image": null,
+    "visual_tokens_per_image": null,
+    "intercept_wh": 0.0011259112635436186
+  },
+  "provenance": {
+    "tier": 0,
+    "samples": 11,
+    "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
+    "measurement_basis": "nvml_gpu_energy",
+    "energy_domain": "gpu_board",
+    "energy_domain_includes": [
+      "gpu_core",
+      "hbm"
+    ],
+    "energy_domain_excludes": [
+      "host_cpu",
+      "host_dram",
+      "nvlink_switch",
+      "nic",
+      "storage",
+      "psu_loss",
+      "cooling"
+    ],
+    "not_wall_power": true,
+    "pue_applied": false,
+    "grid_applied": false,
+    "idle_subtracted": true,
+    "idle_subtraction_method": "pre_post_average",
+    "idle_watts_before": 124.899,
+    "idle_watts_after": 123.257,
+    "idle_drift_pct": 1.315,
+    "concurrency": 1,
+    "batch_size": 1,
+    "fit": {
+      "r2": 0.9932,
+      "condition_number": 4.6,
+      "input_ci95": [
+        -0.01766493330502418,
+        -0.0008658655231497808
+      ],
+      "output_ci95": [
+        0.45624749838056444,
+        0.5198435519424293
+      ],
+      "image_ci95": [
+        0.0,
+        0.0
+      ],
+      "residuals_structured": true
+    },
+    "fit_engine": "numpy",
+    "ci_method": "bootstrap_500",
+    "raw_run_table": [
+      {
+        "n_images": 0,
+        "text_tokens": 427,
+        "output_tokens": 5,
+        "energy_wh": 0.0012628612900579543,
+        "raw_energy_wh": 0.0034872222222222223,
+        "duration_ms": 64.5376011133194,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 427,
+        "output_tokens": 89,
+        "energy_wh": 0.04076702718821838,
+        "raw_energy_wh": 0.06582833333333334,
+        "duration_ms": 727.1286579370499,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 58,
+        "output_tokens": 17,
+        "energy_wh": 0.007484069780524086,
+        "raw_energy_wh": 0.01298361111111111,
+        "duration_ms": 159.5636749267578,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 139,
+        "output_tokens": 127,
+        "energy_wh": 0.06449498519046515,
+        "raw_energy_wh": 0.10528194444444444,
+        "duration_ms": 1183.3927079439163,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 139,
+        "output_tokens": 5,
+        "energy_wh": 0.0028469647757785386,
+        "raw_energy_wh": 0.0056680555555555555,
+        "duration_ms": 81.85111904144287,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 139,
+        "output_tokens": 32,
+        "energy_wh": 0.013305292822337996,
+        "raw_energy_wh": 0.028075833333333335,
+        "duration_ms": 428.5524160861969,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 58,
+        "output_tokens": 32,
+        "energy_wh": 0.018886495314529482,
+        "raw_energy_wh": 0.03401333333333333,
+        "duration_ms": 438.8900308609009,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 139,
+        "output_tokens": 64,
+        "energy_wh": 0.02976345082185971,
+        "raw_energy_wh": 0.059485833333333335,
+        "duration_ms": 862.3651130199432,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 139,
+        "output_tokens": 32,
+        "energy_wh": 0.017254180695091062,
+        "raw_energy_wh": 0.032731944444444445,
+        "duration_ms": 449.0717889070511,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 58,
+        "output_tokens": 5,
+        "energy_wh": 0.0033123382885780414,
+        "raw_energy_wh": 0.006093611111111111,
+        "duration_ms": 80.69584095478058,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 427,
+        "output_tokens": 64,
+        "energy_wh": 0.02937151953785748,
+        "raw_energy_wh": 0.05834916666666667,
+        "duration_ms": 840.7573629617691,
+        "replicate": false
+      }
+    ],
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "gpu_canonical": "h100-sxm-80gb",
+    "gpu_known": true,
+    "serving_engine": "vllm",
+    "server_version": "openai-compatible (Qwen/Qwen2.5-7B-Instruct)",
+    "image_set": "vetch_standard_v1",
+    "image_resolution_px": 378,
+    "model_supports_images": false,
+    "visual_tokens_assumed": 729,
+    "visual_tokens_assumed_source": "assumed_default",
+    "vetch_version": "0.10.5",
+    "methodology_version": "1.3",
+    "measured_at": "2026-08-10T00:42:59Z",
+    "measured_by": null,
+    "samples_per_modality": {
+      "text_only": 11,
+      "image": 0
+    },
+    "tensor_parallel_size": null,
+    "sampler_cadence_ms": null,
+    "integration_method": "energy_counter",
+    "token_accounting_basis": "prompt_tokens",
+    "image_token_accounting": "unsupported",
+    "calibrated_range": {
+      "text_tokens": [
+        58,
+        427
+      ],
+      "output_tokens": [
+        5,
+        127
+      ],
+      "n_images": [
+        0,
+        0
+      ]
+    },
+    "enforced_power_limit_w": 525.0,
+    "clocks": {
+      "sm_clock_mhz": 1980,
+      "sm_max_clock_mhz": 1980,
+      "mem_clock_mhz": 2619,
+      "applications_sm_clock_mhz": 1980
+    },
+    "sm_clock_locked": null,
+    "grid_design_id": "sym-d733b0d4",
+    "grid_seed": 20240808,
+    "memory_total_mb": 81559,
+    "driver_version": "595.71.05",
+    "device_id": 0,
+    "device_count": 1,
+    "compute_process_count_at_idle": 1,
+    "gpu_shared_warning": false,
+    "api_backend": "openai",
+    "model_revision": null,
+    "timestamp": 1786322579.323427
+  },
+  "active": false,
+  "rejection_reasons": [
+    "wh_per_1k_input=-0.008322 is negative",
+    "residuals_structured=true \u2014 structured residual pattern detected"
+  ],
+  "timestamp": 1786322579.323427,
+  "profile_hash": "sha256:a734610f17020c800b78d45faa19ff5f8a9de28039f11eabc6b6e2667e2f838e",
+  "content_hash": "sha256:0627b0828bc29d2da6b1597420a11ac69221c2ae510a67f31e80c6da816f3943"
+}

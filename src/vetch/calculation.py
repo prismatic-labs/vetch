@@ -225,7 +225,7 @@ def _reset_registries() -> None:
 
 
 
-_calibration_cache: dict[tuple[str, str], Any] = {}
+_calibration_cache: dict[tuple[Any, ...], Any] = {}
 
 
 def _clear_calibration_cache() -> None:
@@ -249,16 +249,80 @@ def _effective_text_input_tokens(
     return max(0, in_tokens - visual_total)
 
 
-def _get_local_calibration(provider: str, model: str) -> Any:
-    """Return a cached CalibrationResult for (provider, model), or None."""
-    key = (provider, model)
+def _coerce_nonneg_float(value: Any) -> float | None:
+    """Return ``value`` as a non-negative float, or None if it isn't one."""
+    if isinstance(value, bool):  # bool is an int subclass; reject it explicitly
+        return None
+    if isinstance(value, (int, float)) and value >= 0:
+        return float(value)
+    return None
+
+
+def _override_visual_wh(energy_override: dict[str, Any] | None) -> float | None:
+    """Per-image vision-encoder energy declared by a calibration/override, if any.
+
+    Single source of truth shared by :func:`calculate_energy` (which applies it)
+    and the completeness check in :func:`prepare_inference_metrics` (which asks
+    whether a visual coefficient exists), so the two can never disagree.
+    """
+    if not energy_override:
+        return None
+    return _coerce_nonneg_float(energy_override.get("wh_per_image"))
+
+
+def _registry_visual_wh(entry: dict[str, Any] | None) -> float | None:
+    """Per-visual-unit energy declared by a registry entry, if any.
+
+    Registry VLM rows model the visual term as energy per normalized visual unit
+    (tile/patch), converted from provider image tokens via ``visual_tokens_per_unit``.
+    Returns None when the entry declares no visual coefficient, which is the
+    current state of every shipped row (see METHODOLOGY.md).
+    """
+    if not entry:
+        return None
+    return _coerce_nonneg_float(entry.get("wh_per_visual_unit"))
+
+
+def visual_coefficient_present(
+    match: ModelMatch, energy_override: dict[str, Any] | None
+) -> bool:
+    """True if a visual energy coefficient applies to this call's model.
+
+    Mirrors the branch selection in :func:`calculate_energy`: an override/
+    calibration supplies ``wh_per_image``; a registry entry supplies
+    ``wh_per_visual_unit``. Used to decide ``energy_completeness`` — when a call
+    has visual input but no coefficient is present, the energy is text-only.
+    """
+    if energy_override:
+        return _override_visual_wh(energy_override) is not None
+    _load_registry()
+    if match.known and _ENERGY is not None:
+        return _registry_visual_wh(_ENERGY.get(match.name)) is not None
+    return False
+
+
+def _get_local_calibration(
+    provider: str,
+    model: str,
+    hints: Any | None = None,
+) -> Any:
+    """Return a cached CalibrationResult for (provider, model[, hints]), or None."""
+    hint_key = None
+    if hints is not None and hasattr(hints, "as_cache_key"):
+        hint_key = hints.as_cache_key()
+    key: tuple[Any, ...] = (provider, model, hint_key)
     if key not in _calibration_cache:
         try:
             from vetch.calibrate import load_calibration
             from vetch.community_calibrations import lookup_community_calibration
 
-            cal = load_calibration(provider, model)
-            if cal is None:
+            cal = load_calibration(provider, model, hints=hints)
+            if cal is None and not (hints is not None and hints.any_set()):
+                # Only consult a community prior when the operator did NOT assert a
+                # specific serving stack via VETCH_CALIB_*. If hints were set and
+                # matched nothing, stay fail-loud: return None so the registry path
+                # applies, rather than silently attaching another operator's
+                # hardware numbers as if they were this deployment's.
                 cal = lookup_community_calibration(provider, model)
             _calibration_cache[key] = cal
         except (ImportError, OSError, ValueError) as e:
@@ -379,15 +443,27 @@ def resolve_model_match(model: str) -> ModelMatch:
 
     model_lower = model.lower()
 
+    # HF/hub ids carry an org prefix ("qwen/qwen2.5-32b-instruct") that registry keys
+    # ("qwen2.5-32b-instruct") don't. Try the org-stripped basename as an equal-standing
+    # form so a self-hosted model tagged with its repo id resolves exactly instead
+    # of falling through to a wrong-family proxy. Order preserves full-id priority.
+    forms = [model_lower]
+    if "/" in model_lower:
+        base = model_lower.rsplit("/", 1)[-1]
+        if base and base not in forms:
+            forms.append(base)
+
     # 1. Direct match (case-insensitive; registry keys are lowercase)
-    if model_lower in _ENERGY:
-        return ModelMatch(model_lower, True, "exact")
+    for form in forms:
+        if form in _ENERGY:
+            return ModelMatch(form, True, "exact")
 
     # 2. Alias match (curated, high-confidence equivalence)
-    if model_lower in _ALIASES:
-        resolved = _ALIASES[model_lower]
-        if resolved in _ENERGY:
-            return ModelMatch(resolved, True, "alias")
+    for form in forms:
+        if form in _ALIASES:
+            resolved = _ALIASES[form]
+            if resolved in _ENERGY:
+                return ModelMatch(resolved, True, "alias")
 
     # 3. Prefix matching (gpt-4-0613 -> gpt-4): low-confidence proxy.
     # Hyphen splitting alone cannot reach a major-version registry key from a
@@ -398,20 +474,21 @@ def resolve_model_match(model: str) -> ModelMatch:
     # Range includes the full name (i == len) so a bare minor bump with no
     # suffix (gpt-5.7 -> gpt-5) also degrades; the full-name exact/alias case is
     # already handled above, so only its degraded form can newly match here.
-    parts = model_lower.split("-")
-    for i in range(len(parts), 0, -1):
-        prefix = "-".join(parts[:i])
-        candidates = [prefix]
-        degraded = re.sub(r"(\d+)\.\d+$", r"\1", prefix)
-        if degraded != prefix:  # only when the minor version actually degrades
-            candidates.append(degraded)
-        for candidate in candidates:
-            if candidate in _ENERGY:
-                return ModelMatch(candidate, True, "prefix")
-            if candidate in _ALIASES:
-                resolved = _ALIASES[candidate]
-                if resolved in _ENERGY:
-                    return ModelMatch(resolved, True, "prefix")
+    for form in forms:
+        parts = form.split("-")
+        for i in range(len(parts), 0, -1):
+            prefix = "-".join(parts[:i])
+            candidates = [prefix]
+            degraded = re.sub(r"(\d+)\.\d+$", r"\1", prefix)
+            if degraded != prefix:  # only when the minor version actually degrades
+                candidates.append(degraded)
+            for candidate in candidates:
+                if candidate in _ENERGY:
+                    return ModelMatch(candidate, True, "prefix")
+                if candidate in _ALIASES:
+                    resolved = _ALIASES[candidate]
+                    if resolved in _ENERGY:
+                        return ModelMatch(resolved, True, "prefix")
 
     # 4. Deterministic family fallback before the generic one
     family_match = _family_fallback(model_lower)
@@ -789,14 +866,35 @@ def calculate_energy(
         basis = entry["basis"]
         source = "fallback"
 
+    # Visual energy term for registry VLM rows. When the matched entry declares a
+    # per-visual-unit coefficient, price the visual portion separately and remove
+    # its tokens from the text total so they are not double-counted at the text
+    # coefficient. Rows without the field (every shipped row today) leave
+    # text_in_tokens == in_tokens and add zero visual energy — no behaviour change
+    # for text-only or uncalibrated-visual models. See _override_visual_wh for the
+    # calibration-path equivalent (wh_per_image), handled in the branch above.
+    visual_wh_per_unit = _registry_visual_wh(entry)
+    visual_energy_wh = 0.0
+    text_in_tokens = in_tokens
+    if visual_wh_per_unit is not None:
+        raw_vtok = entry.get("visual_tokens_per_unit")
+        vtok = int(raw_vtok) if isinstance(raw_vtok, int) and raw_vtok > 0 else None
+        text_in_tokens = _effective_text_input_tokens(
+            in_tokens, n_images, image_input_tokens, vtok
+        )
+        visual_units = float(max(0, n_images))
+        if vtok is not None and image_input_tokens > 0:
+            visual_units = max(visual_units, image_input_tokens / vtok)
+        visual_energy_wh = visual_wh_per_unit * visual_units
+
     # Apply cache read discount: cached tokens skip prefill, use ~15% of normal input energy
-    cache_tokens = min(max(0, cache_read_tokens), in_tokens)
-    fresh_tokens = in_tokens - cache_tokens
+    cache_tokens = min(max(0, cache_read_tokens), text_in_tokens)
+    fresh_tokens = text_in_tokens - cache_tokens
     energy_wh = (
         fresh_tokens * wh_in
         + cache_tokens * wh_in * CACHE_READ_ENERGY_FACTOR
         + out_tokens * wh_out
-    ) / 1000
+    ) / 1000 + visual_energy_wh
     uncertainty_pct = get_uncertainty_pct(tier)
     return energy_wh, tier, uncertainty_pct, source, basis, known
 
@@ -1423,6 +1521,8 @@ class InferenceMetrics:
         "energy_uncertainty_pct",
         "energy_source",
         "energy_basis",
+        "calibration_match",
+        "energy_completeness",
         "model_known",
         "model_match",
         "carbon_g",
@@ -1457,6 +1557,8 @@ class InferenceMetrics:
         self.energy_uncertainty_pct: int | None = 1000
         self.energy_source: str = "registry"
         self.energy_basis: str | None = None
+        self.calibration_match: Literal["exact", "curated", "proxy"] | None = None
+        self.energy_completeness: Literal["complete", "text_only"] = "complete"
         self.model_known: bool = False
         self.model_match: MatchPrecision = "fallback"
         self.carbon_g: float | None = None
@@ -1539,16 +1641,50 @@ def prepare_inference_metrics(
     # Results are cached in-process (see _calibration_cache) to avoid file I/O
     # on every inference call.
     if energy_override is None:
-        cal = _get_local_calibration(provider, model)
+        from vetch.calibration_store import hints_from_env
+
+        cal = _get_local_calibration(provider, model, hints=hints_from_env())
         if cal is not None and cal.active:
+            # Distinguish a direct hardware measurement (exact same-identity match)
+            # from a REUSED calibration (curated/proxy — cross-label or ambiguous).
+            # source and basis, not just a trailing note, must reflect this so
+            # anything keying on source/tier can't mistake reuse for local hardware.
+            confidence = getattr(cal, "energy_confidence", None)
+            hw = cal.gpu_name or "local GPU"
             if cal.origin == "community":
                 source = "community_calibration"
-                basis = (
-                    f"Community calibration prior ({cal.gpu_name or 'Apple Silicon'})"
+                basis = f"Community calibration prior ({cal.gpu_name or 'Apple Silicon'})"
+                # A community prior is someone else's hardware, not this
+                # deployment's. Cap the calibration match at proxy so the event
+                # confidence class is floored (an exact model match must not let
+                # borrowed energy numbers resolve as exact).
+                metrics.calibration_match = "proxy"
+                metrics.warnings.append(
+                    "Energy from a community calibration prior (not measured on "
+                    "your hardware); confidence capped at proxy."
+                )
+            elif confidence == "exact":
+                source = "local_calibration"
+                basis = f"Hardware-measured on {hw} [calibration match: exact]"
+                metrics.calibration_match = "exact"
+            elif confidence in ("curated", "proxy"):
+                source = "reused_calibration"
+                basis = f"Reused calibration from {hw} [calibration match: {confidence}]"
+                metrics.calibration_match = confidence  # type: ignore[assignment]
+                metrics.warnings.append(
+                    f"Calibration match is {confidence} (not exact measured Tier 0); "
+                    f"energy_source={source}."
                 )
             else:
+                # Loader did not set energy_confidence (legacy / community edge).
+                # Treat as local hardware but do NOT claim an "exact" match.
                 source = "local_calibration"
-                basis = f"Hardware-measured on {cal.gpu_name or 'local GPU'}"
+                basis = f"Hardware-measured on {hw}"
+                metrics.calibration_match = None
+                metrics.warnings.append(
+                    "Local calibration loaded without an exact match label; "
+                    "do not treat as attested Tier 0."
+                )
             energy_override = {
                 "wh_per_1k_input": cal.wh_per_1k_input,
                 "wh_per_1k_output": cal.wh_per_1k_output,
@@ -1675,6 +1811,24 @@ def prepare_inference_metrics(
                 image_input_tokens=image_input_tokens,
                 _match=match,
             )
+
+            # Honest incompleteness: if the call carried visual input but no
+            # visual coefficient priced it, the energy figure covers only the
+            # text portion. Flag it text_only and warn, rather than emitting a
+            # partial number as if it were the whole. For this workload the
+            # visual term can dominate, so a silent text-only figure understates
+            # true energy by a potentially large multiple.
+            has_visual_input = n_images > 0 or image_input_tokens > 0
+            if has_visual_input and not visual_coefficient_present(
+                match, cast("dict[str, Any]", energy_override)
+            ):
+                metrics.energy_completeness = "text_only"
+                metrics.warnings.append(
+                    "Visual input present but no visual energy coefficient for "
+                    f"model '{model}'; estimated_energy_wh covers the text portion "
+                    "only (energy_completeness='text_only'). Add a VLM calibration "
+                    "or registry visual coefficient for a complete figure."
+                )
 
             baseline_energy_wh: float | None = None
 

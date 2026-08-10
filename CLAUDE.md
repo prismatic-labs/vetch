@@ -208,6 +208,12 @@ Example: feat(vetch): add OpenAI provider wrapper
 | `VETCH_DEFAULT_PUE` | Power Usage Effectiveness multiplier | `1.2` |
 | `VETCH_CACHE_MODE` | Set to `memory-only` for serverless | (file-based) |
 | `ELECTRICITY_MAPS_API_KEY` | API key for live grid data | (optional) |
+| `VETCH_CALIB_GPU` | Disambiguate local calibrations by GPU key | (unset) |
+| `VETCH_CALIB_SERVING_ENGINE` | Disambiguate by serving stack (vllm/…) | (unset) |
+| `VETCH_CALIB_PRECISION` | Disambiguate by precision (bf16/…) | (unset) |
+| `VETCH_CALIB_CONCURRENCY` | Disambiguate by serving concurrency | (unset) |
+| `VETCH_CALIB_HINTS_TRUSTED` | Allow env hints to restore `exact` Tier 0 | unset (hints → curated) |
+| `VETCH_SELF_HOSTED_PROVIDERS` | Extra labels in self-hosted equivalence class | (bundled set; cloud blocked) |
 
 ---
 

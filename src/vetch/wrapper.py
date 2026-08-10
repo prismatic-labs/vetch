@@ -747,6 +747,8 @@ class VetchContext:
         energy_uncertainty_pct: int | None = metrics.energy_uncertainty_pct
         energy_source = metrics.energy_source
         energy_basis = metrics.energy_basis
+        energy_completeness = metrics.energy_completeness
+        calibration_match = metrics.calibration_match
         model_known = metrics.model_known
         model_match = metrics.model_match
         carbon_g = metrics.carbon_g
@@ -890,6 +892,8 @@ class VetchContext:
                 self._energy_override.get("source") if self._energy_override else None
             ),
             energy_basis=energy_basis,
+            calibration_match=calibration_match,
+            energy_completeness=energy_completeness,
             grid_intensity_gco2e_kwh=grid_val,
             grid_intensity_timestamp=grid_ts,
             grid_intensity_time_of_day=False,  # TODO: Implement hourly grid data

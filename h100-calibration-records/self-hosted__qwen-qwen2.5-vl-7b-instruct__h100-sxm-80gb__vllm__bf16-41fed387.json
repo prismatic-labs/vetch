@@ -1,0 +1,333 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "provider": "self-hosted",
+    "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "gpu": "h100-sxm-80gb",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "instance_type": null,
+    "visual_token_budget": null
+  },
+  "gpu_raw": "NVIDIA H100 80GB HBM3",
+  "coefficients": {
+    "wh_per_1k_input": 0.00333933968594482,
+    "wh_per_1k_output": 0.5108617555771668,
+    "wh_per_image": 0.0011758056670281222,
+    "visual_tokens_per_image": 198,
+    "intercept_wh": 0.0
+  },
+  "provenance": {
+    "tier": 0,
+    "samples": 22,
+    "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
+    "measurement_basis": "nvml_gpu_energy",
+    "energy_domain": "gpu_board",
+    "energy_domain_includes": [
+      "gpu_core",
+      "hbm"
+    ],
+    "energy_domain_excludes": [
+      "host_cpu",
+      "host_dram",
+      "nvlink_switch",
+      "nic",
+      "storage",
+      "psu_loss",
+      "cooling"
+    ],
+    "not_wall_power": true,
+    "pue_applied": false,
+    "grid_applied": false,
+    "idle_subtracted": true,
+    "idle_subtraction_method": "pre_post_average",
+    "idle_watts_before": 122.827,
+    "idle_watts_after": 123.411,
+    "idle_drift_pct": 0.475,
+    "concurrency": 1,
+    "batch_size": 1,
+    "fit": {
+      "r2": 0.9879,
+      "condition_number": 6.5,
+      "input_ci95": [
+        -0.0033489770441552783,
+        0.01042529635885583
+      ],
+      "output_ci95": [
+        0.48563523686014703,
+        0.5439107870672264
+      ],
+      "image_ci95": [
+        -0.0006892331888814496,
+        0.0029067051442072805
+      ],
+      "residuals_structured": true
+    },
+    "fit_engine": "numpy",
+    "ci_method": "bootstrap_500",
+    "raw_run_table": [
+      {
+        "n_images": 1,
+        "text_tokens": 327,
+        "output_tokens": 32,
+        "energy_wh": 0.013565403047539185,
+        "raw_energy_wh": 0.03537055555555556,
+        "duration_ms": 637.5827720165253,
+        "replicate": true
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 246,
+        "output_tokens": 5,
+        "energy_wh": 0.003693042715824938,
+        "raw_energy_wh": 0.00915361111111111,
+        "duration_ms": 159.6670480966568,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 417,
+        "output_tokens": 5,
+        "energy_wh": 0.0011916962417858733,
+        "raw_energy_wh": 0.005304722222222222,
+        "duration_ms": 120.26490092277527,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 417,
+        "output_tokens": 93,
+        "energy_wh": 0.045688027587587283,
+        "raw_energy_wh": 0.08608,
+        "duration_ms": 1181.0614820718765,
+        "replicate": false
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 327,
+        "output_tokens": 53,
+        "energy_wh": 0.02686845028060765,
+        "raw_energy_wh": 0.06110666666666666,
+        "duration_ms": 1001.1256240606308,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 48,
+        "output_tokens": 64,
+        "energy_wh": 0.03292305178962378,
+        "raw_energy_wh": 0.06216777777777778,
+        "duration_ms": 855.1159390211105,
+        "replicate": false
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 246,
+        "output_tokens": 24,
+        "energy_wh": 0.010352405669376369,
+        "raw_energy_wh": 0.021502777777777777,
+        "duration_ms": 326.0369380712509,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 129,
+        "output_tokens": 141,
+        "energy_wh": 0.0676288678653099,
+        "raw_energy_wh": 0.11931527777777778,
+        "duration_ms": 1511.3108929395676,
+        "replicate": false
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 615,
+        "output_tokens": 52,
+        "energy_wh": 0.0325478707536824,
+        "raw_energy_wh": 0.05377638888888889,
+        "duration_ms": 620.7219799757004,
+        "replicate": false
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 327,
+        "output_tokens": 32,
+        "energy_wh": 0.017924083568708532,
+        "raw_energy_wh": 0.03158,
+        "duration_ms": 399.29906702041626,
+        "replicate": true
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 246,
+        "output_tokens": 90,
+        "energy_wh": 0.04632967454824287,
+        "raw_energy_wh": 0.08069777777777777,
+        "duration_ms": 1004.92351603508,
+        "replicate": false
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 615,
+        "output_tokens": 64,
+        "energy_wh": 0.03302442153125879,
+        "raw_energy_wh": 0.05731138888888889,
+        "duration_ms": 710.1510510444641,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 129,
+        "output_tokens": 5,
+        "energy_wh": 0.0031599124656315615,
+        "raw_energy_wh": 0.005532777777777778,
+        "duration_ms": 69.38259398937225,
+        "replicate": false
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 615,
+        "output_tokens": 5,
+        "energy_wh": 0.0023244206952913677,
+        "raw_energy_wh": 0.006174166666666666,
+        "duration_ms": 112.56659209728241,
+        "replicate": false
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 327,
+        "output_tokens": 69,
+        "energy_wh": 0.0369110854356053,
+        "raw_energy_wh": 0.06749888888888889,
+        "duration_ms": 894.387531042099,
+        "replicate": false
+      },
+      {
+        "n_images": 1,
+        "text_tokens": 327,
+        "output_tokens": 5,
+        "energy_wh": 0.0,
+        "raw_energy_wh": 0.0039025,
+        "duration_ms": 153.5125470161438,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 129,
+        "output_tokens": 32,
+        "energy_wh": 0.017027675153638414,
+        "raw_energy_wh": 0.035929722222222224,
+        "duration_ms": 552.6959539651871,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 48,
+        "output_tokens": 101,
+        "energy_wh": 0.052173892603020466,
+        "raw_energy_wh": 0.09944055555555556,
+        "duration_ms": 1382.0774689912796,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 129,
+        "output_tokens": 64,
+        "energy_wh": 0.0326378347559237,
+        "raw_energy_wh": 0.055806944444444444,
+        "duration_ms": 677.4648870229721,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 129,
+        "output_tokens": 32,
+        "energy_wh": 0.01194731561243187,
+        "raw_energy_wh": 0.02386,
+        "duration_ms": 348.3269530534744,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 48,
+        "output_tokens": 5,
+        "energy_wh": 0.0017529762090623528,
+        "raw_energy_wh": 0.004122777777777778,
+        "duration_ms": 69.29301011562347,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 417,
+        "output_tokens": 64,
+        "energy_wh": 0.03387655285081692,
+        "raw_energy_wh": 0.05700361111111111,
+        "duration_ms": 676.2353030443192,
+        "replicate": false
+      }
+    ],
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "gpu_canonical": "h100-sxm-80gb",
+    "gpu_known": true,
+    "serving_engine": "vllm",
+    "server_version": "openai-compatible (Qwen/Qwen2.5-VL-7B-Instruct)",
+    "image_set": "vetch_standard_v1",
+    "image_resolution_px": 378,
+    "model_supports_images": true,
+    "visual_tokens_assumed": 729,
+    "visual_tokens_assumed_source": "assumed_default",
+    "vetch_version": "0.10.5",
+    "methodology_version": "1.3",
+    "measured_at": "2026-08-10T00:50:57Z",
+    "measured_by": null,
+    "samples_per_modality": {
+      "text_only": 11,
+      "image": 11
+    },
+    "tensor_parallel_size": null,
+    "sampler_cadence_ms": null,
+    "integration_method": "energy_counter",
+    "token_accounting_basis": "prompt_tokens",
+    "image_token_accounting": "includes",
+    "calibrated_range": {
+      "text_tokens": [
+        48,
+        615
+      ],
+      "output_tokens": [
+        5,
+        141
+      ],
+      "n_images": [
+        0,
+        1
+      ]
+    },
+    "enforced_power_limit_w": 525.0,
+    "clocks": {
+      "sm_clock_mhz": 1980,
+      "sm_max_clock_mhz": 1980,
+      "mem_clock_mhz": 2619,
+      "applications_sm_clock_mhz": 1980
+    },
+    "sm_clock_locked": null,
+    "grid_design_id": "sym-d733b0d4",
+    "grid_seed": 20240808,
+    "memory_total_mb": 81559,
+    "driver_version": "595.71.05",
+    "device_id": 0,
+    "device_count": 1,
+    "compute_process_count_at_idle": 1,
+    "gpu_shared_warning": false,
+    "api_backend": "openai",
+    "model_revision": null,
+    "timestamp": 1786323057.5793886
+  },
+  "active": false,
+  "rejection_reasons": [
+    "intercept_wh=-0.00148970 is negative (regression artifact; clamped to 0)",
+    "residuals_structured=true \u2014 structured residual pattern detected"
+  ],
+  "timestamp": 1786323057.5793886,
+  "profile_hash": "sha256:93a7ba89be84033031f8869ed720b789dbc16994f45314d033511acb6b33fd4d",
+  "content_hash": "sha256:56e89449c48757880d3ee231dfde574e2fa2bae87aa3dde17a34f9128cf87b60"
+}

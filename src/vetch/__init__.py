@@ -97,6 +97,13 @@ __all__ = [
     "VetchInterrupt",
     # v0.6.0: Configurable advisory thresholds + push callbacks
     "set_advisory_thresholds",
+    # v0.10.x: Confidence-aware resolution + strict reporting mode
+    "set_min_match_confidence",
+    "get_min_match_confidence",
+    "rollup_confidence_from_events",
+    "filter_events_by_confidence",
+    "require_confidence",
+    "ConfidenceError",
     "configure_capabilities",
     "set_expected_capabilities",
     "set_model_capability_map",
@@ -906,4 +913,28 @@ def __getattr__(name: str) -> object:
         from vetch.capabilities import rollup_capability_summary_from_events
 
         return rollup_capability_summary_from_events
+    if name == "set_min_match_confidence":
+        from vetch.config import set_min_match_confidence
+
+        return set_min_match_confidence
+    if name == "get_min_match_confidence":
+        from vetch.config import get_min_match_confidence
+
+        return get_min_match_confidence
+    if name == "rollup_confidence_from_events":
+        from vetch.stats import rollup_confidence_from_events
+
+        return rollup_confidence_from_events
+    if name == "filter_events_by_confidence":
+        from vetch.stats import filter_events_by_confidence
+
+        return filter_events_by_confidence
+    if name == "require_confidence":
+        from vetch.stats import require_confidence
+
+        return require_confidence
+    if name == "ConfidenceError":
+        from vetch.exceptions import ConfidenceError
+
+        return ConfidenceError
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

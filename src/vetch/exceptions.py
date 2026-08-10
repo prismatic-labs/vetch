@@ -87,6 +87,22 @@ class ConfigurationError(VetchError):
         self.field = field
 
 
+class ConfidenceError(VetchError):
+    """Raised by ``require_confidence`` when a reporting aggregate contains a
+    record resolved below the required match-confidence floor.
+
+    Strict-mode guardrail for audited figures: rather than let an approximated
+    value flow into a total indistinguishable from a measured one, fail loudly.
+
+    Attributes:
+        min_confidence: The floor that was violated (e.g. "curated"), or None.
+    """
+
+    def __init__(self, message: str, min_confidence: str | None = None) -> None:
+        super().__init__(message)
+        self.min_confidence = min_confidence
+
+
 class CalibrationError(VetchError):
     """Raised when GPU calibration fails.
 

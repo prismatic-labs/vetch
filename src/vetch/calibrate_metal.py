@@ -9,11 +9,13 @@ Supports VLMs: in addition to wh_per_1k_input and wh_per_1k_output, it
 measures wh_per_image — the energy cost of vision-encoder processing per image.
 
 Usage (CLI, preferred):
-    sudo vetch calibrate-apple-silicon --model moondream --provider ollama
+    sudo vetch calibrate-apple-silicon --model moondream --precision apple-native
 
 Usage (Python API):
     from vetch.calibrate_metal import calibrate_apple_silicon
-    result = calibrate_apple_silicon(model="moondream:latest", provider="ollama")
+    result, path = calibrate_apple_silicon(
+        model="moondream:latest", precision="apple-native",
+    )
 """
 
 from __future__ import annotations
@@ -768,8 +770,8 @@ class WorkloadSpec:
     replicate: bool = False  # True = anchor cell, run multiple times
 
 
-def _build_grid() -> list[WorkloadSpec]:
-    """~22-run symmetric grid covering (n_images, text_tokens, output_tokens).
+def _grid_design() -> list[WorkloadSpec]:
+    """The deterministic (unshuffled) grid design.
 
     Design principles:
     - n_images=2 excluded: two sequential API calls add a second per-request
@@ -798,8 +800,32 @@ def _build_grid() -> list[WorkloadSpec]:
         WorkloadSpec(n_images=1, approx_text_tokens=128, max_tokens=32, replicate=True),
         WorkloadSpec(n_images=1, approx_text_tokens=128, max_tokens=32, replicate=True),
     ])
+    return grid
 
-    random.shuffle(grid)
+
+def grid_design_id() -> str:
+    """Stable id for the grid DESIGN (its multiset of workload points).
+
+    Two calibrations sharing this id used the same workload shape and are
+    comparable; it changes automatically if the design points change.
+    """
+    import hashlib
+
+    specs = sorted(
+        (s.n_images, s.approx_text_tokens, s.max_tokens, s.replicate)
+        for s in _grid_design()
+    )
+    digest = hashlib.sha256(json.dumps(specs).encode()).hexdigest()[:8]
+    return f"sym-{digest}"
+
+
+def _build_grid(seed: int | None = None) -> list[WorkloadSpec]:
+    """Return the grid, shuffled. A ``seed`` makes the run order reproducible
+    (thermal ordering is then comparable across runs); None keeps the legacy
+    non-deterministic shuffle for the Apple Silicon path.
+    """
+    grid = _grid_design()
+    (random.Random(seed) if seed is not None else random).shuffle(grid)
     return grid
 
 
@@ -998,24 +1024,47 @@ def _fit(runs: list[dict[str, Any]], visual_tokens_per_image: int = 0) -> FitRes
         reasons.append(f"r2={r2:.3f} < 0.85")
     if math.isfinite(cond) and cond > 30:
         reasons.append(f"condition_number={cond:.1f} > 30 (workload shapes not distinct enough)")
-    if b0 < 0:
-        reasons.append(f"intercept_wh={b0:.8f} is negative (regression artifact; clamped to 0)")
-    if b_img < 0:
-        reasons.append(f"wh_per_image={b_img:.6f} is negative")
-    if b_in < 0:
-        reasons.append(f"wh_per_1k_input={b_in:.6f} is negative")
+    # Intercept: a small negative is a benign regression artifact (clamped to 0);
+    # only a clearly-negative intercept signals a bad fit.
+    if b0 < -1e-3:
+        reasons.append(f"intercept_wh={b0:.8f} is negative (regression artifact)")
+    # Output must be clearly positive — decode energy is the dominant, well-posed
+    # term, so a negative here is a real anomaly.
     if b_out < 0:
         reasons.append(f"wh_per_1k_output={b_out:.6f} is negative")
+    # Small terms (input/image) are handled by the CI-aware floor below, not by a
+    # bare sign check, so a coefficient at the measurement floor is reported as 0
+    # rather than rejecting the whole fit.
 
     residuals = [float(r["energy_wh"]) - float(p) for r, p in zip(runs, y_pred)]
     residuals_structured = _detect_residuals_structured(runs, residuals)
     if residuals_structured:
         reasons.append("residuals_structured=true — structured residual pattern detected")
 
+    # Floor a small coefficient to 0 when its bootstrap 95% CI includes zero:
+    # it is not distinguishable from the measurement floor, so reporting the point
+    # estimate would be false precision. The CI stays in provenance as the loud
+    # signal. A coefficient whose entire CI sits below zero is a real anomaly.
+    def _floor_small(value: float, ci: tuple[float, float], name: str) -> float:
+        lo, hi = ci
+        if lo <= 0.0 <= hi:
+            return 0.0
+        if hi < 0.0:
+            reasons.append(
+                f"{name}={value:.6f} is negative (95% CI entirely below zero "
+                f"[{lo:.6f}, {hi:.6f}]; regression artifact)"
+            )
+            return 0.0
+        return max(0.0, value)
+
     return FitResult(
         intercept_wh=max(0.0, b0),
-        wh_per_image=max(0.0, b_img),
-        wh_per_1k_input=max(0.0, b_in),
+        wh_per_image=(
+            _floor_small(b_img, image_ci, "wh_per_image")
+            if has_image_feature
+            else 0.0
+        ),
+        wh_per_1k_input=_floor_small(b_in, input_ci, "wh_per_1k_input"),
         wh_per_1k_output=max(0.0, b_out),
         r2=r2,
         condition_number=cond,
@@ -1081,29 +1130,51 @@ def _active_calibration_rejection_reasons(
 
 def calibrate_apple_silicon(
     model: str,
-    provider: str = "ollama",
+    provider: str = "self-hosted",
     base_url: str = OLLAMA_DEFAULT_BASE_URL,
     iterations: int = 1,
     verbose: bool = False,
-) -> CalibrationResult:
+    precision: str = "apple-native",
+    serving_engine: str = "ollama",
+) -> tuple[CalibrationResult, Path]:
     """Measure Apple Silicon energy coefficients for an Ollama model.
 
     Args:
         model: Ollama model name (e.g. "moondream:latest")
-        provider: Provider label for the saved calibration file (default "ollama")
+        provider: Provider label for the calibration identity (default
+            ``"self-hosted"`` — match production ``provider_hint``).
         base_url: Ollama API base URL
         iterations: Grid iteration multiplier (1 = one pass of ~28 runs)
         verbose: Print per-run details
+        precision: Identity dimension (default ``"apple-native"``; use a GGUF
+            tag like ``gguf:q4_k_m`` when calibrating a quantized Ollama build).
+        serving_engine: Serving stack label (default ``"ollama"``).
 
     Returns:
-        CalibrationResult with wh_per_1k_input, wh_per_1k_output, and wh_per_image
+        ``(CalibrationResult, record_path)`` — coefficients plus the v1 JSON path.
     """
-    from vetch.calibrate import CalibrationResult, save_calibration
+    from vetch.calibrate import CalibrationResult
+    from vetch.calibration_store import (
+        APPLE_SOC_EXCLUDES,
+        APPLE_SOC_INCLUDES,
+        CalibrationIdentity,
+        canonical_gpu,
+        commit_calibration,
+        is_cloud_provider,
+        measurement_provenance_core,
+    )
 
     # --- Preflight -----------------------------------------------------------
     assert_apple_silicon()
     _require_numpy_for_calibration()
     assert_root()
+    if is_cloud_provider(provider):
+        raise ValueError(
+            f"provider={provider!r} is a cloud/API vendor and is refused for Tier-0 "
+            "calibration: it is ambiguous (real hosted API vs OpenAI-compatible "
+            "local) and would attach local coefficients to cloud events. Use "
+            "provider='self-hosted' or 'ollama'."
+        )
 
     hw = get_hardware_info()
     power_state = check_power_state()
@@ -1405,104 +1476,80 @@ def calibrate_apple_silicon(
         intercept_wh=fit.intercept_wh,
         active=calibration_valid,
         rejection_reasons=rejection_reasons if rejection_reasons else None,
+        serving_engine=serving_engine,
+        backend=serving_engine,
+        precision=precision,
     )
 
-    # --- Save standard calibration (picked up by calculate_energy) -----------
-    # Only valid, environmentally clean runs should become the active local
-    # override. Suspect runs are still saved below as detail JSON for debugging
-    # or community review, but Vetch will not auto-load them for real events.
-    active_calibration_saved = False
-    if calibration_valid:
-        save_calibration(result)
-        active_calibration_saved = True
+    # --- Data-rich v1 record (same store as CUDA; supersedes legacy flat files) ---
+    try:
+        import numpy  # noqa: F401
+        fit_engine, ci_method = "numpy", "bootstrap_500"
+    except ImportError:
+        fit_engine, ci_method = "pure_python", "heuristic_pm20"
 
-    # --- Save detail JSON (for community sharing) ----------------------------
-    from vetch.calibrate import CALIBRATION_DIR
-    CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
-    safe_model = model.replace(":", "_").replace("/", "_")
-    detail_path = CALIBRATION_DIR / f"{provider}_{safe_model}_apple_detail.json"
+    from vetch import __version__ as _vetch_version
+    from vetch.calculation import METHODOLOGY_VERSION
 
-    detail: dict[str, Any] = {
-        "model": model,
-        "provider": provider,
-        "wh_per_1k_input": fit.wh_per_1k_input,
-        "wh_per_1k_output": fit.wh_per_1k_output,
-        "wh_per_image": wh_per_image,
-        "intercept_wh": fit.intercept_wh,
-        "tier": 0,
-        "samples": len(run_records),
-        "image_set": CALIBRATION_IMAGE_SET_SYNTHETIC,  # grid runs always use unique seeded images
-        "image_resolution_px": CALIBRATION_IMAGE_SIZE_PX,
-        "image_sources": "synthetic_seeded_unique_per_run",
-        "vlm": {
-            "model_supports_images": model_is_vlm,
-            "visual_tokens_per_image": visual_tokens_for_result,
-            "visual_tokens_source": visual_tokens_source_for_result,
-            **token_probe,
-            "calibrated_range": {
-                "text_tokens": [
-                    min(r["text_tokens"] for r in run_records),
-                    max(r["text_tokens"] for r in run_records),
-                ],
-                "output_tokens": [
-                    min(r["output_tokens"] for r in run_records),
-                    max(r["output_tokens"] for r in run_records),
-                ],
-                "n_images": [
-                    min(r["n_images"] for r in run_records),
-                    max(r["n_images"] for r in run_records),
-                ],
-            },
-        },
-        "fit": {
-            "r2": round(fit.r2, 4),
-            "condition_number": (
-                round(fit.condition_number, 2) if fit.condition_number != float("inf") else None
-            ),
-            "input_ci95": list(fit.input_ci95),
-            "output_ci95": list(fit.output_ci95),
-            "image_ci95": list(fit.image_ci95),
-        },
-        "power_sampler": {
-            "tool": "powermetrics",
-            "samplers": monitor.info.samplers,
-            "gpu_power_captured": monitor.info.gpu_power_captured,
-            "sample_interval_ms": monitor.info.sample_interval_ms,
-            "format": monitor.info.format_used,
-            "integration": "trapezoidal",
-            "idle_watts_before": round(idle_watts_before, 3),
-            "idle_watts_after": round(idle_watts_after, 3),
-            "idle_drift_pct": round(idle_drift_pct, 2),
-        },
-        "environment": {
-            **power_state,
-            "ollama_version": ollama_version,
-        },
-        "hardware": {
-            "chip_raw": hw.chip_raw,
+    gpu_canonical, gpu_known = canonical_gpu(hw.chip_raw)
+    identity = CalibrationIdentity(
+        provider=provider,
+        model=model,
+        gpu=gpu_canonical,
+        serving_engine=serving_engine,
+        precision=precision,
+    )
+    provenance = measurement_provenance_core(
+        samples=len(run_records),
+        energy_source="powermetrics",
+        measurement_basis="powermetrics_estimated_soc_power",
+        energy_domain="apple_soc",
+        energy_domain_includes=APPLE_SOC_INCLUDES,
+        energy_domain_excludes=APPLE_SOC_EXCLUDES,
+        idle_watts_before=idle_watts_before,
+        idle_watts_after=idle_watts_after,
+        idle_drift_pct=idle_drift_pct,
+        fit=fit,
+        fit_engine=fit_engine,
+        ci_method=ci_method,
+        run_records=run_records,
+        gpu_name=hw.chip_raw,
+        gpu_canonical=gpu_canonical,
+        gpu_known=gpu_known,
+        serving_engine=serving_engine,
+        server_version=ollama_version,
+        image_set=CALIBRATION_IMAGE_SET_SYNTHETIC,
+        image_resolution_px=CALIBRATION_IMAGE_SIZE_PX,
+        model_supports_images=model_is_vlm,
+        visual_tokens_assumed=visual_tokens_for_result,
+        visual_tokens_assumed_source=visual_tokens_source_for_result,
+        vetch_version=_vetch_version,
+        methodology_version=METHODOLOGY_VERSION,
+        extra={
+            "sampler_cadence_ms": monitor.info.sample_interval_ms,
+            "integration_method": "trapezoidal",
             "chip_family": hw.chip_family,
             "chip_tier": hw.chip_tier,
             "memory_gb": hw.memory_gb,
             "macos_version": hw.macos_version,
+            "api_backend": "ollama",
+            "gpu_power_captured": monitor.info.gpu_power_captured,
+            "power_state": power_state,
         },
-        "measurement_basis": "powermetrics_estimated_soc_power",
-        "not_wall_power": True,
-        "valid": calibration_valid,
-        "invalid_reasons": rejection_reasons,
-        "active_calibration_saved": active_calibration_saved,
-        "residuals_structured": fit.residuals_structured,
-        "measured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    detail_path.write_text(json.dumps(detail, indent=2))
+    )
+    record_path = commit_calibration(result, identity, provenance)
+    print(f"\nCalibration record written to {record_path}")
+    if not calibration_valid:
+        print("  (active=false: recorded for audit, will not auto-load)")
 
-    return result
+    return result, record_path
 
 
 def format_calibration_result_apple(result: CalibrationResult, detail_path: Path) -> str:
     status = (
         "  Status:             ACTIVE (saved to ~/.vetch/calibrations/)"
         if result.active
-        else "  Status:             NOT ACTIVE (quality gates failed — detail JSON only)"
+        else "  Status:             NOT ACTIVE (quality gates failed — recorded for audit only)"
     )
     lines = [
         "",
@@ -1527,8 +1574,8 @@ def format_calibration_result_apple(result: CalibrationResult, detail_path: Path
         "  intercept_wh is fixed energy per inference request (from the LS fit),",
         "  not amortized across tokens — expect higher Wh on tiny prompts.",
         "",
-        "  Saved to: ~/.vetch/calibrations/",
-        f"  Detail:   {detail_path}",
+        "  Saved to: ~/.vetch/calibrations/  (v1 identity-keyed record)",
+        f"  Record:   {detail_path}",
         "",
         "  Measurement images: unique seeded synthetic per run (KV-cache busting)",
         "  VLM image basis: 378px single-tile image; reported image tokens scale",

@@ -158,6 +158,43 @@ class TestOtelIntegration:
             elif "opentelemetry.trace" in sys.modules:
                 del sys.modules["opentelemetry.trace"]
 
+    def test_sets_calibration_match_attribute(self) -> None:
+        """The vetch.calibration_match attribute is set when present."""
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+        mock_trace = MagicMock()
+        mock_trace.get_current_span.return_value = mock_span
+
+        event = {
+            "estimated_energy_wh": 0.001,
+            "model": "gemma-4-31b-it",
+            "provider": "self-hosted",
+            "signal_quality": "live",
+            "energy_tier": 0,
+            "calibration_match": "exact",
+        }
+
+        mock_otel = MagicMock()
+        mock_otel.trace = mock_trace
+        original_otel = sys.modules.get("opentelemetry")
+        original_trace = sys.modules.get("opentelemetry.trace")
+        try:
+            sys.modules["opentelemetry"] = mock_otel
+            sys.modules["opentelemetry.trace"] = mock_trace
+
+            assert attach_to_otel_span(event) is True
+            attrs = {c.args[0]: c.args[1] for c in mock_span.set_attribute.call_args_list}
+            assert attrs.get("vetch.calibration_match") == "exact"
+        finally:
+            if original_otel is not None:
+                sys.modules["opentelemetry"] = original_otel
+            elif "opentelemetry" in sys.modules:
+                del sys.modules["opentelemetry"]
+            if original_trace is not None:
+                sys.modules["opentelemetry.trace"] = original_trace
+            elif "opentelemetry.trace" in sys.modules:
+                del sys.modules["opentelemetry.trace"]
+
     def test_returns_false_on_non_recording_span(self) -> None:
         """Returns False when span is not recording."""
         mock_span = MagicMock()

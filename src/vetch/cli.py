@@ -614,7 +614,6 @@ def calibrate_status(args: argparse.Namespace) -> None:
 
 def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
     """Calibrate energy using Apple Silicon powermetrics (requires sudo)."""
-    from vetch.calibrate import CALIBRATION_DIR
     from vetch.calibrate_metal import (
         calibrate_apple_silicon,
         download_calibration_images,
@@ -629,24 +628,45 @@ def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
     if not is_apple_silicon():
         print(
             "ERROR: calibrate-apple-silicon requires macOS on Apple Silicon.\n"
-            "Use 'vetch calibrate' for NVIDIA GPU calibration.",
+            "Use 'vetch calibrate-cuda' for NVIDIA GPU calibration.",
             file=sys.stderr,
         )
         sys.exit(1)
 
     model = args.model or "moondream:latest"
-    provider = args.provider or "ollama"
+    provider = args.provider or "self-hosted"
     base_url = args.base_url or "http://localhost:11434"
     iterations = args.iterations or 1
     verbose = args.verbose
+    if not args.precision:
+        print(
+            "ERROR: --precision is required (e.g. apple-native, gguf:q4_k_m).\n"
+            "It is part of the calibration identity; omitting it lets distinct\n"
+            "quantizations overwrite each other and resolve as exact Tier 0.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    precision = args.precision
+    serving_engine = args.serving_engine or "ollama"
+    from vetch.calibration_store import is_cloud_provider
+    if is_cloud_provider(provider):
+        print(
+            f"ERROR: --provider {provider} is a cloud/API vendor and is refused for "
+            "calibration (ambiguous with the real hosted API). Use --provider "
+            "self-hosted or ollama.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     try:
-        result = calibrate_apple_silicon(
+        result, record_path = calibrate_apple_silicon(
             model=model,
             provider=provider,
             base_url=base_url,
             iterations=iterations,
             verbose=verbose,
+            precision=precision,
+            serving_engine=serving_engine,
         )
     except SystemExit:
         raise
@@ -654,15 +674,154 @@ def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
         print(f"Calibration failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    safe_model = model.replace(":", "_").replace("/", "_")
-    detail_path = CALIBRATION_DIR / f"{provider}_{safe_model}_apple_detail.json"
+    if args.format == "json":
+        import dataclasses
+        import json as _json
+        print(_json.dumps(dataclasses.asdict(result), indent=2))
+    else:
+        print(format_calibration_result_apple(result, record_path))
+
+    if not result.active:
+        if result.rejection_reasons:
+            print("Active calibration NOT installed:", file=sys.stderr)
+            for reason in result.rejection_reasons:
+                print(f"  - {reason}", file=sys.stderr)
+        sys.exit(1)
+
+
+def calibrate_cuda_cmd(args: argparse.Namespace) -> None:
+    """Calibrate energy on an NVIDIA GPU using NVML (no sudo)."""
+    from vetch.calibrate_cuda import (
+        calibrate_cuda,
+        calibrate_cuda_batched,
+        is_cuda_available,
+    )
+
+    if not is_cuda_available():
+        print(
+            "ERROR: calibrate-cuda requires an NVIDIA GPU visible to NVML.\n"
+            "Confirm 'nvidia-smi' works and 'pip install nvidia-ml-py'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    model = args.model or "moondream:latest"
+    provider = args.provider or "self-hosted"
+    iterations = args.iterations or 1
+
+    if not args.precision:
+        print(
+            "ERROR: --precision is required (e.g. bf16, fp8-e4m3, gguf:q4_k_m).\n"
+            "It is part of the calibration identity; omitting it lets distinct\n"
+            "quantizations overwrite each other and resolve as exact Tier 0.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if args.backend == "openai" and not args.serving_engine:
+        print(
+            "ERROR: --serving-engine is required when --backend openai\n"
+            "(e.g. vllm, sglang). Otherwise distinct stacks collide under\n"
+            "a generic 'openai' backend key.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    from vetch.calibration_store import is_cloud_provider
+    if is_cloud_provider(provider):
+        print(
+            f"ERROR: --provider {provider} is a cloud/API vendor and is refused for "
+            "calibration (ambiguous with the real hosted API). Use --provider "
+            "self-hosted or vllm.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    try:
+        if getattr(args, "batched", False):
+            conc_raw = getattr(args, "concurrency", None) or "1,4,8,16,32"
+            try:
+                concs = tuple(
+                    int(x.strip()) for x in str(conc_raw).split(",") if x.strip()
+                )
+            except ValueError:
+                print(
+                    "ERROR: --concurrency must be a comma-separated list of ints "
+                    "(e.g. 1,4,8,16,32).",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            print(
+                "NOTE: --batched is an EXPERIMENTAL preview. It sweeps concurrency "
+                "and fits Wh/1k ≈ a/C + b, but its output is NOT Tier-0 and no "
+                "batched records ship with vetch. Use the default batch=1 path for "
+                "reproducible calibration.",
+                file=sys.stderr,
+            )
+            results = calibrate_cuda_batched(
+                model=model,
+                provider=provider,
+                base_url=args.base_url,
+                device_id=args.device,
+                verbose=args.verbose,
+                backend=args.backend,
+                precision=args.precision,
+                serving_engine=args.serving_engine,
+                concurrencies=concs,
+                requests_per_level=getattr(args, "requests_per_level", 64) or 64,
+                out_tokens=getattr(args, "out_tokens", 64) or 64,
+            )
+            if args.format == "json":
+                import dataclasses
+                import json as _json
+                print(_json.dumps([dataclasses.asdict(r) for r in results], indent=2))
+            else:
+                print(f"\nBatched calibration complete: {len(results)} concurrency records.")
+                for c, r in zip(concs, results):
+                    img = (
+                        f"  wh_per_image={r.wh_per_image:.6f}"
+                        if r.wh_per_image is not None else ""
+                    )
+                    print(
+                        f"  C={c}: wh_per_1k_output={r.wh_per_1k_output:.6f}{img} "
+                        f"active={r.active}"
+                    )
+            if any(not r.active for r in results):
+                sys.exit(1)
+            return
+
+        result = calibrate_cuda(
+            model=model,
+            provider=provider,
+            base_url=args.base_url,  # None -> per-backend default in calibrate_cuda
+            device_id=args.device,
+            iterations=iterations,
+            verbose=args.verbose,
+            backend=args.backend,
+            precision=args.precision,
+            serving_engine=args.serving_engine,
+        )
+    except SystemExit:
+        raise
+    except Exception as e:
+        print(f"Calibration failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if args.format == "json":
         import dataclasses
         import json as _json
         print(_json.dumps(dataclasses.asdict(result), indent=2))
     else:
-        print(format_calibration_result_apple(result, detail_path))
+        print(f"\nModel:        {result.model}")
+        print(f"GPU:          {result.gpu_name}")
+        print(f"Tier:         {result.tier} (hardware-measured)")
+        print(f"wh_per_1k_in: {result.wh_per_1k_input:.5f}")
+        print(f"wh_per_1k_out:{result.wh_per_1k_output:.5f}")
+        if result.wh_per_image is not None:
+            print(f"wh_per_image: {result.wh_per_image:.5f}")
+            print(f"visual_tok/img:{result.visual_tokens_per_image}")
+        print(f"intercept_wh: {result.intercept_wh}")
+        print(f"samples:      {result.samples}")
+        status = "ACTIVE (saved to ~/.vetch/calibrations/)" if result.active else "NOT installed"
+        print(f"Status:       {status}")
 
     if not result.active:
         if result.rejection_reasons:
@@ -1294,10 +1453,20 @@ def main() -> None:
         "--model", default="moondream:latest", help="Ollama model (default: moondream:latest)"
     )
     cal_as_parser.add_argument(
-        "--provider", default="ollama", help="Provider label (default: ollama)"
+        "--provider", default="self-hosted",
+        help="Provider label for the identity (default: self-hosted)",
     )
     cal_as_parser.add_argument(
         "--base-url", dest="base_url", default="http://localhost:11434", help="Ollama API base URL"
+    )
+    cal_as_parser.add_argument(
+        "--precision", required=True,
+        help="Precision identity dimension (e.g. apple-native, gguf:q4_k_m). "
+             "Required so distinct quantizations do not collide.",
+    )
+    cal_as_parser.add_argument(
+        "--serving-engine", dest="serving_engine", default="ollama",
+        help="Serving engine label (default: ollama)",
     )
     cal_as_parser.add_argument(
         "--iterations", type=int, default=1,
@@ -1316,6 +1485,73 @@ def main() -> None:
         dest="strict_images",
         action="store_true",
         help="With --fetch-images, fail if any Wikimedia download is missing",
+    )
+
+    # Calibrate NVIDIA GPU (NVML energy counter; no sudo)
+    cal_cuda_parser = subparsers.add_parser(
+        "calibrate-cuda",
+        help="Calibrate energy on an NVIDIA GPU using NVML (VLM-aware, no sudo)",
+    )
+    cal_cuda_parser.add_argument(
+        "--model", default="moondream:latest",
+        help="Model name: Ollama tag, or HF repo id for vLLM "
+             "(e.g. Qwen/Qwen2.5-32B-Instruct). Default: moondream:latest",
+    )
+    cal_cuda_parser.add_argument(
+        "--provider", default="self-hosted",
+        help="Provider label written into the calibration identity "
+             "(default: self-hosted). Must match production provider_hint "
+             "for an exact Tier-0 load; bare 'openai' events do not cross-match.",
+    )
+    cal_cuda_parser.add_argument(
+        "--backend", choices=["ollama", "openai"], default="ollama",
+        help="Serving backend: 'ollama' (/api) or 'openai' (OpenAI-compatible "
+             "/chat/completions, e.g. vLLM in BF16). Default: ollama",
+    )
+    cal_cuda_parser.add_argument(
+        "--base-url", dest="base_url", default=None,
+        help="Server base URL. Default: http://localhost:11434 (ollama) or "
+             "http://localhost:8000/v1 (openai/vLLM)",
+    )
+    cal_cuda_parser.add_argument(
+        "--device", type=int, default=0, help="NVML device index to measure (default: 0)"
+    )
+    cal_cuda_parser.add_argument(
+        "--precision", required=True,
+        help="REQUIRED. Precision/quantization identity dimension "
+             "(e.g. bf16, fp8-e4m3, gguf:q4_k_m). Distinct values must not share a file.",
+    )
+    cal_cuda_parser.add_argument(
+        "--serving-engine", dest="serving_engine", default=None,
+        help="Serving engine label for the identity (e.g. vllm, sglang). "
+             "Required when --backend openai. Defaults to --backend for ollama.",
+    )
+    cal_cuda_parser.add_argument(
+        "--iterations", type=int, default=1,
+        help="Grid iteration multiplier (default: 1, ~22 runs)",
+    )
+    cal_cuda_parser.add_argument(
+        "--batched", action="store_true",
+        help="Production-representative concurrency sweep: measure Wh/1k_output "
+             "at each concurrency and write concurrency-keyed records + amortization "
+             "curve (does not replace the default batch=1 grid).",
+    )
+    cal_cuda_parser.add_argument(
+        "--concurrency", default="1,4,8,16,32",
+        help="With --batched: comma-separated concurrency levels "
+             "(default: 1,4,8,16,32).",
+    )
+    cal_cuda_parser.add_argument(
+        "--requests-per-level", dest="requests_per_level", type=int, default=64,
+        help="With --batched: requests fired at each concurrency (default: 64).",
+    )
+    cal_cuda_parser.add_argument(
+        "--out-tokens", dest="out_tokens", type=int, default=64,
+        help="With --batched: target completion tokens per request (default: 64).",
+    )
+    cal_cuda_parser.add_argument("--verbose", action="store_true", help="Print per-run details")
+    cal_cuda_parser.add_argument(
+        "--format", choices=["text", "json"], default="text", help="Output format"
     )
 
     # Report
@@ -1423,6 +1659,8 @@ def main() -> None:
             calibrate(args)
     elif args.command == "calibrate-apple-silicon":
         calibrate_apple_silicon_cmd(args)
+    elif args.command == "calibrate-cuda":
+        calibrate_cuda_cmd(args)
     elif args.command == "report":
         report(args)
     elif args.command == "savings":

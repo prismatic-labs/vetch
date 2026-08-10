@@ -64,11 +64,20 @@ class CalibrationResult:
     # "community" = bundled data/calibrations.json prior (not machine-measured)
     origin: str = "local"
 
+    # Identity dims carried for the v1 store (see calibration_store).
+    serving_engine: str | None = None
+    precision: str | None = None
+    # Deprecated alias for serving_engine (older call sites / records).
+    backend: str | None = None
+    # How the calibration resolved for the current event: exact / curated / proxy
+    # (see calibration_store.resolve). Populated at load time, not persisted.
+    energy_confidence: str | None = None
+
 
 def is_gpu_available() -> bool:
     """Check if NVIDIA GPU and management library are available."""
     try:
-        import pynvml  # type: ignore
+        import pynvml
         pynvml.nvmlInit()
         return True
     except (ImportError, Exception):
@@ -121,6 +130,84 @@ class GPUMonitor:
         import pynvml
         # Returns milliwatts
         return float(pynvml.nvmlDeviceGetPowerUsage(self._handle) / 1000.0)
+
+    def get_total_energy_mj(self) -> float | None:
+        """Cumulative energy since driver reload, in millijoules.
+
+        Uses ``nvmlDeviceGetTotalEnergyConsumption`` — a monotonic hardware
+        counter (Volta+). Reading it before/after a workload gives the exact
+        energy consumed, no power sampling needed. Returns None when the device
+        or driver does not support the counter (fall back to power integration).
+        """
+        import pynvml
+        try:
+            return float(pynvml.nvmlDeviceGetTotalEnergyConsumption(self._handle))
+        except Exception:
+            # NVML_ERROR_NOT_SUPPORTED on older GPUs / virtualized passthrough.
+            return None
+
+    def energy_counter_available(self) -> bool:
+        """True if the device exposes the total-energy counter."""
+        return self.get_total_energy_mj() is not None
+
+    def device_count(self) -> int:
+        """Number of NVML-visible GPUs on the host (1 on a single-GPU rental)."""
+        import pynvml
+        try:
+            return int(pynvml.nvmlDeviceGetCount())
+        except Exception:
+            return 1
+
+    def get_power_limit_w(self) -> float | None:
+        """Enforced power limit in Watts, or None if unavailable.
+
+        Decisive provenance: an H100 capped at 350W vs 700W yields entirely
+        different coefficients, so a calibration is unreproducible without it.
+        """
+        import pynvml
+        try:
+            return float(pynvml.nvmlDeviceGetEnforcedPowerLimit(self._handle)) / 1000.0
+        except Exception:
+            return None
+
+    def get_clocks(self) -> dict[str, int | None]:
+        """SM/memory clocks in MHz (current, max, and the set applications clock).
+
+        Boost clocks vary energy run-to-run; recording them lets a reviewer see
+        whether a run was near max/boosting, and comparing the applications clock
+        to the max hints at whether the operator locked clocks for reproducibility.
+        """
+        import pynvml
+
+        def _q(fn: Any, *args: Any) -> int | None:
+            try:
+                return int(fn(self._handle, *args))
+            except Exception:
+                return None
+
+        return {
+            "sm_clock_mhz": _q(pynvml.nvmlDeviceGetClockInfo, pynvml.NVML_CLOCK_SM),
+            "sm_max_clock_mhz": _q(pynvml.nvmlDeviceGetMaxClockInfo, pynvml.NVML_CLOCK_SM),
+            "mem_clock_mhz": _q(pynvml.nvmlDeviceGetClockInfo, pynvml.NVML_CLOCK_MEM),
+            "applications_sm_clock_mhz": _q(
+                pynvml.nvmlDeviceGetApplicationsClock, pynvml.NVML_CLOCK_SM
+            ),
+        }
+
+    def compute_process_count(self) -> int | None:
+        """Count of compute processes running on this device, or None if unknown.
+
+        Used to flag whole-device contamination: the energy counter is
+        board-level, so a co-tenant process on a shared/MIG instance would
+        inflate every reading. On a dedicated box this is just the serving
+        process (e.g. Ollama).
+        """
+        import pynvml
+        try:
+            procs = pynvml.nvmlDeviceGetComputeRunningProcesses(self._handle)
+            return len(procs)
+        except Exception:
+            return None
 
 
 def _nvidia_calibration_rejection_reasons(
@@ -247,10 +334,30 @@ def calibrate_model(
         return res
 
 
+def _safe_filename_part(value: str) -> str:
+    """Filesystem-safe token for calibration filenames.
+
+    Ollama tags (``:``) and namespaced models (``org/model``) must be neutralized
+    or the write would target a nonexistent subdirectory. We also neutralize path
+    separators and parent refs (``..``, ``\\``) so a hostile provider/model label
+    cannot escape ``~/.vetch/calibrations/``.
+    """
+    safe = value.replace("\\", "/")
+    safe = safe.replace("..", "_").replace("/", "_").replace(":", "_")
+    return safe.strip("._-") or "unknown"
+
+
+# Back-compat alias.
+_safe_model_filename = _safe_filename_part
+
+
 def save_calibration(res: CalibrationResult) -> None:
     """Save a CalibrationResult to ~/.vetch/calibrations/."""
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
-    path = CALIBRATION_DIR / f"{res.provider}_{res.model.replace(':', '_')}.json"
+    path = (
+        CALIBRATION_DIR
+        / f"{_safe_filename_part(res.provider)}_{_safe_filename_part(res.model)}.json"
+    )
 
     hw_label = res.gpu_name or "hardware"
     data: dict[str, Any] = {
@@ -309,7 +416,7 @@ def calibration_model_variants(model: str) -> list[str]:
 
 
 def _load_calibration_file(provider: str, model: str) -> CalibrationResult | None:
-    path = CALIBRATION_DIR / f"{provider}_{model.replace(':', '_')}.json"
+    path = CALIBRATION_DIR / f"{provider}_{_safe_model_filename(model)}.json"
     if not path.exists():
         return None
     try:
@@ -331,17 +438,25 @@ def _load_calibration_file(provider: str, model: str) -> CalibrationResult | Non
         return None
 
 
-def load_calibration(provider: str, model: str) -> CalibrationResult | None:
-    """Load a saved CalibrationResult from ~/.vetch/calibrations/, or None if absent."""
-    for variant in calibration_model_variants(model):
-        loaded = _load_calibration_file(provider, variant)
-        if loaded is not None:
-            if variant != model:
-                logger.debug(
-                    "Loaded calibration for %s/%s via alias %s", provider, model, variant
-                )
-            return loaded
-    return None
+def load_calibration(
+    provider: str,
+    model: str,
+    hints: Any | None = None,
+) -> CalibrationResult | None:
+    """Load the best saved CalibrationResult for (provider, model), or None.
+
+    Delegates to :func:`vetch.calibration_store.resolve`, which reads both the
+    versioned v1 records and legacy flat files, prefers an unambiguous
+    same-provider match, and tier-caps ambiguous or cross-provider reuse so a
+    borrowed coefficient is never silently trusted at its measured tier.
+
+    ``hints`` is an optional :class:`~vetch.calibration_store.ResolveHints` (or
+    compatible object) that can disambiguate among identities when the serving
+    stack is known at inference time.
+    """
+    from vetch.calibration_store import resolve
+
+    return resolve(provider, model, hints=hints)
 
 
 def format_calibration_result(res: CalibrationResult) -> str:

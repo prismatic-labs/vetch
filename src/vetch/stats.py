@@ -71,6 +71,21 @@ class SessionStats:
     total_effective_input_usd: float = 0.0
     total_billable_input_tokens: int = 0
 
+    # Match-confidence roll-up (v0.10.x). Because energy/cost/carbon are summed,
+    # confidence must aggregate too: keyed by coarse confidence class
+    # (exact/curated/proxy/none, see schema.confidence_class) so a total can state
+    # what fraction of it derives from exact or curated resolutions versus proxies.
+    confidence_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    confidence_energy_wh: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    confidence_cost_usd: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    confidence_carbon_g: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+
+    # Energy-completeness roll-up (v0.10.x). Tracks energy attributed to calls
+    # whose visual portion was not priced, so a total can disclose how much of it
+    # is a text-only partial rather than a complete measurement.
+    energy_text_only_wh: float = 0.0
+    energy_text_only_count: int = 0
+
     # Capability observability (v0.10.0)
     expected_capabilities: list[str] | None = None
     function_tools_offered: set[str] = field(default_factory=set)
@@ -173,9 +188,28 @@ class SessionStats:
 
         self.total_input_tokens += in_tok
         self.total_output_tokens += out_tok
-        self.total_energy_wh += (event.get("estimated_energy_wh") or 0.0)
-        self.total_carbon_g += (event.get("estimated_carbon_g") or 0.0)
+        call_energy = event.get("estimated_energy_wh") or 0.0
+        call_carbon = event.get("estimated_carbon_g") or 0.0
+        self.total_energy_wh += call_energy
+        self.total_carbon_g += call_carbon
         self.total_cost_usd += call_cost
+
+        # Confidence roll-up: floor of registry model_match and calibration_match
+        # (see schema.event_confidence_class) so a reused/proxy calibration cannot
+        # hide behind an exact registry hit in aggregates.
+        from vetch.schema import event_confidence_class
+
+        conf = event_confidence_class(event)
+        self.confidence_counts[conf] += 1
+        self.confidence_energy_wh[conf] += call_energy
+        self.confidence_cost_usd[conf] += call_cost
+        self.confidence_carbon_g[conf] += call_carbon
+
+        # Energy-completeness roll-up: a "text_only" figure priced a visual call's
+        # text portion alone, so track it separately from complete measurements.
+        if event.get("energy_completeness") == "text_only":
+            self.energy_text_only_wh += call_energy
+            self.energy_text_only_count += 1
 
         cost_in = float(event.get("estimated_cost_input_usd") or 0.0)
         cost_cache_read = float(event.get("estimated_cost_cache_read_usd") or 0.0)
@@ -387,6 +421,50 @@ class SessionStats:
             result["capability_cardinality_bounded"] = True
         return result
 
+    def _confidence_summary(self) -> dict[str, Any]:
+        """Roll up match confidence and energy completeness across the session.
+
+        Reports per-class counts and summed energy/cost/carbon, plus the fraction
+        of total energy and cost that derives from high-confidence resolutions
+        (exact or curated) versus proxies. A consumer uses ``high_confidence_*``
+        to judge whether an aggregate is fit to report, and the ``text_only_*``
+        fields to see how much of the energy total is a partial measurement.
+        """
+        classes = ("exact", "curated", "proxy", "none")
+        by_class = {
+            cls: {
+                "count": self.confidence_counts.get(cls, 0),
+                "energy_wh": round(self.confidence_energy_wh.get(cls, 0.0), 6),
+                "cost_usd": round(self.confidence_cost_usd.get(cls, 0.0), 6),
+                "carbon_g": round(self.confidence_carbon_g.get(cls, 0.0), 6),
+            }
+            for cls in classes
+        }
+        high_energy = self.confidence_energy_wh.get("exact", 0.0) + self.confidence_energy_wh.get(
+            "curated", 0.0
+        )
+        high_cost = self.confidence_cost_usd.get("exact", 0.0) + self.confidence_cost_usd.get(
+            "curated", 0.0
+        )
+        total_energy = sum(self.confidence_energy_wh.values())
+        total_cost = sum(self.confidence_cost_usd.values())
+        return {
+            "by_class": by_class,
+            "high_confidence_energy_fraction": (
+                round(high_energy / total_energy, 4) if total_energy > 0 else None
+            ),
+            "high_confidence_cost_fraction": (
+                round(high_cost / total_cost, 4) if total_cost > 0 else None
+            ),
+            "energy_text_only_wh": round(self.energy_text_only_wh, 6),
+            "energy_text_only_count": self.energy_text_only_count,
+            "energy_text_only_fraction": (
+                round(self.energy_text_only_wh / self.total_energy_wh, 4)
+                if self.total_energy_wh > 0
+                else None
+            ),
+        }
+
     def summary(self) -> dict[str, Any]:
         with self._lock:  # type: ignore[attr-defined]
             if not self._summary_dirty and self._summary_cache is not None:  # type: ignore[attr-defined]
@@ -503,6 +581,7 @@ class SessionStats:
             "total_output_tokens": self.total_output_tokens,
             "total_water_ml": self.total_water_ml,
             "average_input_output_ratio": ratio,
+            "confidence": self._confidence_summary(),
             **self._capability_summary(),
             "recent_avg_output_tokens": recent_avg,
             "recent_output_token_cv": round(recent_output_cv, 4),
@@ -622,3 +701,98 @@ def _reset_session_stats() -> None:
 def track_session_event(event: dict[str, Any]) -> None:
     """Update global session stats."""
     _session_stats.update(event)
+
+
+# ---------------------------------------------------------------------------
+# Confidence-aware reporting helpers (v0.10.x)
+#
+# These operate on a list of already-emitted events, for the reporting/audit
+# path where figures leave the building. They are separate from the always-on
+# SessionStats roll-up so a consumer can enforce a floor at the moment of
+# aggregation without changing how inference is metered (fail-open is preserved:
+# nothing here runs during a live call).
+# ---------------------------------------------------------------------------
+
+
+def rollup_confidence_from_events(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Aggregate match confidence and energy completeness over a list of events.
+
+    Same shape as the ``confidence`` block of :meth:`SessionStats.summary`, but
+    computed from events a consumer already holds (e.g. queried from storage),
+    so a report can state what fraction of a total derives from exact/curated
+    resolutions versus proxies without replaying them through a live session.
+    """
+    stats = SessionStats(fire_advisory_hooks=False)
+    for event in events:
+        stats.update(event)
+    return stats._confidence_summary()
+
+
+def filter_events_by_confidence(
+    events: Sequence[Mapping[str, Any]],
+    min_confidence: str | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split events into those meeting a confidence floor and those quarantined.
+
+    Args:
+        events: Emitted inference events.
+        min_confidence: Minimum confidence class (``"exact"``/``"curated"``/
+            ``"proxy"``). ``None`` reads the configured floor
+            (:func:`vetch.config.get_min_match_confidence`); if that is also
+            unset, no floor applies and everything is included.
+
+    Returns:
+        ``(included, quarantined)`` — the quarantined list holds records below
+        the floor, kept out of the aggregate rather than silently mixed in.
+    """
+    from vetch.schema import meets_event_min_confidence
+
+    if min_confidence is None:
+        from vetch.config import get_min_match_confidence
+
+        min_confidence = get_min_match_confidence()
+
+    if not min_confidence:
+        return [dict(e) for e in events], []
+
+    included: list[dict[str, Any]] = []
+    quarantined: list[dict[str, Any]] = []
+    for event in events:
+        ok = meets_event_min_confidence(event, min_confidence)  # type: ignore[arg-type]
+        (included if ok else quarantined).append(dict(event))
+    return included, quarantined
+
+
+def require_confidence(
+    events: Sequence[Mapping[str, Any]],
+    min_confidence: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return ``events`` unchanged, or fail loudly if any is below the floor.
+
+    Strict-mode gate for a compliance/reporting context: rather than quarantining
+    silently, raise so a below-floor record cannot flow into an audited figure
+    unnoticed.
+
+    Raises:
+        ConfidenceError: If any event resolves below ``min_confidence`` (or the
+            configured floor when ``min_confidence`` is None). The exception lists
+            the offending models. If no floor is configured, nothing is enforced.
+    """
+    included, quarantined = filter_events_by_confidence(events, min_confidence)
+    if quarantined:
+        from vetch.exceptions import ConfidenceError
+
+        floor = min_confidence
+        if floor is None:
+            from vetch.config import get_min_match_confidence
+
+            floor = get_min_match_confidence()
+        offenders = sorted(
+            {str(e.get("model", "unknown")) for e in quarantined}
+        )
+        raise ConfidenceError(
+            f"{len(quarantined)} event(s) below required match confidence "
+            f"'{floor}': {offenders}. Resolve the models or lower the floor.",
+            min_confidence=floor,
+        )
+    return included

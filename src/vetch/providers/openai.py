@@ -618,9 +618,26 @@ def extract_responses_usage(response: Any) -> tuple[Usage | None, int | None, in
     total_tokens = getattr(usage, "total_tokens", 0) or 0
 
     cache_read_tokens = None
+    image_input_tokens = 0
+    image_count = 0
     input_details = getattr(usage, "input_tokens_details", None)
     if input_details is not None:
         cache_read_tokens = getattr(input_details, "cached_tokens", None)
+        # Visual input breakdown. The Responses API folds image tokens into
+        # ``input_tokens``; when it also itemizes them under input_tokens_details
+        # we surface the visual portion as a first-class quantity so it can be
+        # priced with a visual coefficient rather than blended at the text rate.
+        # Field names are not guaranteed stable across SDK versions, so read
+        # defensively and degrade to text-only (no image usage) when absent —
+        # the calculation layer then flags energy_completeness="text_only".
+        raw_img = getattr(input_details, "image_tokens", 0) or getattr(
+            input_details, "image_input_tokens", 0
+        )
+        if isinstance(raw_img, int) and raw_img > 0:
+            image_input_tokens = raw_img
+        raw_img_count = getattr(input_details, "image_count", 0)
+        if isinstance(raw_img_count, int) and raw_img_count > 0:
+            image_count = raw_img_count
 
     reasoning_tokens = 0
     output_details = getattr(usage, "output_tokens_details", None)
@@ -640,6 +657,15 @@ def extract_responses_usage(response: Any) -> tuple[Usage | None, int | None, in
             "total_tokens": total_tokens,
         }
     }
+
+    if image_input_tokens > 0:
+        usage_dict["image"] = {
+            "input_tokens": image_input_tokens,
+            "output_tokens": 0,
+            "total_tokens": image_input_tokens,
+            "image_count": image_count,  # 0 when the API doesn't itemize a count
+            "total_pixels": 0,  # not reported by the Responses API
+        }
 
     if reasoning_tokens > 0:
         usage_dict["reasoning"] = {

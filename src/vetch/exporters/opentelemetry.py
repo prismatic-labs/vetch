@@ -251,6 +251,14 @@ def export_event_as_span(
         if model_match is not None:
             span.set_attribute("vetch.model_match", model_match)
 
+        energy_completeness = event.get("energy_completeness")
+        if energy_completeness is not None:
+            span.set_attribute("vetch.energy_completeness", energy_completeness)
+
+        cal_match = event.get("calibration_match")
+        if cal_match:
+            span.set_attribute("vetch.calibration_match", cal_match)
+
         # Cache-related attributes
         if "cache_read_tokens" in event and event["cache_read_tokens"]:
             span.set_attribute("vetch.cache.read_tokens", event["cache_read_tokens"])
