@@ -1,0 +1,152 @@
+Vetch NVIDIA GPU Batched Calibration
+  Model:         Qwen/Qwen3.8-27B
+  GPU:           NVIDIA H100 80GB HBM3 (device 0)
+  Provider:      self-hosted
+  Backend:       openai / engine=vllm @ http://127.0.0.1:8000/v1
+  Precision:     bf16
+  Concurrencies: [1, 2, 4, 8, 16, 32]
+  Requests/level:64  out_tokens=64
+  Server:        openai-compatible (Qwen/Qwen3.8-27B)
+  Energy:        NVML total-energy counter
+
+Measuring concurrency=1 ...
+  C=1: Wh/1k_out=1.974644 achieved≈0.0 drift=7.1%
+
+Measuring concurrency=2 ...
+  C=2: Wh/1k_out=1.007584 achieved≈0.0 drift=0.1%
+
+Measuring concurrency=4 ...
+  C=4: Wh/1k_out=0.518758 achieved≈0.0 drift=1.4%
+
+Measuring concurrency=8 ...
+  C=8: Wh/1k_out=0.285419 achieved≈0.0 drift=3.6%
+
+Measuring concurrency=16 ...
+  C=16: Wh/1k_out=0.170598 achieved≈0.0 drift=1.3%
+
+Measuring concurrency=32 ...
+  C=32: Wh/1k_out=0.107801 achieved≈0.0 drift=0.1%
+
+Amortization fit: Wh/1k_out ≈ 1.9273/C + 0.0451 (R²=1.0000)
+  Record C=1: /root/.vetch/calibrations/self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c1-03caabc4.json
+  Record C=2: /root/.vetch/calibrations/self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c2-08479b85.json
+  Record C=4: /root/.vetch/calibrations/self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c4-f0be671d.json
+  Record C=8: /root/.vetch/calibrations/self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c8-60cff7bb.json
+  Record C=16: /root/.vetch/calibrations/self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c16-9461e1e4.json
+  Record C=32: /root/.vetch/calibrations/self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c32-e29d86e9.json
+[
+  {
+    "model": "Qwen/Qwen3.8-27B",
+    "provider": "self-hosted",
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 1.9746443304721564,
+    "tier": 0,
+    "samples": 64,
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "wh_per_image": 0.0011115996619033286,
+    "visual_tokens_per_image": 729,
+    "intercept_wh": 0.0,
+    "active": true,
+    "rejection_reasons": null,
+    "origin": "local",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "backend": "vllm",
+    "energy_confidence": null
+  },
+  {
+    "model": "Qwen/Qwen3.8-27B",
+    "provider": "self-hosted",
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 1.00758428620479,
+    "tier": 0,
+    "samples": 64,
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "wh_per_image": 0.003715531349948689,
+    "visual_tokens_per_image": 729,
+    "intercept_wh": 0.0,
+    "active": true,
+    "rejection_reasons": null,
+    "origin": "local",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "backend": "vllm",
+    "energy_confidence": null
+  },
+  {
+    "model": "Qwen/Qwen3.8-27B",
+    "provider": "self-hosted",
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 0.5187579337761155,
+    "tier": 0,
+    "samples": 64,
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "wh_per_image": 0.009223512033023344,
+    "visual_tokens_per_image": 729,
+    "intercept_wh": 0.0,
+    "active": true,
+    "rejection_reasons": null,
+    "origin": "local",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "backend": "vllm",
+    "energy_confidence": null
+  },
+  {
+    "model": "Qwen/Qwen3.8-27B",
+    "provider": "self-hosted",
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 0.2854186515277902,
+    "tier": 0,
+    "samples": 64,
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "wh_per_image": 0.010827271399259278,
+    "visual_tokens_per_image": 729,
+    "intercept_wh": 0.0,
+    "active": true,
+    "rejection_reasons": null,
+    "origin": "local",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "backend": "vllm",
+    "energy_confidence": null
+  },
+  {
+    "model": "Qwen/Qwen3.8-27B",
+    "provider": "self-hosted",
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 0.1705983292671912,
+    "tier": 0,
+    "samples": 64,
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "wh_per_image": 0.010024082700355152,
+    "visual_tokens_per_image": 729,
+    "intercept_wh": 0.0,
+    "active": true,
+    "rejection_reasons": null,
+    "origin": "local",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "backend": "vllm",
+    "energy_confidence": null
+  },
+  {
+    "model": "Qwen/Qwen3.8-27B",
+    "provider": "self-hosted",
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 0.10780067000403588,
+    "tier": 0,
+    "samples": 64,
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "wh_per_image": 0.014539378895798517,
+    "visual_tokens_per_image": 729,
+    "intercept_wh": 0.0,
+    "active": true,
+    "rejection_reasons": null,
+    "origin": "local",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "backend": "vllm",
+    "energy_confidence": null
+  }
+]

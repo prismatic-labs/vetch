@@ -1,0 +1,13 @@
+model,concurrency,wh_per_1k_out,file
+Qwen2.5-32B,1,2.4436051767347933,self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c1-3d988385.json
+Qwen2.5-32B,2,1.2458150565418444,self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c2-c38c5d68.json
+Qwen2.5-32B,4,0.6418018471237168,self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c4-23bfde1b.json
+Qwen2.5-32B,8,0.335833206354033,self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c8-c15215e9.json
+Qwen2.5-32B,16,0.19443154154995865,self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c16-610264fa.json
+Qwen2.5-32B,32,0.12088091409133764,self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c32-7a6b532b.json
+Qwen3.8-27B,1,1.9746443304721564,self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c1-03caabc4.json
+Qwen3.8-27B,2,1.00758428620479,self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c2-08479b85.json
+Qwen3.8-27B,4,0.5187579337761155,self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c4-f0be671d.json
+Qwen3.8-27B,8,0.2854186515277902,self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c8-60cff7bb.json
+Qwen3.8-27B,16,0.1705983292671912,self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c16-9461e1e4.json
+Qwen3.8-27B,32,0.10780067000403588,self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16__c32-e29d86e9.json

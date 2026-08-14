@@ -1,0 +1,49 @@
+NOTE: --batched is an EXPERIMENTAL preview. It sweeps concurrency and fits Wh/1k ≈ a/C + b, but its output is NOT Tier-0 and no batched records ship with vetch. Use the default batch=1 path for reproducible calibration.
+NOTE: Wikimedia standard images not found. Using synthetic images for probe/warmup.
+      Run --fetch-images to download them (optional; does not affect measurements).
+
+Vetch NVIDIA GPU Batched Calibration
+  Model:         Qwen/Qwen2.5-32B-Instruct
+  GPU:           NVIDIA H100 80GB HBM3 (device 0)
+  Provider:      self-hosted
+  Backend:       openai / engine=vllm @ http://127.0.0.1:8000/v1
+  Precision:     bf16
+  Concurrencies: [1, 2, 4, 8, 16, 32]
+  Requests/level:64  out_tokens=64
+  Server:        openai-compatible (Qwen/Qwen2.5-32B-Instruct)
+  Images:       skipped (OpenAI-compatible request failed: HTTP Error 400: Bad Request)
+  Energy:        NVML total-energy counter
+
+Measuring concurrency=1 ...
+  C=1: Wh/1k_out=2.443605 achieved≈0.0 drift=7.2%
+
+Measuring concurrency=2 ...
+  C=2: Wh/1k_out=1.245815 achieved≈0.0 drift=4.9%
+
+Measuring concurrency=4 ...
+  C=4: Wh/1k_out=0.641802 achieved≈0.0 drift=3.3%
+
+Measuring concurrency=8 ...
+  C=8: Wh/1k_out=0.335833 achieved≈0.0 drift=0.7%
+
+Measuring concurrency=16 ...
+  C=16: Wh/1k_out=0.194432 achieved≈0.0 drift=1.1%
+
+Measuring concurrency=32 ...
+  C=32: Wh/1k_out=0.120881 achieved≈0.0 drift=0.9%
+
+Amortization fit: Wh/1k_out ≈ 2.4018/C + 0.0423 (R²=1.0000)
+  Record C=1: /root/.vetch/calibrations/self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c1-3d988385.json
+  Record C=2: /root/.vetch/calibrations/self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c2-c38c5d68.json
+  Record C=4: /root/.vetch/calibrations/self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c4-23bfde1b.json
+  Record C=8: /root/.vetch/calibrations/self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c8-c15215e9.json
+  Record C=16: /root/.vetch/calibrations/self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c16-610264fa.json
+  Record C=32: /root/.vetch/calibrations/self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16__c32-7a6b532b.json
+
+Batched calibration complete: 6 concurrency records.
+  C=1: wh_per_1k_output=2.443605 active=True
+  C=2: wh_per_1k_output=1.245815 active=True
+  C=4: wh_per_1k_output=0.641802 active=True
+  C=8: wh_per_1k_output=0.335833 active=True
+  C=16: wh_per_1k_output=0.194432 active=True
+  C=32: wh_per_1k_output=0.120881 active=True

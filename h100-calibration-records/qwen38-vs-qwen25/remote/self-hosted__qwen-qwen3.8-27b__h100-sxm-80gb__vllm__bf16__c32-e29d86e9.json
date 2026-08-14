@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "provider": "self-hosted",
+    "model": "Qwen/Qwen3.8-27B",
+    "gpu": "h100-sxm-80gb",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "instance_type": null,
+    "visual_token_budget": null,
+    "concurrency": 32
+  },
+  "gpu_raw": "NVIDIA H100 80GB HBM3",
+  "coefficients": {
+    "wh_per_1k_input": 0.0,
+    "wh_per_1k_output": 0.10780067000403588,
+    "wh_per_image": 0.014539378895798517,
+    "visual_tokens_per_image": 729,
+    "intercept_wh": 0.0
+  },
+  "provenance": {
+    "tier": 0,
+    "samples": 64,
+    "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
+    "measurement_basis": "nvml_gpu_energy_batched",
+    "energy_domain": "gpu_board",
+    "energy_domain_includes": [
+      "gpu_core",
+      "hbm"
+    ],
+    "energy_domain_excludes": [
+      "host_cpu",
+      "host_dram",
+      "nvlink_switch",
+      "nic",
+      "storage",
+      "psu_loss",
+      "cooling"
+    ],
+    "not_wall_power": true,
+    "pue_applied": false,
+    "grid_applied": false,
+    "idle_subtracted": true,
+    "idle_subtraction_method": "pre_post_average",
+    "idle_watts_before": 125.596,
+    "idle_watts_after": 137.558,
+    "idle_drift_pct": 9.525,
+    "concurrency": 32,
+    "batch_size": 32,
+    "fit": {
+      "r2": 1.0,
+      "condition_number": null,
+      "input_ci95": [
+        0.0,
+        0.0
+      ],
+      "output_ci95": [
+        0.0,
+        0.0
+      ],
+      "image_ci95": [
+        0.0,
+        0.0
+      ],
+      "residuals_structured": false
+    },
+    "fit_engine": "amortization_1_over_c",
+    "ci_method": "none",
+    "raw_run_table": [
+      {
+        "n_images": 1,
+        "text_tokens": 6272,
+        "output_tokens": 4096,
+        "energy_wh": 0.441551544336531,
+        "raw_energy_wh": 0.5729577777777778,
+        "duration_ms": 3766.550066007767,
+        "replicate": 0
+      }
+    ],
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "gpu_canonical": "h100-sxm-80gb",
+    "gpu_known": true,
+    "serving_engine": "vllm",
+    "server_version": "openai-compatible (Qwen/Qwen3.8-27B)",
+    "image_set": "vetch_standard_v1",
+    "image_resolution_px": 378,
+    "model_supports_images": true,
+    "visual_tokens_assumed": 729,
+    "visual_tokens_assumed_source": "assumed_default",
+    "vetch_version": "0.11.1",
+    "methodology_version": "1.3",
+    "measured_at": "2026-08-14T20:43:36Z",
+    "measured_by": null,
+    "calibration_mode": "batched",
+    "requests_per_level": 64,
+    "out_tokens_target": 64,
+    "in_words": 96,
+    "fixed_output_length": true,
+    "achieved_concurrency": 0.0,
+    "amortization_curve": [
+      {
+        "concurrency": 1,
+        "wh_per_1k_out": 1.974644,
+        "wh_per_image": 0.001112,
+        "achieved_concurrency": 0.0,
+        "output_tokens": 4096,
+        "wall_s": 85.212,
+        "block_drift_pct": 7.06
+      },
+      {
+        "concurrency": 2,
+        "wh_per_1k_out": 1.007584,
+        "wh_per_image": 0.003716,
+        "achieved_concurrency": 0.0,
+        "output_tokens": 4096,
+        "wall_s": 44.961,
+        "block_drift_pct": 0.12
+      },
+      {
+        "concurrency": 4,
+        "wh_per_1k_out": 0.518758,
+        "wh_per_image": 0.009224,
+        "achieved_concurrency": 0.0,
+        "output_tokens": 4096,
+        "wall_s": 22.78,
+        "block_drift_pct": 1.37
+      },
+      {
+        "concurrency": 8,
+        "wh_per_1k_out": 0.285419,
+        "wh_per_image": 0.010827,
+        "achieved_concurrency": 0.0,
+        "output_tokens": 4096,
+        "wall_s": 11.79,
+        "block_drift_pct": 3.59
+      },
+      {
+        "concurrency": 16,
+        "wh_per_1k_out": 0.170598,
+        "wh_per_image": 0.010024,
+        "achieved_concurrency": 0.0,
+        "output_tokens": 4096,
+        "wall_s": 6.463,
+        "block_drift_pct": 1.3
+      },
+      {
+        "concurrency": 32,
+        "wh_per_1k_out": 0.107801,
+        "wh_per_image": 0.014539,
+        "achieved_concurrency": 0.0,
+        "output_tokens": 4096,
+        "wall_s": 3.767,
+        "block_drift_pct": 0.14
+      }
+    ],
+    "amortization_fit": {
+      "a": 1.9272896521323584,
+      "b": 0.04507544976941629,
+      "r2": 0.9999588628727799
+    },
+    "api_backend": "openai",
+    "device_id": 0,
+    "driver_version": "590.48.01",
+    "memory_total_mb": 81559,
+    "power_before_w": 125.503,
+    "power_after_w": 125.678,
+    "block_drift_pct": 0.13943889787494892,
+    "clocks_before": {
+      "sm_clock_mhz": 1980,
+      "sm_max_clock_mhz": 1980,
+      "mem_clock_mhz": 2619,
+      "applications_sm_clock_mhz": 1980
+    },
+    "clocks_after": {
+      "sm_clock_mhz": 1980,
+      "sm_max_clock_mhz": 1980,
+      "mem_clock_mhz": 2619,
+      "applications_sm_clock_mhz": 1980
+    },
+    "gpu_shared_warning": false,
+    "compute_process_count": 1,
+    "device_count": 1,
+    "timestamp": 1786740216.321649
+  },
+  "active": true,
+  "rejection_reasons": null,
+  "timestamp": 1786740216.321649,
+  "profile_hash": "sha256:7d70de20bf6789e1614a314bf8cfbea3c6190aa653197ab07ed1e44026fe9db2",
+  "content_hash": "sha256:a5bd8a1ddf44f8a5daf3e9d10bd6a5a441cf7fc4b5cbeacfa964e62d7a098d6d"
+}

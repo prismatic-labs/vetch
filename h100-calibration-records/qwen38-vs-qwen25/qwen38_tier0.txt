@@ -1,0 +1,66 @@
+NOTE: GPU clocks not detected as locked; boost clocks vary energy run-to-run. For a reproducible profile, lock them (nvidia-smi -lgc <MHz>). Clocks are recorded regardless.
+NOTE: Wikimedia standard images not found. Using synthetic images for probe/warmup.
+      Run --fetch-images to download them (optional; does not affect measurements).
+
+Active calibration NOT installed:
+  - intercept_wh=-0.00441691 is negative (regression artifact)
+Vetch NVIDIA GPU Calibration
+  Model:    Qwen/Qwen3.8-27B
+  GPU:      NVIDIA H100 80GB HBM3 (device 0)
+  Driver:   590.48.01
+  Provider: self-hosted  (must match production provider_hint for Tier 0)
+  Backend:  openai / engine=vllm @ http://127.0.0.1:8000/v1  (openai-compatible (Qwen/Qwen3.8-27B))
+  Precision:bf16
+  Modality: image
+  Images:   vetch_standard_v1 (8 for probe/warmup)
+Probing image-token accounting...
+  Image token accounting: includes
+  Energy:   NVML total-energy counter (exact)
+
+Warming up...
+Measuring idle baseline (before)...
+Running calibration grid (22 runs)...
+  [ 1/22] n_img=1 in= 268 out= 32 gross=78.9481 mWh (770ms)
+  [ 2/22] n_img=1 in= 187 out=  5 gross=19.0753 mWh (234ms)
+  [ 3/22] n_img=0 in= 410 out=  5 gross=17.2253 mWh (218ms)
+  [ 4/22] n_img=0 in= 410 out= 50 gross=133.7750 mWh (1099ms)
+  [ 5/22] n_img=1 in= 268 out= 16 gross=50.6869 mWh (458ms)
+  [ 6/22] n_img=0 in=  41 out= 38 gross=93.9747 mWh (850ms)
+  [ 7/22] n_img=1 in= 187 out= 64 gross=166.1881 mWh (1399ms)
+  [ 8/22] n_img=0 in= 122 out= 30 gross=75.9833 mWh (691ms)
+  [ 9/22] n_img=1 in= 556 out=  9 gross=27.7167 mWh (304ms)
+  [10/22] n_img=1 in= 268 out= 16 gross=48.1986 mWh (449ms)
+  [11/22] n_img=1 in= 187 out= 50 gross=130.7303 mWh (1122ms)
+  [12/22] n_img=1 in= 556 out=  9 gross=26.8406 mWh (318ms)
+  [13/22] n_img=0 in= 122 out=  5 gross=10.4278 mWh (193ms)
+  [14/22] n_img=1 in= 556 out=  3 gross=9.8753 mWh (197ms)
+  [15/22] n_img=1 in= 268 out=109 gross=287.6650 mWh (2277ms)
+  [16/22] n_img=1 in= 268 out=  5 gross=23.4117 mWh (236ms)
+  [17/22] n_img=0 in= 122 out= 32 gross=83.7100 mWh (718ms)
+  [18/22] n_img=0 in=  41 out= 28 gross=66.1683 mWh (644ms)
+  [19/22] n_img=0 in= 122 out= 48 gross=129.3867 mWh (1031ms)
+  [20/22] n_img=0 in= 122 out= 32 gross=82.3214 mWh (719ms)
+  [21/22] n_img=0 in=  41 out=  5 gross=12.0847 mWh (191ms)
+  [22/22] n_img=0 in= 410 out= 21 gross=53.6678 mWh (522ms)
+
+Measuring idle baseline (after)...
+  Idle power before: 123.9 W  after: 125.2 W (drift 1.0%)
+Fitting energy model (22 runs)...
+
+WARNING: Calibration quality issues:
+  - intercept_wh=-0.00441691 is negative (regression artifact)
+  Detail JSON saved, but active calibration will not be installed.
+
+Calibration record written to /root/.vetch/calibrations/self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16-5cb685a8.json
+  (active=false: recorded for audit, will not auto-load)
+
+Model:        Qwen/Qwen3.8-27B
+GPU:          NVIDIA H100 80GB HBM3
+Tier:         0 (hardware-measured)
+wh_per_1k_in: 0.00000
+wh_per_1k_out:1.90208
+wh_per_image: 0.00000
+visual_tok/img:146
+intercept_wh: 0.0
+samples:      22
+Status:       NOT installed

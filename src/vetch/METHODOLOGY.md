@@ -1,7 +1,7 @@
 # Vetch Methodology
 
-methodology_version: "1.2"
-sdk_version: "0.8.0"
+methodology_version: "1.3"
+sdk_version: "0.11.1"
 
 ## Preamble
 Vetch exists because AI systems currently operate with no feedback on their energy consumption. Every inference draws power from infrastructure with real costs—financial, environmental, and systemic. None of this is visible to the developer making the API call.
@@ -420,7 +420,7 @@ We want better data. If you have inference energy measurements—from internal b
 
 ## Serving-configuration sensitivity (batching, precision, scale)
 
-Per-token energy is not a single number for a model — it depends on how the model
+Per-token energy is not a single number for a model: it depends on how the model
 is served. A hardware calibration (`calibrate-cuda` / `calibrate-apple-silicon`)
 is deliberately measured at **batch size 1, single stream** (the record stamps
 `batch_size=1`, `concurrency=1`, `tensor_parallel_size=null`). That makes it
@@ -437,34 +437,68 @@ output:
 | NousResearch Llama-3.1-8B-Instruct | 0.54 |
 | Qwen2.5-VL-7B-Instruct | 0.51 |
 | Qwen2.5-32B-Instruct | 2.37 |
+| Qwen3.8-27B | 1.90 |
 
-These four records ship as `active:false` audit artifacts (their fits were gated
+These records ship as `active:false` audit artifacts (their fits were gated
 by the quality checks below). They document the measurement; they are not
-auto-resolved defaults.
+auto-resolved defaults. Qwen3.8-27B was measured on the same H100 SXM / vLLM /
+bf16 stack as the Qwen2.5-32B record (2026-08-14). The batch=1 grid gave
+`wh_per_1k_output=1.90` (22 runs, idle drift 1.0%, fit R²=0.994, active=false
+via negative-intercept gate). Thinking was disabled for that serve
+(`enable_thinking: false`).
 
-### Observed qualitatively (direction only — not shipped as records)
-Exploratory runs on rented H100 and A100 GPUs — **not committed as calibration
-records** — show three mechanistic patterns. We state them as direction, not as
-calibrated coefficients:
+### Same-box concurrency sweep (Qwen3.8-27B vs Qwen2.5-32B)
+
+Exploratory `calibrate-cuda --batched` on one rented H100 SXM (vLLM 0.27.1,
+bf16, `max-model-len=8192`, unique prompts, 64 requests/level, 64 out tokens).
+Not Tier-0. Wh/1k output:
+
+| C | Qwen3.8-27B | Qwen2.5-32B | 3.8 / 2.5 |
+|---|---:|---:|---:|
+| 1 | 1.97 | 2.44 | 0.81 |
+| 2 | 1.01 | 1.25 | 0.81 |
+| 4 | 0.52 | 0.64 | 0.81 |
+| 8 | 0.29 | 0.34 | 0.85 |
+| 16 | 0.17 | 0.19 | 0.88 |
+| 32 | 0.11 | 0.12 | 0.89 |
+
+Amortization fits `Wh/1k_out ≈ a/C + b` (R²≈1.0 on both):
+
+| model | a | b | C1→C32 |
+|---|---:|---:|---:|
+| Qwen3.8-27B | 1.93 | 0.045 | 18.3x |
+| Qwen2.5-32B | 2.40 | 0.042 | 20.2x |
+
+At batch-of-one, Qwen3.8-27B is about 19% lower than Qwen2.5-32B. The ratio
+stays near 0.81 through C=8, then edges toward 0.89 as both approach the floor.
+Absolute energy still falls roughly an order of magnitude with concurrency on
+both models.
+
+### Observed qualitatively (direction only; not shipped as records)
+Exploratory runs on rented H100 and A100 GPUs (not Tier-0 defaults) show three
+mechanistic patterns. We state them as direction, not as calibrated coefficients:
 
 - **Batching amortizes decode energy toward a floor.** Wh/1k output falls with
   serving concurrency and is well fit by `Wh/1k(C) ≈ a/C + b`. Pure `1/C` holds
   only at low concurrency and saturates above it; a batch=1 value can overstate
   per-request energy at high concurrency by roughly an order of magnitude. The
-  normalized curve was consistent across a ~4x model-size range in our runs.
+  normalized curve was consistent across a ~4x model-size range in our runs
+  (including the Qwen3.8 vs Qwen2.5 sweep above).
 - **Precision is a roughly multiplicative lever.** fp8 was about half of bf16
   energy per token, roughly stable across concurrency.
 - **Decode energy scales ~linearly with active parameter count** (decode is
   memory-bandwidth bound). The slope is GPU-dependent, so we do not publish a
   universal per-1B constant. The shipped record set is consistent with ~linear
-  scaling among these dense models (MoE untested).
+  scaling among these dense models (MoE untested). Qwen3.8-27B sitting below
+  Qwen2.5-32B at similar dense scale is consistent with its hybrid
+  linear-attention backbone doing less full-attention decode work.
 
 **Prefill/input energy** is much smaller per token than decode, but not
 negligible: in our records the input coefficient sits near the regression floor
 and is flagged rather than reported with false precision. (An earlier internal
 "~0.0002 Wh/1k" figure was a prefix-cache measurement artifact and is withdrawn.)
 
-### Batched calibration mode (`--batched`) — experimental preview
+### Batched calibration mode (`--batched`; experimental preview)
 `vetch calibrate-cuda --batched` sweeps serving concurrency and fits
 `Wh/1k_out(C) ≈ a/C + b`. This mode is an **experimental preview**: no batched
 records are shipped, and its output must not be treated as Tier-0. Use the batch=1
