@@ -38,17 +38,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/aggregate_calibrations.py --repo ${{ github.repository }}
 
-      # data/calibrations.json is the aggregation output; the packaged copy under
-      # src/vetch/data/ is what community_calibrations.py actually loads at runtime.
-      # The two were byte-identical as of 2026-08-28 with no script keeping them in
-      # step, so this makes the copy explicit. Both land on the review branch, so a
-      # human validates the relationship before anything ships.
-      - name: Sync packaged copy
-        run: cp data/calibrations.json src/vetch/data/community_calibrations.json
+      # src/vetch/data/community_calibrations.json is what community_calibrations.py
+      # loads at runtime and what ships in the wheel. Both files are currently empty
+      # ([]), so there is no evidence either way about whether the packaged copy is
+      # meant to mirror data/calibrations.json. Warn on divergence rather than
+      # syncing on an assumption; decide the relationship when real records arrive.
+      - name: Warn if the packaged copy has diverged
+        run: |
+          norm() { python3 -c 'import json,sys;json.dump(json.load(open(sys.argv[1])),sys.stdout,sort_keys=True)' "$1"; }
+          if [ "$(norm data/calibrations.json)" != "$(norm src/vetch/data/community_calibrations.json)" ]; then
+            echo "::warning::data/calibrations.json and the packaged src/vetch/data/community_calibrations.json differ. The packaged copy is what ships in the wheel."
+          fi
 
       - name: Push review branch if calibrations changed
         run: |
-          FILES="data/calibrations.json data/calibrations_suspect.json src/vetch/data/community_calibrations.json"
+          FILES="data/calibrations.json data/calibrations_suspect.json"
           if git diff --quiet -- $FILES; then
             echo "No calibration changes." >> "$GITHUB_STEP_SUMMARY"
             exit 0
