@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-08
+
 ### Added — calibration protocol v2
 
 Adds per-coefficient identifiability to hardware calibration records.
