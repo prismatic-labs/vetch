@@ -277,6 +277,23 @@ class InferenceEvent(TypedDict, total=False):
     # emitted energy covers the text portion alone and is a partial measurement,
     # not the whole. Never emit a visual call's text-only energy as "complete".
     energy_completeness: Literal["complete", "text_only"]
+    # Coefficient axes the resolved calibration could not identify, so no energy
+    # was attributed on them (e.g. ["wh_per_1k_input"] means prefill energy is
+    # absent from energy_wh entirely). Empty/absent means every axis was priced.
+    # Distinct from energy_completeness, which covers modality only: a call can
+    # be "complete" on modality while missing a whole coefficient axis, and a
+    # consumer that ignores this field will silently under-report long prompts.
+    # A null coefficient never means zero cost.
+    energy_axes_unattributed: list[str]
+    # Whether the energy figure is a complete estimate or a floor. A call is a
+    # "lower_bound" when some of its energy was not priced at all: either a
+    # visual portion with no visual coefficient (energy_completeness ==
+    # "text_only") or a coefficient axis the calibration could not identify
+    # (energy_axes_unattributed non-empty). In either case, the true value is
+    # at least the reported value by an unknown margin. On a lower_bound,
+    # energy_p95_wh and carbon_p95_g are None because the upper end is unknown.
+    # energy_uncertainty_pct continues to describe the portion that WAS priced.
+    energy_estimate_kind: Literal["point", "lower_bound"]
 
     # Grid data
     grid_intensity_gco2e_kwh: Union[float, None]
@@ -287,8 +304,13 @@ class InferenceEvent(TypedDict, total=False):
 
     # PUE (Power Usage Effectiveness) metadata
     pue: Union[float, None]  # Datacenter efficiency (e.g., 1.10 for Google, 1.15 for AWS)
-    pue_tier: Union[int, None]  # 1=known value (user config or vendor), 3=default fallback
+    pue_tier: Union[int, None]  # 1=operator-disclosed/override, 2=host assumed, 3=default
     pue_source: Union[str, None]  # Source description (e.g., "Google Environmental Report 2024")
+    water_tier: Union[int, None]  # 1=region-published, 3=fleet/geography average, None if unknown
+    water_basis: Union[str, None]  # Citation for the WUE coefficient, or "explicit override"
+    water_boundary: Union[str, None]  # Measurement boundary, currently "onsite"
+    water_accounting_kind: Union[str, None]  # consumption, withdrawal, cooling water
+    water_uncertainty_pct: Union[float, None]  # Set only via an explicit wue_override
 
     # Request metadata
     is_stream: bool
@@ -358,6 +380,9 @@ class InferenceEvent(TypedDict, total=False):
 class EnergyOverride(TypedDict, total=False):
     """Schema for user-provided energy values.
 
+    A null coefficient means "do not attribute energy on this axis", never zero.
+    A partial override (only decode identified, input null) is valid and attaches.
+
     Tier definitions:
         0: Measured - Direct hardware measurement (pynvml, rocm-smi)
         1: Vendor-published - Official provider data or peer-reviewed research
@@ -365,13 +390,14 @@ class EnergyOverride(TypedDict, total=False):
         3: Estimated - Calculated from parameter count and architecture class
     """
 
-    wh_per_1k_input: float
-    wh_per_1k_output: float
+    wh_per_1k_input: Union[float, None]
+    wh_per_1k_output: Union[float, None]
     tier: int  # 0, 1, 2, or 3
     source: str  # Free-text provenance
     basis: str  # Methodology/provenance detail
-    wh_per_image: float  # VLM only: Wh per image (vision encoder cost)
-    intercept_wh: float  # VLM only: fixed per-request overhead from 4-parameter LS fit
+    wh_per_image: Union[float, None]  # VLM only: Wh per image (vision encoder cost)
+    intercept_wh: Union[float, None]  # Fixed per-request overhead from nested LS fit
+    visual_tokens_per_image: int
 
 
 class ValidationResult:
@@ -391,6 +417,11 @@ def validate_energy_override(
 ) -> tuple[Union[EnergyOverride, None], list[str]]:
     """Validate energy_override dict.
 
+    A partial override is valid: null/omitted axes are unidentified (do not
+    attribute energy, emit a warning). They never mean zero. At least one of
+    ``wh_per_1k_input``, ``wh_per_1k_output``, ``wh_per_image``, or
+    ``intercept_wh`` must be a positive number or the override is discarded.
+
     Returns:
         Tuple of (validated EnergyOverride or None, list of warning messages).
         Invalid overrides return None with explanatory warnings.
@@ -401,27 +432,75 @@ def validate_energy_override(
         warnings.append("energy_override must be a dict, ignoring")
         return None, warnings
 
-    wh_input = override.get("wh_per_1k_input")
-    wh_output = override.get("wh_per_1k_output")
+    def _axis(key: str) -> Union[float, None]:
+        if key not in override:
+            return None
+        val = override[key]
+        if val is None:
+            warnings.append(
+                f"energy_override.{key} is null; not attributing energy on this axis"
+            )
+            return None
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            warnings.append(
+                f"energy_override.{key} must be a positive number or null, "
+                f"got {val!r}; not attributing energy on this axis"
+            )
+            return None
+        if val < 0:
+            warnings.append(
+                f"energy_override.{key} must be a positive number or null, "
+                f"got {val!r}; not attributing energy on this axis"
+            )
+            return None
+        if val == 0:
+            warnings.append(
+                f"energy_override.{key} is 0; treating as unidentified (null), "
+                "never zero"
+            )
+            return None
+        return float(val)
 
-    # Required fields must be present and positive
-    if not isinstance(wh_input, (int, float)) or wh_input <= 0:
+    wh_input = _axis("wh_per_1k_input")
+    wh_output = _axis("wh_per_1k_output")
+    wh_img = _axis("wh_per_image") if "wh_per_image" in override else None
+    intercept = _axis("intercept_wh") if "intercept_wh" in override else None
+
+    if wh_input is None and "wh_per_1k_input" not in override:
         warnings.append(
-            f"energy_override.wh_per_1k_input must be a positive number, "
-            f"got {wh_input!r}, falling back to registry"
+            "energy_override.wh_per_1k_input omitted; not attributing energy on this axis"
+        )
+    if wh_output is None and "wh_per_1k_output" not in override:
+        warnings.append(
+            "energy_override.wh_per_1k_output omitted; not attributing energy on this axis"
+        )
+
+    if (
+        wh_input is None
+        and wh_output is None
+        and wh_img is None
+        and intercept is None
+    ):
+        warnings.append(
+            "energy_override has no identified coefficient "
+            "(need at least one positive wh_per_1k_input, wh_per_1k_output, "
+            "wh_per_image, or intercept_wh); falling back to registry"
         )
         return None, warnings
-    if not isinstance(wh_output, (int, float)) or wh_output <= 0:
-        warnings.append(
-            f"energy_override.wh_per_1k_output must be a positive number, "
-            f"got {wh_output!r}, falling back to registry"
-        )
-        return None, warnings
 
-    result: EnergyOverride = {
-        "wh_per_1k_input": float(wh_input),
-        "wh_per_1k_output": float(wh_output),
-    }
+    result: EnergyOverride = {}
+    if wh_input is not None:
+        result["wh_per_1k_input"] = wh_input
+    else:
+        result["wh_per_1k_input"] = None
+    if wh_output is not None:
+        result["wh_per_1k_output"] = wh_output
+    else:
+        result["wh_per_1k_output"] = None
+    if wh_img is not None:
+        result["wh_per_image"] = wh_img
+    if intercept is not None:
+        result["intercept_wh"] = intercept
 
     # Optional tier (default to 1 = vendor-published)
     tier = override.get("tier")
@@ -444,24 +523,14 @@ def validate_energy_override(
     if basis is not None and isinstance(basis, str):
         result["basis"] = basis
 
-    # Optional wh_per_image (VLM calibrations)
-    wh_img = override.get("wh_per_image")
-    if wh_img is not None:
-        if isinstance(wh_img, (int, float)) and wh_img >= 0:
-            result["wh_per_image"] = float(wh_img)
+    vtok = override.get("visual_tokens_per_image")
+    if vtok is not None:
+        if isinstance(vtok, int) and vtok > 0:
+            result["visual_tokens_per_image"] = vtok
         else:
             warnings.append(
-                f"energy_override.wh_per_image must be non-negative, got {wh_img!r}, ignoring"
-            )
-
-    # Optional intercept_wh (fixed per-request overhead from 4-parameter LS fit)
-    intercept = override.get("intercept_wh")
-    if intercept is not None:
-        if isinstance(intercept, (int, float)) and intercept >= 0:
-            result["intercept_wh"] = float(intercept)
-        else:
-            warnings.append(
-                f"energy_override.intercept_wh must be non-negative, got {intercept!r}, ignoring"
+                f"energy_override.visual_tokens_per_image must be a positive int, "
+                f"got {vtok!r}, ignoring"
             )
 
     return result, warnings

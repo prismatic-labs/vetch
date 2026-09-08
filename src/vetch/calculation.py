@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, TypedDict, cast
 
 logger = logging.getLogger(__name__)
 
-METHODOLOGY_VERSION = "1.3"
+METHODOLOGY_VERSION = "1.5"
 
 # Provider labels for endpoints that do not bill OpenAI/vendor list prices.
 # Self-hosted: no per-token API charge (cost is a definite 0; you pay hardware,
@@ -820,8 +821,10 @@ def calculate_energy(
     match = _match if _match is not None else resolve_model_match(model)
 
     if energy_override:
-        wh_in = energy_override["wh_per_1k_input"]
-        wh_out = energy_override["wh_per_1k_output"]
+        raw_in = energy_override.get("wh_per_1k_input")
+        raw_out = energy_override.get("wh_per_1k_output")
+        wh_in = float(raw_in) if isinstance(raw_in, (int, float)) else 0.0
+        wh_out = float(raw_out) if isinstance(raw_out, (int, float)) else 0.0
         tier = energy_override.get("tier", 1)
         source = energy_override.get("source", "override")
         basis = energy_override.get("basis", "User-provided override")
@@ -959,9 +962,23 @@ def calculate_energy(
 # Global industry average is ~1.54 (Uptime Institute 2025), but LLM inference
 # runs in hyperscaler DCs, not enterprise on-prem. 1.2 is a conservative
 # default for "probably a hyperscaler we don't recognize."
+#
+# Why a default is allowed here but not for WUE (see calculate_water):
+# a coefficient may carry a default only when the published spread is narrow
+# enough that a wrong pick stays within the metric's stated uncertainty.
+# Published PUE spans 1.09-1.27, so the worst case here is roughly 15%, inside
+# the +/-50% band already claimed for carbon. Published WUE spans 0.02-2.85,
+# a ~140x spread, so any default there manufactures a number rather than
+# approximating one. Apply that test before adding a DEFAULT_* to any registry.
 DEFAULT_PUE = 1.2
 
-# Provider-specific PUE values from official sustainability reports (Tier 1 data)
+# Provider-specific PUE values from official sustainability reports.
+#
+# Tier is the provenance of the *attribution*, not of the figure. Every value
+# below is operator-published. For openai/anthropic the figure is published by
+# the assumed host's operator (Microsoft, AWS) while the model vendor does not
+# disclose where it serves, so the attribution is an assumption and the entry is
+# tier 2. See PROVIDER_PUE_TIER.
 # Sources:
 #   Google: Google 2026 Environmental Report, FY2025 (fleet-wide 1.09)
 #   Azure: Microsoft 2025 Environmental Sustainability Report (newest-gen <1.12)
@@ -977,9 +994,9 @@ PROVIDER_PUE: dict[str, float] = {
     "google": 1.09,      # Google fleet-wide (2026 report, FY2025)
     "vertexai": 1.09,    # Vertex AI runs on Google Cloud
     "azure": 1.12,       # Microsoft newest-gen (2025 report reaffirms <1.12)
-    "openai": 1.12,      # OpenAI primarily uses Azure
+    "openai": 1.12,      # Azure figure; OpenAI does not disclose its hosting
     "aws": 1.14,         # AWS global average (2025 report)
-    "anthropic": 1.14,   # Anthropic uses AWS
+    "anthropic": 1.14,   # AWS figure; Anthropic does not disclose its hosting
     "bedrock": 1.14,     # AWS Bedrock
     "deepseek": 1.27,    # DeepSeek own servers (Jegham et al.)
 }
@@ -989,12 +1006,41 @@ PROVIDER_PUE_SOURCES: dict[str, str] = {
     "google": "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
     "vertexai": "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
     "azure": "Microsoft 2025 Environmental Sustainability Report (newest-gen PUE)",
-    "openai": "Microsoft 2025 Environmental Sustainability Report (Azure-backed)",
+    "openai": (
+        "Microsoft 2025 Environmental Sustainability Report (newest-gen PUE); "
+        "applied on the assumption that OpenAI serves from Azure, which OpenAI "
+        "does not disclose"
+    ),
     "aws": "AWS 2025 Sustainability Report (global average PUE)",
-    "anthropic": "AWS 2025 Sustainability Report (AWS-backed)",
+    "anthropic": (
+        "AWS 2025 Sustainability Report (global average PUE); applied on the "
+        "assumption that Anthropic serves from AWS, which Anthropic does not "
+        "disclose"
+    ),
     "bedrock": "AWS 2025 Sustainability Report",
     "deepseek": "Jegham et al. (2025) DeepSeek datacenter PUE",
 }
+
+# Provenance of each PUE attribution.
+#   1 = the operator publishes this PUE for infrastructure it also operates
+#   2 = an operator-published PUE applied through an undisclosed-hosting
+#       assumption (figure sourced, host attribution assumed)
+# Missing key defaults to 2: an unclassified entry is never treated as disclosed.
+PROVIDER_PUE_TIER: dict[str, int] = {
+    "google": 1,
+    "vertexai": 1,
+    "azure": 1,
+    "openai": 2,
+    "aws": 1,
+    "anthropic": 2,
+    "bedrock": 1,
+    "deepseek": 1,
+}
+
+# Model families whose names identify a model, not an operator. Open-weight
+# checkpoints can be served anywhere, so resolving a host from the name is an
+# assumption even when the resolved operator publishes its PUE.
+_OPEN_WEIGHT_MODEL_PREFIXES = ("llama-", "mixtral-", "gemma-")
 
 # Publication/measurement date (ISO) for each provider's PUE figure. Mirrors
 # PROVIDER_PUE_SOURCES; consumed by the staleness advisory. None = unknown.
@@ -1067,7 +1113,11 @@ def get_provider_pue(
 
     Returns:
         Tuple of (pue, tier, source)
-        - tier: 1=known value (user config or vendor-published), 3=default fallback
+        - tier 1: operator-disclosed PUE for infrastructure that operator runs,
+          or an explicit user override
+        - tier 2: operator-published PUE applied through an undisclosed-hosting
+          assumption (the figure is sourced, the host attribution is not)
+        - tier 3: no provider resolved, default fallback
     """
     # Check environment variable first (user config, Tier 1: known value)
     env_pue = os.environ.get("VETCH_DEFAULT_PUE")
@@ -1079,22 +1129,33 @@ def get_provider_pue(
         except ValueError:
             pass
 
-    # Use explicit provider hint if provided (Tier 1: vendor-published)
+    # Explicit provider hint: the caller names the operator, so the only open
+    # question is whether that operator publishes its own figure.
     if provider_hint:
         provider_lower = provider_hint.lower()
         if provider_lower in PROVIDER_PUE:
-            pue_val = PROVIDER_PUE[provider_lower]
-            pue_src = PROVIDER_PUE_SOURCES.get(provider_lower, "vendor report")
-            return pue_val, 1, pue_src
+            return (
+                PROVIDER_PUE[provider_lower],
+                PROVIDER_PUE_TIER.get(provider_lower, 2),
+                PROVIDER_PUE_SOURCES.get(provider_lower, "vendor report"),
+            )
 
-    # Infer provider from model name (Tier 1: vendor-published)
+    # Infer provider from model name.
     if model:
         inferred = _infer_provider_from_model(model)
         if inferred and inferred in PROVIDER_PUE:
-            return PROVIDER_PUE[inferred], 1, PROVIDER_PUE_SOURCES[inferred]
+            tier = PROVIDER_PUE_TIER.get(inferred, 2)
+            source = PROVIDER_PUE_SOURCES[inferred]
+            if model.lower().startswith(_OPEN_WEIGHT_MODEL_PREFIXES):
+                tier = max(tier, 2)
+                source = (
+                    f"{source}; host assumed from an open-weight model name, "
+                    "which does not identify an operator"
+                )
+            return PROVIDER_PUE[inferred], tier, source
 
     # Fallback to default (Tier 3: unknown)
-    return DEFAULT_PUE, 3, "industry average"
+    return DEFAULT_PUE, 3, "industry average (no operator resolved)"
 
 
 def get_default_pue() -> float:
@@ -1144,7 +1205,8 @@ def calculate_carbon(
 
     Returns:
         Tuple of (carbon_g, pue, pue_tier, pue_source)
-        - pue_tier: 1=known value (user config or vendor-published), 3=default fallback
+        - pue_tier: 1=operator-disclosed or user override, 2=sourced figure
+          applied through a hosting assumption, 3=default fallback
     """
     import math
 
@@ -1172,45 +1234,272 @@ def calculate_carbon(
     return carbon_g, pue_val, pue_tier, pue_source
 
 
-# Water Usage Effectiveness (WUE) - liters per kWh
-# Based on datacenter cooling requirements
-# Sources: Google Environmental Report 2023, Microsoft Sustainability Report 2024
-DEFAULT_WUE = 1.8  # L/kWh industry average for air-cooled datacenters
+class WueRecord(TypedDict):
+    """One sourced WUE coefficient from wue.json."""
 
-PROVIDER_WUE: dict[str, float] = {
-    "google": 1.1,  # Google's efficient water-free cooling in many DCs
-    "vertexai": 1.1,
-    "azure": 1.7,  # Microsoft's water usage per kWh
-    "openai": 1.7,  # OpenAI primarily uses Azure
-    "aws": 2.2,  # AWS average (higher due to evaporative cooling)
-    "anthropic": 2.2,  # Anthropic uses AWS
-    "bedrock": 2.2,
+    value: float
+    tier: int
+    boundary: str
+    accounting: str
+    basis: str
+
+
+class WaterResult(NamedTuple):
+    """Water estimate plus the provenance needed to interpret it safely."""
+
+    water_l: float | None
+    tier: int | None
+    basis: str | None
+    boundary: str | None
+    accounting: str | None
+    uncertainty_pct: float | None
+    warnings: tuple[str, ...] = ()
+
+
+# Lazy-loaded WUE registry. Missing keys mean water is unknown (None), not a default.
+_WUE_REGISTRY: dict[str, WueRecord] | None = None
+_WUE_REGISTRY_WARNINGS: tuple[str, ...] = ()
+
+# Product labels whose physical datacenter operator is known. This mapping is
+# safe for region lookup; model-family inference is not (Llama/Gemma can run
+# anywhere).
+_WUE_PROVIDER_ALIASES = {
+    "amazon-bedrock": "aws",
+    "bedrock": "aws",
+    "google.generative-ai": "google",
+    "google.vertex": "google",
+    "vertexai": "google",
 }
 
-# Lazy-loaded WUE registry
-_WUE_REGISTRY: dict[str, float] | None = None
+_WUE_REGISTRY_ACCOUNTING_KINDS = {
+    "consumption",
+    "withdrawal",
+    "cooling_and_humidification_water",
+}
 
 
-def _load_wue_registry() -> dict[str, float]:
-    """Load WUE registry from wue.json file.
+def _load_wue_registry() -> dict[str, WueRecord]:
+    """Load WUE registry from wue.json.
 
     Returns:
-        Dictionary mapping region/provider keys to WUE values (L/kWh).
+        Mapping of region/provider keys to sourced WUE records. Metadata keys
+        (starting with ``_``) are filtered out.
     """
-    global _WUE_REGISTRY
+    global _WUE_REGISTRY, _WUE_REGISTRY_WARNINGS
     if _WUE_REGISTRY is not None:
         return _WUE_REGISTRY
 
     wue_path = _REGISTRY_DIR / "wue.json"
+    warnings: list[str] = []
     try:
         data = cast("dict[str, Any]", json.loads(wue_path.read_text()))
-        # Filter out metadata keys (starting with _)
-        _WUE_REGISTRY = {k: float(v) for k, v in data.items() if not k.startswith("_")}
+        registry: dict[str, WueRecord] = {}
+        for key, raw in data.items():
+            if key.startswith("_") or not isinstance(raw, dict):
+                continue
+            try:
+                if isinstance(raw["value"], bool) or isinstance(raw["tier"], bool):
+                    raise ValueError("numeric fields must not be booleans")
+                value = float(raw["value"])
+                tier = int(raw["tier"])
+                boundary = raw["boundary"]
+                accounting = raw["accounting"]
+                basis = raw["basis"]
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError("value must be finite and non-negative")
+                if tier not in (1, 2, 3):
+                    raise ValueError("tier must be 1, 2, or 3")
+                if boundary not in ("onsite", "source"):
+                    raise ValueError("boundary must be onsite or source")
+                if accounting not in _WUE_REGISTRY_ACCOUNTING_KINDS:
+                    raise ValueError("unknown accounting kind")
+                if not isinstance(basis, str) or not basis.strip():
+                    raise ValueError("basis must be a non-empty string")
+                registry[key] = {
+                    "value": value,
+                    "tier": tier,
+                    "boundary": boundary,
+                    "accounting": accounting,
+                    "basis": basis,
+                }
+            except (KeyError, OverflowError, TypeError, ValueError) as exc:
+                warnings.append(f"WUE registry entry '{key}' is malformed and was ignored.")
+                logger.debug("Skipping malformed WUE entry %r: %s", key, exc)
+        _WUE_REGISTRY = registry
+        _WUE_REGISTRY_WARNINGS = tuple(warnings)
         return _WUE_REGISTRY
     except Exception as e:
-        logger.debug(f"Failed to load WUE registry: {e}, using defaults")
+        logger.debug("Failed to load WUE registry: %s", e)
         _WUE_REGISTRY = {}
+        _WUE_REGISTRY_WARNINGS = (
+            "WUE registry unavailable; water attribution disabled for this event.",
+        )
         return _WUE_REGISTRY
+
+
+def _lookup_wue(
+    provider: str | None,
+    region: str | None,
+) -> WueRecord | None:
+    """Resolve a sourced WUE record, or None if nothing is published.
+
+    Order: ``{provider}-{region}`` then provider-level fleet key. No unsourced
+    default.
+    """
+    if not provider:
+        return None
+    registry = _load_wue_registry()
+    provider_key = _WUE_PROVIDER_ALIASES.get(provider.lower(), provider.lower())
+    if region:
+        region_key = f"{provider_key}-{region.lower()}"
+        if region_key in registry:
+            return registry[region_key]
+    return registry.get(provider_key)
+
+
+def _infer_wue_provider_from_model(model: str) -> str | None:
+    """Infer a host only when the model family identifies one unambiguously."""
+    model_lower = model.lower()
+    if model_lower.startswith(("gemini-", "palm-")):
+        return "google"
+    # OpenAI and Anthropic intentionally resolve to absent registry keys: their
+    # model developers do not publish facility WUE.
+    if model_lower.startswith(("gpt-", "o1", "o3", "o4", "text-davinci", "text-embedding")):
+        return "openai"
+    if model_lower.startswith("claude-"):
+        return "anthropic"
+    return None
+
+
+def calculate_water_with_provenance(
+    energy_wh: float,
+    model: str | None = None,
+    provider_hint: str | None = None,
+    region: str | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
+) -> WaterResult:
+    """Calculate water usage in liters for datacenter cooling.
+
+    Formula:
+    water_l = (energy_wh / 1000) * WUE
+
+    WUE is taken from a sourced registry entry or an explicit override.
+    There is no default coefficient: if nothing is published for the
+    provider/region, water is ``None``.
+
+    Lookup order:
+        1. ``wue_override`` (always honored)
+        2. ``{provider}-{region}`` registry key
+        3. Provider-level key, only if that provider publishes a fleet WUE
+        4. ``None``
+
+    Args:
+        energy_wh: Energy in Watt-hours.
+        model: Model identifier for provider inference when no hint is given.
+        provider_hint: Explicit provider ("google", "aws", "azure", "vertexai").
+        region: Cloud region for location-specific WUE (e.g., "us-east-1").
+        wue_override: Explicit WUE value (liters per kWh). Escape hatch for
+            self-hosted users who know their facility.
+        wue_boundary: Boundary for an explicit override (``onsite`` or ``source``).
+        water_accounting_kind: Accounting definition for an explicit override.
+        wue_uncertainty_pct: Optional uncertainty percentage for an override.
+
+    Returns:
+        :class:`WaterResult` containing the nullable estimate and provenance.
+    """
+    warnings: tuple[str, ...] = ()
+    if wue_override is not None:
+        try:
+            wue = float("nan") if isinstance(wue_override, bool) else float(wue_override)
+        except (TypeError, ValueError):
+            wue = float("nan")
+        if not math.isfinite(wue) or wue < 0:
+            return WaterResult(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                warnings
+                + (
+                    "Invalid wue_override; expected a finite non-negative "
+                    "liters-per-kWh value.",
+                ),
+            )
+        wue_tier: int | None = 1
+        wue_basis: str | None = "explicit override"
+        boundary = wue_boundary.strip().lower() if wue_boundary else None
+        accounting = (
+            water_accounting_kind.strip().lower()
+            if water_accounting_kind
+            else None
+        )
+        if boundary not in (None, "onsite", "source"):
+            warnings += (
+                "Invalid wue_boundary; expected 'onsite' or 'source'. "
+                "Override will not be aggregated or compared.",
+            )
+            boundary = None
+        if not accounting:
+            accounting = None
+        try:
+            uncertainty_pct = (
+                None
+                if wue_uncertainty_pct is None
+                else (
+                    float("nan")
+                    if isinstance(wue_uncertainty_pct, bool)
+                    else float(wue_uncertainty_pct)
+                )
+            )
+        except (TypeError, ValueError):
+            uncertainty_pct = float("nan")
+        if uncertainty_pct is not None and (
+            not math.isfinite(uncertainty_pct) or uncertainty_pct < 0
+        ):
+            warnings += (
+                "Invalid wue_uncertainty_pct; expected a finite non-negative value.",
+            )
+            uncertainty_pct = None
+        if boundary is None or accounting is None:
+            warnings += (
+                "WUE override accounting definition is incomplete; provide "
+                "wue_boundary and water_accounting_kind to enable aggregation "
+                "and comparison.",
+            )
+    else:
+        _load_wue_registry()
+        warnings = _WUE_REGISTRY_WARNINGS
+        provider = provider_hint.lower() if provider_hint else None
+        if provider is None and model:
+            provider = _infer_wue_provider_from_model(model)
+        entry = _lookup_wue(provider, region)
+        if entry is None:
+            return WaterResult(None, None, None, None, None, None, warnings)
+        wue = entry["value"]
+        wue_tier = entry["tier"]
+        wue_basis = entry["basis"]
+        boundary = entry["boundary"]
+        accounting = entry["accounting"]
+        # The registry states no uncertainty. Publishers report a WUE, not a
+        # band around it. Only an explicit wue_override can carry an
+        # uncertainty, because only the caller supplies that value.
+        uncertainty_pct = None
+
+    water_l = (energy_wh / 1000) * wue
+    return WaterResult(
+        water_l,
+        wue_tier,
+        wue_basis,
+        boundary,
+        accounting,
+        uncertainty_pct,
+        warnings,
+    )
 
 
 def calculate_water(
@@ -1219,81 +1508,21 @@ def calculate_water(
     provider_hint: str | None = None,
     region: str | None = None,
     wue_override: float | None = None,
-) -> float:
-    """Calculate water usage in liters for datacenter cooling.
-
-    WUE varies significantly by datacenter location (0.2-3.5 L/kWh):
-    - River cooling (Virginia): ~0.8 L/kWh
-    - Air cooling (Oregon): ~2.8 L/kWh
-
-    Formula:
-    water_l = (energy_wh / 1000) * WUE
-
-    Args:
-        energy_wh: Energy in Watt-hours.
-        model: Model identifier for provider-specific WUE inference.
-        provider_hint: Explicit provider ("openai", "anthropic", "vertexai").
-        region: Cloud region for location-specific WUE (e.g., "us-east-1").
-        wue_override: Explicit WUE value (liters per kWh).
-
-    Returns:
-        Water usage in liters.
-
-    Note:
-        Regional WUE estimates have ±200% uncertainty vs ±50% for carbon.
-    """
-    # Load WUE registry
-    wue_registry = _load_wue_registry()
-
-    # Determine WUE with cascading fallback:
-    # 1. Explicit override
-    # 2. Region-specific (provider-region)
-    # 3. Provider-level default
-    # 4. Global default
-    if wue_override is not None:
-        wue = wue_override
-    elif region and provider_hint:
-        # Try provider-region specific (e.g., "aws-us-east-1")
-        region_key = f"{provider_hint.lower()}-{region.lower()}"
-        if region_key in wue_registry:
-            wue = wue_registry[region_key]
-        # Fall back to provider-level
-        elif provider_hint.lower() in wue_registry:
-            wue = wue_registry[provider_hint.lower()]
-        elif provider_hint.lower() in PROVIDER_WUE:
-            wue = PROVIDER_WUE[provider_hint.lower()]
-        else:
-            wue = DEFAULT_WUE
-    elif provider_hint:
-        # Provider-level lookup
-        if provider_hint.lower() in wue_registry:
-            wue = wue_registry[provider_hint.lower()]
-        elif provider_hint.lower() in PROVIDER_WUE:
-            wue = PROVIDER_WUE[provider_hint.lower()]
-        else:
-            wue = DEFAULT_WUE
-    elif model:
-        # Infer provider from model name
-        inferred = _infer_provider_from_model(model)
-        if inferred and region:
-            # Try provider-region
-            region_key = f"{inferred}-{region.lower()}"
-            if region_key in wue_registry:
-                wue = wue_registry[region_key]
-            elif inferred in wue_registry:
-                wue = wue_registry[inferred]
-            else:
-                wue = PROVIDER_WUE.get(inferred, DEFAULT_WUE)
-        elif inferred:
-            wue = wue_registry.get(inferred, PROVIDER_WUE.get(inferred, DEFAULT_WUE))
-        else:
-            wue = DEFAULT_WUE
-    else:
-        wue = DEFAULT_WUE
-
-    # Convert Wh to kWh and multiply by WUE
-    water_l = (energy_wh / 1000) * wue
-    return water_l
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
+) -> float | None:
+    """Return water in liters, or ``None`` when no sourced WUE applies."""
+    return calculate_water_with_provenance(
+        energy_wh,
+        model=model,
+        provider_hint=provider_hint,
+        region=region,
+        wue_override=wue_override,
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
+    ).water_l
 
 
 def calculate_embodied_carbon(
@@ -1578,6 +1807,7 @@ class InferenceMetrics:
         "energy_basis",
         "calibration_match",
         "energy_completeness",
+        "energy_axes_unattributed",
         "model_known",
         "model_match",
         "carbon_g",
@@ -1585,6 +1815,11 @@ class InferenceMetrics:
         "pue_tier",
         "pue_source",
         "water_l",
+        "water_tier",
+        "water_basis",
+        "water_boundary",
+        "water_accounting_kind",
+        "water_uncertainty_pct",
         "embodied_carbon_g",
         "cost_usd",
         "cost_in_usd",
@@ -1614,6 +1849,10 @@ class InferenceMetrics:
         self.energy_basis: str | None = None
         self.calibration_match: Literal["exact", "curated", "proxy"] | None = None
         self.energy_completeness: Literal["complete", "text_only"] = "complete"
+        # Coefficient axes the calibration could not resolve, so no energy was
+        # attributed on them. Distinct from energy_completeness, which covers
+        # modality only. A null coefficient never means zero cost.
+        self.energy_axes_unattributed: list[str] = []
         self.model_known: bool = False
         self.model_match: MatchPrecision = "fallback"
         self.carbon_g: float | None = None
@@ -1621,6 +1860,11 @@ class InferenceMetrics:
         self.pue_tier: int = 3
         self.pue_source: str = "unknown"
         self.water_l: float | None = None
+        self.water_tier: int | None = None
+        self.water_basis: str | None = None
+        self.water_boundary: str | None = None
+        self.water_accounting_kind: str | None = None
+        self.water_uncertainty_pct: float | None = None
         self.embodied_carbon_g: float | None = None
         self.cost_usd: float | None = None
         self.cost_in_usd: float | None = None
@@ -1657,6 +1901,11 @@ def prepare_inference_metrics(
     content_type_hint: str = "en",
     n_images: float = 0,
     cache_creation_1h_tokens: int | None = None,
+    wue_override: float | None = None,
+    water_provider_hint: str | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
 ) -> InferenceMetrics:
     """Compute all energy/carbon/cost metrics for a single inference call.
 
@@ -1671,6 +1920,12 @@ def prepare_inference_metrics(
         region: Electricity Maps zone ID for grid lookup.
         price_multiplier: Multiplier applied to list cost (e.g. 0.8 for discount).
         energy_override: Optional user-supplied energy values.
+        wue_override: Optional user-supplied WUE in liters per kWh.
+        water_provider_hint: Physical hosting provider when known independently
+            of the model developer.
+        wue_boundary: Boundary metadata for an explicit WUE override.
+        water_accounting_kind: Accounting metadata for an explicit WUE override.
+        wue_uncertainty_pct: Optional uncertainty for an explicit WUE override.
         cache_read_tokens: Cache-read token count for cost discount.
         cache_creation_tokens: Cache-creation token count for cost premium.
         cache_creation_1h_tokens: Subset of cache_creation_tokens written with a
@@ -1725,7 +1980,7 @@ def prepare_inference_metrics(
             elif confidence in ("curated", "proxy"):
                 source = "reused_calibration"
                 basis = f"Reused calibration from {hw} [calibration match: {confidence}]"
-                metrics.calibration_match = confidence  # type: ignore[assignment]
+                metrics.calibration_match = confidence
                 metrics.warnings.append(
                     f"Calibration match is {confidence} (not exact measured Tier 0); "
                     f"energy_source={source}."
@@ -1741,12 +1996,24 @@ def prepare_inference_metrics(
                     "do not treat as attested Tier 0."
                 )
             energy_override = {
-                "wh_per_1k_input": cal.wh_per_1k_input,
-                "wh_per_1k_output": cal.wh_per_1k_output,
                 "tier": cal.tier,
                 "source": source,
                 "basis": basis,
+                "wh_per_1k_input": cal.wh_per_1k_input,
+                "wh_per_1k_output": cal.wh_per_1k_output,
             }
+            if cal.wh_per_1k_input is None:
+                metrics.energy_axes_unattributed.append("wh_per_1k_input")
+                metrics.warnings.append(
+                    "Calibration input coefficient is unidentified; "
+                    "not attributing prefill energy on this axis"
+                )
+            if cal.wh_per_1k_output is None:
+                metrics.energy_axes_unattributed.append("wh_per_1k_output")
+                metrics.warnings.append(
+                    "Calibration output coefficient is unidentified; "
+                    "not attributing decode energy on this axis"
+                )
             if cal.wh_per_image is not None:
                 energy_override["wh_per_image"] = cal.wh_per_image
             if cal.visual_tokens_per_image is not None:
@@ -1875,6 +2142,30 @@ def prepare_inference_metrics(
                 _match=match,
             )
 
+            # A null axis on an EXPLICIT override is the same fact as a null
+            # axis on an auto-loaded calibration: that portion of the call was
+            # never priced. The auto-load branch above marks its own axes; this
+            # covers overrides the caller passed in, which previously produced
+            # a warning string and a `point` estimate with nothing machine-
+            # readable to say the figure was incomplete. The TS SDK marks both.
+            if energy_override:
+                for _axis, _label in (
+                    ("wh_per_1k_input", "prefill"),
+                    ("wh_per_1k_output", "decode"),
+                ):
+                    _value = energy_override.get(_axis)
+                    if isinstance(_value, (int, float)) and not isinstance(_value, bool):
+                        continue
+                    if _axis in metrics.energy_axes_unattributed:
+                        continue
+                    metrics.energy_axes_unattributed.append(_axis)
+                    _warning = (
+                        f"energy_override.{_axis} is null; not attributing "
+                        f"{_label} energy on this axis"
+                    )
+                    if _warning not in metrics.warnings:
+                        metrics.warnings.append(_warning)
+
             # Honest incompleteness: if the call carried non-text media but no
             # visual coefficient priced it, the energy figure covers only the
             # text portion. Flag it text_only and warn, rather than emitting a
@@ -1926,12 +2217,23 @@ def prepare_inference_metrics(
                         provider_hint=provider,
                     )
                 )
-                metrics.water_l = calculate_water(
+                water = calculate_water_with_provenance(
                     metrics.energy_wh,
                     model=model,
-                    provider_hint=provider,
+                    provider_hint=water_provider_hint,
                     region=region,
+                    wue_override=wue_override,
+                    wue_boundary=wue_boundary,
+                    water_accounting_kind=water_accounting_kind,
+                    wue_uncertainty_pct=wue_uncertainty_pct,
                 )
+                metrics.water_l = water.water_l
+                metrics.water_tier = water.tier
+                metrics.water_basis = water.basis
+                metrics.water_boundary = water.boundary
+                metrics.water_accounting_kind = water.accounting
+                metrics.water_uncertainty_pct = water.uncertainty_pct
+                metrics.warnings.extend(water.warnings)
                 metrics.embodied_carbon_g = calculate_embodied_carbon(
                     in_tokens, out_tokens, model
                 )

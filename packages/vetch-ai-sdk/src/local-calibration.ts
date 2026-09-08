@@ -1,12 +1,12 @@
 export interface LocalEnergyOverride {
-  wh_per_1k_input: number;
-  wh_per_1k_output: number;
+  wh_per_1k_input: number | null;
+  wh_per_1k_output: number | null;
   tier?: number;
   source?: string;
   basis?: string;
-  wh_per_image?: number;
+  wh_per_image?: number | null;
   visual_tokens_per_image?: number;
-  intercept_wh?: number;
+  intercept_wh?: number | null;
 }
 
 interface NodeBuiltins {
@@ -79,6 +79,18 @@ function safeFileStem(model: string): string {
   return model.replace(/:/g, "_");
 }
 
+function parseCoeff(value: unknown): number | null | undefined {
+  // Guard BEFORE Number(): Number(null) is 0 in JavaScript and would
+  // reintroduce the clamp-to-zero lie.
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 0 ? value : null;
+  }
+  return undefined;
+}
+
 function readCalibrationFile(
   builtins: NodeBuiltins,
   calibrationDir: string,
@@ -94,21 +106,35 @@ function readCalibrationFile(
     if (data.active === false) {
       return null;
     }
+    const coef = (data.coefficients && typeof data.coefficients === "object")
+      ? data.coefficients as Record<string, unknown>
+      : data;
+    const whIn = parseCoeff(coef.wh_per_1k_input);
+    const whOut = parseCoeff(coef.wh_per_1k_output);
+    if (whIn === undefined && whOut === undefined) {
+      return null;
+    }
+    if (whIn === null && whOut === null && parseCoeff(coef.wh_per_image) === null
+      && parseCoeff(coef.intercept_wh) === null) {
+      return null;
+    }
     const out: LocalEnergyOverride = {
-      wh_per_1k_input: Number(data.wh_per_1k_input),
-      wh_per_1k_output: Number(data.wh_per_1k_output),
-      tier: typeof data.tier === "number" ? data.tier : 0,
+      wh_per_1k_input: whIn === undefined ? null : whIn,
+      wh_per_1k_output: whOut === undefined ? null : whOut,
+      tier: typeof data.tier === "number" ? data.tier : (typeof coef.tier === "number" ? coef.tier : 0),
       source: "local_calibration",
-      basis: `Hardware-measured on ${String(data.gpu_name ?? "local GPU")}`,
+      basis: `Hardware-measured on ${String(data.gpu_name ?? data.gpu_raw ?? "local GPU")}`,
     };
-    if (typeof data.wh_per_image === "number") {
-      out.wh_per_image = data.wh_per_image;
+    const whImg = parseCoeff(coef.wh_per_image);
+    if (whImg !== undefined && whImg !== null) {
+      out.wh_per_image = whImg;
     }
-    if (typeof data.visual_tokens_per_image === "number") {
-      out.visual_tokens_per_image = data.visual_tokens_per_image;
+    if (typeof coef.visual_tokens_per_image === "number") {
+      out.visual_tokens_per_image = coef.visual_tokens_per_image;
     }
-    if (typeof data.intercept_wh === "number") {
-      out.intercept_wh = data.intercept_wh;
+    const intercept = parseCoeff(coef.intercept_wh);
+    if (intercept !== undefined && intercept !== null) {
+      out.intercept_wh = intercept;
     }
     return out;
   } catch {

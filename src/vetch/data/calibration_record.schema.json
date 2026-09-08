@@ -1,0 +1,546 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/prismatic-labs/vetch/blob/main/src/vetch/data/calibration_record.schema.json",
+  "title": "Vetch calibration record v2",
+  "description": "Multi-provider interchange format for hardware energy calibrations. This schema checks types and required fields only. Identifiability (per-coefficient status, design leverage) lives in `vetch validate-calibration` and must not be conflated with this file.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "identity",
+    "host",
+    "coefficients",
+    "provenance",
+    "active"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 2,
+      "description": "Integer 2. Distinct from the event schema_version string \"2\"."
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "provider",
+        "model"
+      ],
+      "additionalProperties": true,
+      "description": "Resolve identity: the inference configuration. provider is the event label (always self-hosted for local inference). Infrastructure owner belongs on host, not here.",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "gpu": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serving_engine": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "precision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "visual_token_budget": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "concurrency": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "instance_type": {
+          "description": "Deprecated on identity. Moved to host.instance_type in schema 2. Do not carry both.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "host": {
+      "type": "object",
+      "required": [
+        "infrastructure_provider",
+        "provider_kind",
+        "tenancy",
+        "gpu_form_factor"
+      ],
+      "additionalProperties": true,
+      "description": "Physical machine. Part of the storage/measurement key together with serving_config and measurement_conditions. Not part of the resolve key.",
+      "properties": {
+        "infrastructure_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider_kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "marketplace",
+            "hyperscaler",
+            "sovereign_cloud",
+            "on_premise",
+            "academic_hpc",
+            null
+          ]
+        },
+        "instance_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "site": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Operator's own region label, e.g. gra11. Not an Electricity Maps zone."
+        },
+        "grid_zone": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Electricity Maps zone identifier, e.g. FR. Reuses the SDK region vocabulary. Distinct from region."
+        },
+        "country": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_cpu": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host_cpu_cores": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "gpu_form_factor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "sxm",
+            "pcie",
+            "soc",
+            "unknown",
+            null
+          ]
+        },
+        "gpu_count_in_host": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tenancy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "dedicated_host",
+            "shared_host",
+            "unknown",
+            null
+          ],
+          "description": "No visible neighbour is not evidence of dedicated tenancy. Default unknown."
+        },
+        "facility": {
+          "$ref": "#/$defs/facility",
+          "description": "Facility values, all optional and null unless sourced with a citation. The block itself is optional too: a third party who omits it entirely is not making an error, and requiring an all-null block is adoption friction for an interchange format."
+        }
+      }
+    },
+    "measurement_conditions": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Part of the storage/measurement key. Two power caps never overwrite each other.",
+      "properties": {
+        "enforced_power_limit_w": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sm_clock_locked": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sm_clock_mhz": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "serving_config": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Engine-agnostic serving flags. Part of the measurement key. Common keys stay small; everything else goes in engine_specific and flags_raw.",
+      "properties": {
+        "engine": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engine_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefix_caching": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "speculative_decoding": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tensor_parallel_size": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "flags_raw": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "engine_specific": {
+          "type": "object"
+        }
+      }
+    },
+    "energy_basis": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "marginal": {
+          "type": "object",
+          "properties": {
+            "wh_per_1k_output": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "idle_subtracted": {
+              "type": "boolean"
+            }
+          }
+        },
+        "attributed": {
+          "type": "object",
+          "properties": {
+            "attribution_rule": {
+              "type": "string"
+            },
+            "levels": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "assumed_utilisation": {
+                    "type": "number"
+                  },
+                  "wh_per_1k_output": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "node_power": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Default available=false. Never fill node_to_board_ratio from the literature when no meter was present.",
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "board_wh": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "node_wh": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "node_to_board_ratio": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sampling_hz": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "coefficients": {
+      "type": "object",
+      "required": [
+        "wh_per_1k_input",
+        "wh_per_1k_output"
+      ],
+      "additionalProperties": true,
+      "description": "A null coefficient means do not attribute energy on this axis. It never means zero.",
+      "properties": {
+        "wh_per_1k_input": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "wh_per_1k_output": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "wh_per_image": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "visual_tokens_per_image": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "intercept_wh": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "identified",
+              "not_identified",
+              "rejected"
+            ]
+          }
+        },
+        "null_reasons": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "published_rung": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "pue_applied and grid_applied mean 'were facility values folded into the published coefficients'. Publish silicon-level coefficients and let the consumer apply the facility layer.",
+      "properties": {
+        "pue_applied": {
+          "type": "boolean"
+        },
+        "grid_applied": {
+          "type": "boolean"
+        },
+        "idle_subtracted": {
+          "type": "boolean"
+        },
+        "methodology_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "rejection_reasons": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "gpu_raw": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "timestamp": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "profile_hash": {
+      "type": "string"
+    },
+    "content_hash": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "facility": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Stays null unless sourced. Never infer PUE from a marketing page. Water reuses the SDK vocabulary (water_boundary, water_accounting_kind); do not invent a parallel WUE scope enum. Market-based grid accounting is a new pipeline, not a flag a consumer can flip on an existing event.",
+      "properties": {
+        "pue": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pue_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pue_basis": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "annualised",
+            "seasonal",
+            "instantaneous",
+            "design",
+            null
+          ]
+        },
+        "wue_l_per_kwh": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "wue_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "water_boundary": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Green Grid axis: site against source."
+        },
+        "water_accounting_kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "consumption, withdrawal, or cooling_and_humidification_water."
+        },
+        "grid_intensity_gco2_per_kwh": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "grid_intensity_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grid_accounting_convention": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "location_based_average",
+            "location_based_marginal",
+            "market_based",
+            null
+          ]
+        }
+      }
+    }
+  }
+}

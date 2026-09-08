@@ -41,14 +41,19 @@ class TestVetchEstimate:
         assert result["output_tokens"] == 500
         assert isinstance(result["energy_wh"], float)
         assert isinstance(result["carbon_g"], float)
-        assert isinstance(result["water_l"], float)
-        assert isinstance(result["water_ml"], float)
+        assert result["water_l"] is None or isinstance(result["water_l"], float)
+        assert result["water_ml"] is None or isinstance(result["water_ml"], float)
+        assert "water_tier" in result
+        assert "water_basis" in result
+        assert "water_boundary" in result
+        assert "water_accounting_kind" in result
+        assert "water_uncertainty_pct" in result
         assert isinstance(result["cost_usd"], float)
         assert result["confidence"] in ("high", "medium", "low")
         assert isinstance(result["training_context"], list)
 
     def test_water_units_are_reported_correctly(self) -> None:
-        """Estimate reports water in liters and milliliters without unit drift."""
+        """Estimate reports unpublished water as null for unsourced providers."""
         result = vetch_estimate(
             model="gpt-4o",
             input_tokens=1000,
@@ -56,15 +61,43 @@ class TestVetchEstimate:
         )
 
         assert "error" not in result
-        assert result["water_l"] > 0
-        assert result["water_ml"] == pytest.approx(result["water_l"] * 1000, rel=1e-4)
-
+        assert result["water_l"] is None
+        assert result["water_ml"] is None
+        assert result["water_tier"] is None
         expected_l = calculate_water(
             energy_wh=result["energy_wh"],
             model="gpt-4o",
             region="us-east-1",
         )
-        assert result["water_l"] == pytest.approx(expected_l, abs=1e-8)
+        assert expected_l is None
+
+    def test_sourced_provider_water_units(self) -> None:
+        """Gemini (Google fleet WUE) reports liters and milliliters without unit drift."""
+        result = vetch_estimate(
+            model="gemini-2.5-pro",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        assert "error" not in result
+        assert isinstance(result["water_l"], float)
+        assert result["water_l"] > 0
+        assert result["water_ml"] == pytest.approx(result["water_l"] * 1000, rel=1e-4)
+        assert result["water_tier"] == 3
+        assert isinstance(result["water_basis"], str) and result["water_basis"]
+        assert result["water_accounting_kind"] == "consumption"
+
+    def test_provider_hint_reaches_aws_regional_wue(self) -> None:
+        result = vetch_estimate(
+            model="gpt-4o",
+            input_tokens=1000,
+            output_tokens=500,
+            provider_hint="bedrock",
+            region="us-east-1",
+        )
+
+        assert result["water_l"] is not None
+        assert result["water_tier"] == 1
+        assert result["water_accounting_kind"] == "withdrawal"
 
     def test_cost_breakdown(self) -> None:
         """Estimate includes cost breakdown."""
@@ -136,6 +169,28 @@ class TestVetchCompare:
             sort_by="carbon_g",
         )
         assert result["sort_by"] == "carbon_g"
+
+    def test_mixed_water_definitions_are_not_ranked(self) -> None:
+        result = vetch_compare(
+            models=["gpt-4o", "gemini-2.5-pro"],
+            input_tokens=100,
+            output_tokens=50,
+            region="us-east-1",
+            sort_by="water_l",
+            provider_hints={
+                "gpt-4o": "bedrock",
+                "gemini-2.5-pro": "google",
+            },
+        )
+
+        assert result["water_comparable"] is False
+        assert result["comparison_warning"]
+        assert result["sort_by"] is None
+        assert result["requested_sort_by"] == "water_l"
+        assert [row["model"] for row in result["comparisons"]] == [
+            "gpt-4o",
+            "gemini-2.5-pro",
+        ]
 
 
 class TestVetchSessionStats:

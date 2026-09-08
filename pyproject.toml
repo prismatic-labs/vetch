@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vetch"
-version = "0.11.1"
+version = "0.12.0"
 description = "Inference waste control for production LLM systems. Detect stalled agents, RAG bloat, and runaway inference, then stop them automatically."
 readme = "README.md"
 license = "Apache-2.0"
@@ -48,7 +48,12 @@ vertexai = ["google-cloud-aiplatform>=1.0"]
 genai = ["google-genai>=0.1.0"]  # Google GenAI SDK
 ollama = ["ollama>=0.1"]
 tiktoken = ["tiktoken>=0.5.0"]  # Accurate token counting for OpenAI models
-calibrate = ["nvidia-ml-py3"]  # Hardware power sensing for NVIDIA GPUs
+# nvidia-ml-py is the maintained NVML binding. The similarly named
+# nvidia-ml-py3 is an abandoned 2019 fork that ships the same `pynvml`
+# module name without nvmlDeviceGetTotalEnergyConsumption, so installing it
+# shadows a good binding and silently downgrades every CUDA calibration to
+# the coarser power-sampling path.
+calibrate = ["nvidia-ml-py>=12.0", "numpy>=1.24"]  # Hardware sensing + identifiability
 apple-silicon = ["numpy>=1.24"]  # Apple Silicon energy calibration via powermetrics
 otel = [  # OpenTelemetry OTLP export
     "opentelemetry-sdk>=1.0",
@@ -63,6 +68,7 @@ test = [
     "hypothesis>=6.0",
     "tiktoken>=0.5.0",  # For token estimation tests
     "opentelemetry-api>=1.0",  # For OpenTelemetry integration tests
+    "numpy>=1.24",  # Nested-model calibration identifiability
 ]
 dev = [
     "ruff>=0.1.0",
@@ -131,13 +137,16 @@ module = [
     "fastapi.*",
     "mcp",
     "mcp.*",
-    "numpy",
-    "numpy.*",
     "ollama",
     "pynvml",
     "pynvml.*",
 ]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.bandit]
 exclude_dirs = ["tests"]

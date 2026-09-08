@@ -4,7 +4,7 @@ This module provides tools to measure actual power draw during inference
 to improve upon Tier 3 (Proxy) estimates.
 
 Supports:
-- NVIDIA GPUs via pynvml (pip install nvidia-ml-py3)
+- NVIDIA GPUs via pynvml (pip install nvidia-ml-py)
 - Apple Silicon via powermetrics (vetch.calibrate_metal; requires sudo)
 """
 
@@ -32,7 +32,7 @@ def _warn_experimental() -> None:
         _EXPERIMENTAL_WARNING_ISSUED = True
         warnings.warn(
             "vetch.calibrate is experimental. API may change. "
-            "NVIDIA path requires: pip install nvidia-ml-py3",
+            "NVIDIA path requires: pip install nvidia-ml-py",
             FutureWarning,
             stacklevel=3,
         )
@@ -47,8 +47,8 @@ class CalibrationResult:
 
     model: str
     provider: str
-    wh_per_1k_input: float
-    wh_per_1k_output: float
+    wh_per_1k_input: float | None
+    wh_per_1k_output: float | None
     tier: int
     samples: int
     gpu_name: str | None = None
@@ -91,7 +91,7 @@ def get_gpu_error() -> str:
         pynvml.nvmlInit()
         return "Unknown error"
     except ImportError:
-        return "pynvml not installed (pip install nvidia-ml-py3)"
+        return "pynvml not installed (pip install nvidia-ml-py)"
     except Exception as e:
         return str(e)
 
@@ -140,11 +140,33 @@ class GPUMonitor:
         or driver does not support the counter (fall back to power integration).
         """
         import pynvml
+        if not hasattr(pynvml, "nvmlDeviceGetTotalEnergyConsumption"):
+            # The BINDING lacks the call, so the hardware was never asked. Two
+            # packages publish a module named `pynvml`: nvidia-ml-py, which is
+            # maintained, and nvidia-ml-py3, an abandoned 2019 fork without this
+            # function. Whichever installs last wins, so a working environment
+            # can be silently downgraded by an unrelated dependency.
+            self._counter_unavailable_reason = (
+                "the installed pynvml has no nvmlDeviceGetTotalEnergyConsumption. "
+                "This is a packaging problem, not a hardware limit: run "
+                "`pip uninstall nvidia-ml-py3 && pip install -U nvidia-ml-py`. "
+                "Without it, energy is integrated from power samples, which is "
+                "coarser and applies a 2s minimum duration to every run"
+            )
+            return None
         try:
             return float(pynvml.nvmlDeviceGetTotalEnergyConsumption(self._handle))
         except Exception:
             # NVML_ERROR_NOT_SUPPORTED on older GPUs / virtualized passthrough.
+            self._counter_unavailable_reason = (
+                "the driver or device does not support the total-energy counter "
+                "(expected below Volta, and on some virtualized passthrough)"
+            )
             return None
+
+    def counter_unavailable_reason(self) -> str | None:
+        """Why the energy counter is unavailable, or None if it is available."""
+        return getattr(self, "_counter_unavailable_reason", None)
 
     def energy_counter_available(self) -> bool:
         """True if the device exposes the total-energy counter."""
@@ -193,6 +215,21 @@ class GPUMonitor:
                 pynvml.nvmlDeviceGetApplicationsClock, pynvml.NVML_CLOCK_SM
             ),
         }
+
+    def get_utilization_pct(self) -> int | None:
+        """GPU busy percentage, or None if unknown.
+
+        The decisive contention signal. A container cannot see a co-tenant's
+        PIDs, so compute_process_count reports 1 while a neighbour saturates the
+        card; utilization is measured on the device itself and does not care who
+        owns the work. Observed on a rented H100: process count 1, utilization
+        100%, board power at the 700 W cap while our own server was stopped.
+        """
+        import pynvml
+        try:
+            return int(pynvml.nvmlDeviceGetUtilizationRates(self._handle).gpu)
+        except Exception:
+            return None
 
     def compute_process_count(self) -> int | None:
         """Count of compute processes running on this device, or None if unknown.
@@ -421,11 +458,13 @@ def _load_calibration_file(provider: str, model: str) -> CalibrationResult | Non
         return None
     try:
         data = json.loads(path.read_text())
+        wh_in = data.get("wh_per_1k_input")
+        wh_out = data.get("wh_per_1k_output")
         return CalibrationResult(
             model=model,
             provider=provider,
-            wh_per_1k_input=float(data["wh_per_1k_input"]),
-            wh_per_1k_output=float(data["wh_per_1k_output"]),
+            wh_per_1k_input=None if wh_in is None else float(wh_in),
+            wh_per_1k_output=None if wh_out is None else float(wh_out),
             tier=int(data.get("tier", 0)),
             samples=int(data.get("samples", 0)),
             gpu_name=data.get("gpu_name"),
@@ -461,12 +500,14 @@ def load_calibration(
 
 def format_calibration_result(res: CalibrationResult) -> str:
     hw = res.gpu_name or "Apple Silicon"
+    wh_in = "null" if res.wh_per_1k_input is None else f"{res.wh_per_1k_input:.4f}"
+    wh_out = "null" if res.wh_per_1k_output is None else f"{res.wh_per_1k_output:.4f}"
     lines = [
         f"Calibration Complete for {res.model} ({res.provider})",
         f"Hardware: {hw}",
         "----------------------------------------",
-        f"Energy (Input):  {res.wh_per_1k_input:.4f} Wh/1k tokens",
-        f"Energy (Output): {res.wh_per_1k_output:.4f} Wh/1k tokens",
+        f"Energy (Input):  {wh_in} Wh/1k tokens",
+        f"Energy (Output): {wh_out} Wh/1k tokens",
     ]
     if res.wh_per_image is not None:
         lines.append(f"Energy (Image):  {res.wh_per_image:.6f} Wh/image")

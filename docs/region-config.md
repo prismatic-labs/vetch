@@ -1,8 +1,8 @@
 # Region configuration
 
-The `region` you pass to Vetch selects the electricity grid used for carbon intensity. Energy is a property of the model and the tokens; carbon is energy multiplied by how dirty the grid was at that moment. Get the region wrong and the energy figure stays fine while the carbon figure drifts by a large factor, because grid intensity ranges from roughly 30 gCO2e/kWh (hydro, nuclear) to over 700 (coal-heavy).
+The `region` you pass to Vetch selects the electricity grid used for carbon intensity, and whether a water figure can be produced at all. Energy is a property of the model and the tokens; carbon is energy multiplied by how dirty the grid was at that moment. Water uses the same region string to look up a sourced WUE; without a matching `{provider}-{region}` or provider fleet key, `estimated_water_l` is `null`. Get the region wrong and the energy figure stays fine while the carbon figure drifts by a large factor, because grid intensity ranges from roughly 30 gCO2e/kWh (hydro, nuclear) to over 700 (coal-heavy).
 
-Region only affects carbon and water. Cost and energy are region-independent.
+Region determines carbon intensity and whether water is available. Cost and energy are region-independent.
 
 ## What a region string should be
 

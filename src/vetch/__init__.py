@@ -38,6 +38,10 @@ _DISABLED = _disabled_env or not _enabled_env
 _default_region: str | None = None  # Default region set via instrument()
 _default_tags: dict[str, str] | None = None  # Default tags set via instrument()
 _default_energy_override: dict[str, object] | None = None  # Default calibration override
+_default_wue_override: float | None = None  # Default WUE set via instrument()
+_default_wue_boundary: str | None = None
+_default_water_accounting_kind: str | None = None
+_default_wue_uncertainty_pct: float | None = None
 _default_provider_hint: str | None = None  # Default provider override set via instrument()
 # Only print kill-switch message if VETCH_VERBOSE=true (opt-in for debugging)
 if _DISABLED and os.environ.get("VETCH_VERBOSE", "").lower() in ("true", "1", "yes"):
@@ -54,7 +58,7 @@ try:
     from importlib.metadata import version as _pkg_version
     __version__ = _pkg_version("vetch")
 except _PNFError:
-    __version__ = "0.11.1"  # fallback when running from source; keep in sync with pyproject.toml
+    __version__ = "0.12.0"  # fallback when running from source; keep in sync with pyproject.toml
 __all__ = [
     "wrap",
     "awrap",
@@ -229,6 +233,21 @@ def get_default_energy_override() -> dict[str, object] | None:
     return _default_energy_override
 
 
+def get_default_wue_override() -> float | None:
+    """Get the default WUE override set by ``instrument()``."""
+    global _default_wue_override
+    return _default_wue_override
+
+
+def get_default_wue_metadata() -> tuple[str | None, str | None, float | None]:
+    """Get boundary, accounting kind, and uncertainty for the default WUE."""
+    return (
+        _default_wue_boundary,
+        _default_water_accounting_kind,
+        _default_wue_uncertainty_pct,
+    )
+
+
 def get_default_provider_hint() -> str | None:
     """Get the default provider override set by ``instrument()``.
 
@@ -247,6 +266,10 @@ def instrument(
     tags: dict[str, str] | None = None,
     energy_override: dict[str, object] | None = None,
     provider_hint: str | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
 ) -> bool:
     """Auto-instrument all detected LLM SDK clients.
 
@@ -264,6 +287,10 @@ def instrument(
         region: Default grid region for carbon calculation.
         tags: Default tags to add to all events.
         energy_override: Default energy values for auto-instrumented calls.
+        wue_override: Default facility WUE in liters per kWh.
+        wue_boundary: Boundary for the default WUE override.
+        water_accounting_kind: Accounting definition for the default WUE.
+        wue_uncertainty_pct: Optional uncertainty for the default WUE.
         provider_hint: Default provider override applied to auto-instrumented
             calls (e.g. "self-hosted" to pin a whole deployment).
 
@@ -293,6 +320,9 @@ def instrument(
         - Set VETCH_DISABLED=true or VETCH_ENABLED=false to disable
     """
     global _instrumented, _default_region, _default_tags, _default_energy_override
+    global _default_wue_override
+    global _default_wue_boundary, _default_water_accounting_kind
+    global _default_wue_uncertainty_pct
     global _default_provider_hint
 
     if _DISABLED:
@@ -309,6 +339,11 @@ def instrument(
             add_global_tags(tags)
         if energy_override is not None:
             _default_energy_override = energy_override
+        if wue_override is not None:
+            _default_wue_override = wue_override
+            _default_wue_boundary = wue_boundary
+            _default_water_accounting_kind = water_accounting_kind
+            _default_wue_uncertainty_pct = wue_uncertainty_pct
         if provider_hint is not None:
             _default_provider_hint = provider_hint
 
@@ -701,6 +736,10 @@ def wrap(
     price_multiplier: float = 1.0,
     emit: bool = True,
     provider_hint: str | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
 ) -> VetchContext:
     """Context manager for tracking LLM inference energy and carbon.
 
@@ -714,6 +753,10 @@ def wrap(
             - wh_per_1k_output (float, required)
             - tier (int 1-3, optional)
             - source (str, optional)
+        wue_override: Facility WUE in liters per kWh.
+        wue_boundary: Boundary for ``wue_override``.
+        water_accounting_kind: Accounting definition for ``wue_override``.
+        wue_uncertainty_pct: Optional uncertainty for ``wue_override``.
         price_multiplier: Factor to adjust list pricing (e.g. 0.8 for 20% discount).
         emit: If True (default), emit JSON to configured output. Set False for
             quiet mode (metrics still available in ctx.event).
@@ -743,12 +786,20 @@ def wrap(
     if _DISABLED:
         return VetchContext(
             region=region, tags=tags, energy_override=energy_override,
+            wue_override=wue_override,
+            wue_boundary=wue_boundary,
+            water_accounting_kind=water_accounting_kind,
+            wue_uncertainty_pct=wue_uncertainty_pct,
             price_multiplier=price_multiplier, emit=emit,
             provider_hint=provider_hint, _disabled=True,
         )
 
     return VetchContext(
         region=region, tags=tags, energy_override=energy_override,
+        wue_override=wue_override,
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
         price_multiplier=price_multiplier, emit=emit, provider_hint=provider_hint,
     )
 
@@ -760,6 +811,10 @@ def awrap(
     price_multiplier: float = 1.0,
     emit: bool = True,
     provider_hint: str | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
 ) -> AsyncContextManager[VetchContext]:
     """Async context manager for tracking LLM inference energy and carbon.
 
@@ -770,6 +825,10 @@ def awrap(
         region: Grid region for carbon calculation.
         tags: Key-value pairs for cost attribution.
         energy_override: User-provided energy values.
+        wue_override: Facility WUE in liters per kWh.
+        wue_boundary: Boundary for ``wue_override``.
+        water_accounting_kind: Accounting definition for ``wue_override``.
+        wue_uncertainty_pct: Optional uncertainty for ``wue_override``.
         price_multiplier: Factor to adjust list pricing (e.g. 0.8 for 20% discount).
         emit: If True (default), emit JSON to configured output.
         provider_hint: Explicit provider override (e.g. "self-hosted"). Overrides
@@ -794,6 +853,10 @@ def awrap(
         region=region,
         tags=tags,
         energy_override=energy_override,
+        wue_override=wue_override,
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
         price_multiplier=price_multiplier,
         emit=emit,
         provider_hint=provider_hint,

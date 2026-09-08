@@ -59,11 +59,15 @@ def lookup_community_calibration(provider: str, model: str) -> CalibrationResult
         if chip_family and rec_family and rec_family != chip_family:
             continue
         try:
+            wh_in = record.get("wh_per_1k_input")
+            wh_out = record.get("wh_per_1k_output")
+            if wh_in is None and wh_out is None:
+                continue
             return CalibrationResult(
                 model=model,
                 provider=provider,
-                wh_per_1k_input=float(record["wh_per_1k_input"]),
-                wh_per_1k_output=float(record["wh_per_1k_output"]),
+                wh_per_1k_input=None if wh_in is None else float(wh_in),
+                wh_per_1k_output=None if wh_out is None else float(wh_out),
                 tier=0,
                 samples=int(record.get("samples") or 0),
                 gpu_name=(

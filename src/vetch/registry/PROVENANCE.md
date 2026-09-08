@@ -180,6 +180,40 @@ inferred/Tier 3 by necessity.
 
 **Confidence:** Medium for major hosted model families; unmapped SKUs remain false negatives (documented).
 
+## WUE registry (`wue.json`)
+
+Water Usage Effectiveness lives in `wue.json` with `tier`, `basis`, `boundary`, and `accounting` provenance. The registry carries no uncertainty band: publishers report a WUE, not a band around it, and `tier` already orders confidence honestly. A band is returned only when a caller supplies one with `wue_override`. There is no unsourced default. A missing key produces `None`.
+
+Sourcing worksheet: `docs/water-sourcing-worksheet.md`. Every surviving value has a publisher, document, year, URL, and section in `basis`.
+
+### Tiers
+
+| Tier | Meaning | What is allowed |
+|---|---|---|
+| 1 | Publisher-reported WUE for that specific facility or AWS region | The number in the publisher's per-region table |
+| 2 | Derived from published water volume and energy for that facility | Both inputs cited; arithmetic in `basis`. Unused in the current registry — Google publishes campus water but not aligned campus IT energy |
+| 3 | Publisher fleet, geography, or continental average, including that average applied to a named region | The average is published; applying it to a region is flagged in `basis` |
+
+There is no tier for an estimate. `openai` and `anthropic` are absent: neither publishes a facility WUE.
+
+### Boundary
+
+All entries set `boundary: "onsite"`. The `accounting` field preserves why they are still **not comparable across publishers**:
+
+- AWS: withdrawal (liters withdrawn per kWh of IT load)
+- Google: ISO WUE Category 2, consumptive (input minus returned)
+- Microsoft: site water used for humidification and cooling / IT kWh
+
+Source-boundary WUE (on-site plus water consumed generating electricity) is not in this registry. Mixing it with site WUE would produce cross-provider comparisons that no uncertainty band can salvage.
+
+### Lookup
+
+`calculate_water()` resolves, in order: explicit `wue_override` → `{provider}-{region}` → provider-level key if that provider publishes a fleet WUE → `None`. `bedrock` and `vertexai` are canonicalized to their physical operators before regional lookup.
+
+`vertexai` aliases Google's published fleet figure (Vertex AI runs on Google Cloud). `bedrock` aliases AWS's published fleet figure. Neither is an independent disclosure.
+
+Model-developer names are not hosting evidence for open-weight models. Gemma, Llama, Mixtral, and similar families do not select a WUE without a known serving provider.
+
 ## References
 
 *   Pope, R. et al. (2022). "Efficiently Scaling Transformer Inference." MLSys 2023. arXiv:2211.05102
@@ -190,3 +224,7 @@ inferred/Tier 3 by necessity.
 *   Samsi, S. et al. (2023). "From Words to Watts: Benchmarking the Energy Costs of Large Language Model Inference." arXiv:2310.03003 (direct GPU power measurement, open models)
 *   Chung, J.-W. et al. (2025). "The ML.ENERGY Benchmark: Toward Automated Inference Energy Measurement and Optimization." arXiv:2505.06371 (open data + Zeus toolkit; direct power metering of open-weight models)
 *   TokenPowerBench (2025). "Benchmarking the Power Consumption of LLM Inference." arXiv:2512.03024
+*   Patterson, M. et al. (2011). "Water Usage Effectiveness (WUE™): A Green Grid Data Center Sustainability Metric." The Green Grid WP#35.
+*   Google (2025). "Measuring the environmental impact of delivering AI at Google Scale." arXiv:2508.15734. ISO WUE Category 2 = 1.15 L/kWh (2023 and 2024).
+*   Microsoft (FY25). "Measuring energy and water efficiency for Microsoft datacenters." https://datacenters.microsoft.com/sustainability/efficiency/
+*   Amazon Web Services (2025). AWS Cloud sustainability, PUE and WUE tables. https://sustainability.aboutamazon.com/products-services/aws-cloud

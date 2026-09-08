@@ -12,6 +12,8 @@ These tests verify:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from vetch.calculation import (
@@ -258,40 +260,212 @@ class TestTokenEstimationWithTiktoken:
 
 
 class TestWaterCalculation:
-    """Test water consumption calculations for scientific completeness."""
+    """Provenance-gated water: sourced WUE or None, never a default guess."""
 
-    def test_calculate_water_for_standard_inference(self) -> None:
-        """Water calculation returns reasonable values for standard inference."""
-        from vetch.calculation import calculate_water
+    def test_unsourced_provider_returns_none(self) -> None:
+        from vetch.calculation import calculate_water, calculate_water_with_provenance
 
-        # Standard 1Wh inference should use about 1.7mL water for OpenAI's
-        # provider-level WUE fallback (1.7 L/kWh).
-        water_liters = calculate_water(
-            energy_wh=1.0,
-            model="gpt-4o",
-            provider_hint="openai",
-            region="us-east-1",
+        for provider in ("openai", "anthropic"):
+            water_l = calculate_water(
+                energy_wh=1.0,
+                model="gpt-4o" if provider == "openai" else "claude-3.7-sonnet",
+                provider_hint=provider,
+            )
+            assert water_l is None
+            details = calculate_water_with_provenance(
+                energy_wh=1.0,
+                model="gpt-4o" if provider == "openai" else "claude-3.7-sonnet",
+                provider_hint=provider,
+            )
+            assert details.tier is None
+            assert details.basis is None
+
+    def test_sourced_region_matches_registry(self) -> None:
+        from vetch.calculation import (
+            _load_wue_registry,
+            calculate_water_with_provenance,
         )
 
-        # Water usage should be positive and in a reasonable per-Wh range.
-        assert water_liters > 0.0
-        assert 0.0005 < water_liters < 0.005
+        registry = _load_wue_registry()
+        entry = registry["aws-us-east-1"]
+        water = calculate_water_with_provenance(
+            energy_wh=1000.0,
+            provider_hint="aws",
+            region="us-east-1",
+        )
+        assert water.water_l == pytest.approx(entry["value"])
+        assert water.tier == entry["tier"]
+        assert water.basis == entry["basis"]
+        assert water.accounting == "withdrawal"
+
+    def test_wue_override_always_returns_value(self) -> None:
+        from vetch.calculation import calculate_water_with_provenance
+
+        water = calculate_water_with_provenance(
+            energy_wh=1000.0,
+            model="gpt-4o",
+            provider_hint="openai",
+            wue_override=2.0,
+            wue_boundary="onsite",
+            water_accounting_kind="consumption",
+            wue_uncertainty_pct=20,
+        )
+        assert water.water_l == pytest.approx(2.0)
+        assert water.tier == 1
+        assert water.basis == "explicit override"
+        assert water.boundary == "onsite"
+        assert water.accounting == "consumption"
+        assert water.uncertainty_pct == 20
+
+    def test_unclassified_override_is_not_given_invented_semantics(self) -> None:
+        from vetch.calculation import calculate_water_with_provenance
+
+        water = calculate_water_with_provenance(
+            energy_wh=1000.0,
+            wue_override=2.0,
+        )
+
+        assert water.water_l == pytest.approx(2.0)
+        assert water.boundary is None
+        assert water.accounting is None
+        assert any("definition is incomplete" in warning for warning in water.warnings)
+
+    def test_override_does_not_require_registry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import vetch.calculation as calc
+
+        monkeypatch.setattr(calc, "_REGISTRY_DIR", tmp_path)
+        monkeypatch.setattr(calc, "_WUE_REGISTRY", None)
+        monkeypatch.setattr(calc, "_WUE_REGISTRY_WARNINGS", ())
+
+        water = calc.calculate_water_with_provenance(
+            energy_wh=1000.0,
+            wue_override=0.5,
+            wue_boundary="onsite",
+            water_accounting_kind="consumption",
+        )
+
+        assert water.water_l == pytest.approx(0.5)
+        assert not any("registry unavailable" in warning for warning in water.warnings)
 
     def test_water_scales_with_energy(self) -> None:
-        """Water consumption scales linearly with energy."""
+        """Water consumption scales linearly with energy when WUE is sourced."""
         from vetch.calculation import calculate_water
 
         water_1wh = calculate_water(
-            energy_wh=1.0, model="gpt-4", provider_hint="openai", region="us-west-2"
+            energy_wh=1.0, provider_hint="aws", region="us-west-2"
         )
-
         water_10wh = calculate_water(
-            energy_wh=10.0, model="gpt-4", provider_hint="openai", region="us-west-2"
+            energy_wh=10.0, provider_hint="aws", region="us-west-2"
+        )
+        assert water_1wh is not None
+        assert water_10wh is not None
+        ratio = water_10wh / water_1wh
+        assert 8.0 < ratio < 12.0
+
+    def test_google_fleet_without_region(self) -> None:
+        from vetch.calculation import _load_wue_registry, calculate_water_with_provenance
+
+        registry = _load_wue_registry()
+        water = calculate_water_with_provenance(
+            energy_wh=1000.0, model="gemini-2.5-pro"
+        )
+        assert water.water_l == pytest.approx(registry["google"]["value"])
+        assert water.tier == 3
+
+    @pytest.mark.parametrize("model", ["llama-3.1-70b", "gemma-3-27b", "mixtral-8x7b"])
+    def test_open_weight_model_does_not_imply_host(self, model: str) -> None:
+        from vetch.calculation import calculate_water
+
+        assert calculate_water(1000.0, model=model) is None
+
+    @pytest.mark.parametrize("provider", ["bedrock", "amazon-bedrock"])
+    def test_bedrock_alias_uses_aws_region(self, provider: str) -> None:
+        from vetch.calculation import calculate_water
+
+        assert calculate_water(
+            1000.0,
+            provider_hint=provider,
+            region="us-east-1",
+        ) == pytest.approx(0.06)
+
+    def test_registry_failure_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import vetch.calculation as calc
+
+        monkeypatch.setattr(calc, "_REGISTRY_DIR", tmp_path)
+        monkeypatch.setattr(calc, "_WUE_REGISTRY", None)
+        monkeypatch.setattr(calc, "_WUE_REGISTRY_WARNINGS", ())
+
+        water = calc.calculate_water_with_provenance(
+            1000.0,
+            provider_hint="google",
         )
 
-        # Should scale approximately linearly
-        ratio = water_10wh / water_1wh
-        assert 8.0 < ratio < 12.0  # Allow some variance for region differences
+        assert water.water_l is None
+        assert any("registry unavailable" in warning for warning in water.warnings)
+
+
+class TestWueRegistry:
+    """Every registry entry must be sourced; no unsourced defaults."""
+
+    def test_entries_have_required_fields(self) -> None:
+        from vetch.calculation import _load_wue_registry
+
+        registry = _load_wue_registry()
+        assert registry, "wue.json produced an empty registry"
+        required = {
+            "value",
+            "tier",
+            "boundary",
+            "accounting",
+            "basis",
+        }
+        for key, entry in registry.items():
+            missing = required - set(entry)
+            assert not missing, f"{key} missing {missing}"
+            assert isinstance(entry["value"], float)
+            assert entry["tier"] in (1, 2, 3)
+            assert entry["boundary"] in ("onsite", "source")
+            assert entry["accounting"] in {
+                "consumption",
+                "withdrawal",
+                "cooling_and_humidification_water",
+            }
+            assert isinstance(entry["basis"], str) and entry["basis"].strip()
+            assert "http" in entry["basis"].lower()
+            # The registry carries no uncertainty band. Publishers report a WUE,
+            # not a band around it; a field that is null on every row reads as an
+            # unanswered question and invites someone to fill it with a guess.
+            assert "uncertainty_pct" not in entry
+
+    def test_tier_fields_are_consistent(self) -> None:
+        from vetch.calculation import _load_wue_registry
+
+        registry = _load_wue_registry()
+        for key, entry in registry.items():
+            if entry["tier"] == 1:
+                assert "published directly" in entry["basis"].lower(), key
+            if entry["tier"] == 2:
+                assert "derived" in entry["basis"].lower(), key
+            if entry["tier"] == 3:
+                basis_l = entry["basis"].lower()
+                assert "average" in basis_l or "applied" in basis_l, key
+
+    def test_no_openai_or_anthropic_keys(self) -> None:
+        from vetch.calculation import _load_wue_registry
+
+        registry = _load_wue_registry()
+        assert "openai" not in registry
+        assert "anthropic" not in registry
+
+    def test_default_wue_removed(self) -> None:
+        import vetch.calculation as calc
+
+        assert not hasattr(calc, "DEFAULT_WUE")
+        assert not hasattr(calc, "PROVIDER_WUE")
 
 
 class TestEmbodiedCarbonCalculation:
@@ -352,15 +526,15 @@ class TestEmbodiedCarbonCalculation:
             input_tokens=input_tokens, output_tokens=output_tokens, model=model
         )
 
-        # Water usage (cooling)
+        # Water usage (cooling) — unsourced providers return None
         water_liters = calculate_water(
             energy_wh=energy_wh, model=model, provider_hint=provider, region="us-east-1"
         )
 
-        # All components should contribute to full assessment
+        # Operational and embodied carbon still contribute; water may be unpublished
         assert operational_gco2e > 0
         assert embodied_gco2e > 0
-        assert water_liters > 0
+        assert water_liters is None
 
         # Total carbon = operational + embodied
         total_gco2e = operational_gco2e + embodied_gco2e
@@ -797,3 +971,45 @@ class TestV024CacheEnergyDiscount:
         )
         assert metrics.cache_energy_saving_wh is None
 
+
+
+class TestPartialOverrideIsALowerBound:
+    """A null axis on an explicit override is the same fact as one on a
+    calibration: that part of the call was never priced.
+
+    Previously only the auto-loaded calibration branch marked the axis, so an
+    explicit partial override produced a `point` estimate with a warning string
+    and nothing machine-readable. The TS SDK marked both.
+    """
+
+    @staticmethod
+    def _metrics(override: dict) -> object:
+        from vetch.calculation import prepare_inference_metrics
+
+        return prepare_inference_metrics(
+            model="gpt-4o", provider="openai",
+            usage={"text": {"input_tokens": 1000, "output_tokens": 500}},
+            accumulated_chars=0, region=None, price_multiplier=1.0,
+            energy_override=override, cache_read_tokens=None,
+            cache_creation_tokens=None, existing_warnings=[],
+            accumulated_tik_tokens=0, content_type_hint="en",
+        )
+
+    def test_null_input_axis_is_marked(self) -> None:
+        m = self._metrics({"wh_per_1k_input": None, "wh_per_1k_output": 0.5})
+        assert m.energy_axes_unattributed == ["wh_per_1k_input"]  # type: ignore[attr-defined]
+        assert any(
+            "wh_per_1k_input is null" in w for w in m.warnings  # type: ignore[attr-defined]
+        )
+
+    def test_null_output_axis_is_marked(self) -> None:
+        m = self._metrics({"wh_per_1k_input": 0.004, "wh_per_1k_output": None})
+        assert m.energy_axes_unattributed == ["wh_per_1k_output"]  # type: ignore[attr-defined]
+
+    def test_omitted_axis_is_marked(self) -> None:
+        m = self._metrics({"wh_per_1k_output": 0.5})
+        assert m.energy_axes_unattributed == ["wh_per_1k_input"]  # type: ignore[attr-defined]
+
+    def test_complete_override_marks_nothing(self) -> None:
+        m = self._metrics({"wh_per_1k_input": 0.004, "wh_per_1k_output": 0.5})
+        assert m.energy_axes_unattributed == []  # type: ignore[attr-defined]

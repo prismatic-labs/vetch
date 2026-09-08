@@ -1,8 +1,8 @@
 """NVIDIA GPU VLM energy calibration (Tier 0).
 
-The CUDA counterpart to :mod:`vetch.calibrate_metal`. It runs the same symmetric
-``(n_images, text_tokens, output_tokens)`` grid and the same 4-parameter
-least-squares fit, but measures energy with NVML instead of powermetrics:
+The CUDA counterpart to :mod:`vetch.calibrate_metal`. It measures energy with
+NVML and fits nested models under protocol v2 (see
+``docs/calibration-protocol-v2.md``):
 
 - Primary: ``nvmlDeviceGetTotalEnergyConsumption`` — a monotonic hardware energy
   counter (Volta+). Read before/after each run for exact per-run energy, no
@@ -10,31 +10,30 @@ least-squares fit, but measures energy with NVML instead of powermetrics:
 - Fallback: integrate ``nvmlDeviceGetPowerUsage`` samples over the run window
   when the counter is unavailable (older GPUs / some virtualized passthrough).
 
-Output is a :class:`vetch.calibrate.CalibrationResult` carrying ``wh_per_image``,
-``visual_tokens_per_image``, and ``intercept_wh`` — the exact fields the energy
-override path already consumes, so a saved calibration is auto-loaded by
-``calculate_energy`` with no further wiring.
+Output is a :class:`vetch.calibrate.CalibrationResult`. Unidentified axes are
+null, never zero. A saved calibration is auto-loaded by ``calculate_energy``.
 
-The grid, fit, Ollama driver, image generation, and image-token probe are
-imported from :mod:`vetch.calibrate_metal` so the two hardware paths stay in
-lockstep; only energy measurement and the environment preflight differ here.
+The Ollama driver, image generation, and image-token probe are imported from
+:mod:`vetch.calibrate_metal`. Nested identifiability lives in
+:mod:`vetch.calibrate_v2` (calibration extra; not imported from
+``vetch.calculation``).
 """
 
 from __future__ import annotations
 
+import statistics
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from vetch.calibrate import CalibrationResult, GPUMonitor
 from vetch.calibrate_metal import (
     CALIBRATION_IMAGE_SET_SYNTHETIC,
     CALIBRATION_IMAGE_SIZE_PX,
-    FitResult,
-    _build_grid,
+    _build_legacy_grid,
     _check_ollama,
-    _fit,
     _get_visual_tokens_per_image,
     _load_image_set,
     _ollama_generate,
@@ -43,6 +42,7 @@ from vetch.calibrate_metal import (
     _unique_prompt,
     _warmup_image_b64,
     grid_design_id,
+    legacy_grid_design_id,
 )
 from vetch.calibration_store import (
     GPU_BOARD_EXCLUDES,
@@ -50,6 +50,10 @@ from vetch.calibration_store import (
     CalibrationIdentity,
     canonical_gpu,
     commit_calibration,
+    default_host,
+    default_measurement_conditions,
+    default_serving_config,
+    infer_gpu_form_factor,
     is_cloud_provider,
     measurement_provenance_core,
 )
@@ -136,6 +140,32 @@ def _check_openai_server(base_url: str) -> str:
     return f"openai-compatible ({listed})"
 
 
+def server_max_model_len(base_url: str) -> int | None:
+    """Context window the server will accept, or None if it does not say.
+
+    A prefill point whose prompt plus completion exceeds this is rejected
+    outright, costing a design point. That is worst at the long end, which is
+    exactly where the prefill arm gets its span.
+    """
+    import json as _json
+    from urllib import request as _req
+    from urllib.error import URLError
+
+    try:
+        with _req.urlopen(base_url.rstrip("/") + "/models", timeout=5) as resp:
+            data = _json.loads(resp.read())
+    except (URLError, OSError, ValueError):
+        return None
+    for entry in data.get("data", []):
+        if not isinstance(entry, dict):
+            continue
+        for key in ("max_model_len", "max_context_length", "context_length"):
+            value = entry.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+    return None
+
+
 def _openai_compat_generate(
     base_url: str,
     model: str,
@@ -146,6 +176,7 @@ def _openai_compat_generate(
     min_tokens: int | None = None,
     ignore_eos: bool = False,
     modality: str = "image",
+    pin_serving_path: bool = False,
 ) -> tuple[int, int]:
     """One OpenAI-compatible ``/chat/completions`` call (vLLM, Ollama ``/v1``…).
 
@@ -195,6 +226,13 @@ def _openai_compat_generate(
         # vLLM passes this through to apply_chat_template; disables Gemma thinking.
         "chat_template_kwargs": {"enable_thinking": False},
     }
+    # No per-request pinning knobs are sent. Prefix caching, chunked prefill and
+    # speculative decoding are engine-START settings in vLLM: passing them in
+    # extra_body is silently ignored, so doing it created a false impression of
+    # control. A record measured against a server the caller started with
+    # different flags said pin_serving_path=true while chunked prefill ran at
+    # the engine default. The flags the caller must pass are printed before the
+    # grid and the record states that pinning is unverified.
     if min_tokens is not None:
         payload["min_tokens"] = int(min_tokens)
     if ignore_eos:
@@ -360,6 +398,90 @@ def _net_energy_wh(raw_wh: float, avg_idle_watts: float, duration_ms: float) -> 
     return max(0.0, raw_wh - avg_idle_watts * duration_h)
 
 
+ENERGY_SOURCE_COUNTER = "nvmlDeviceGetTotalEnergyConsumption"
+ENERGY_SOURCE_SAMPLING = "power_integration"
+
+
+def _energy_source(energy_counter: bool) -> str:
+    return ENERGY_SOURCE_COUNTER if energy_counter else ENERGY_SOURCE_SAMPLING
+
+
+def _measurement_basis(energy_counter: bool, *, batched: bool = False) -> str:
+    """Derive the basis from the source so the two cannot disagree.
+
+    These were set independently: `energy_source` was computed from whether the
+    counter was available while `measurement_basis` was a literal. A record
+    could therefore claim an energy-counter basis while the numbers came from
+    power sampling, which is what happened when a bad NVML binding removed the
+    counter. Deriving one from the other makes that state unrepresentable.
+    """
+    stem = "nvml_gpu_energy" if energy_counter else "nvml_gpu_power_integration"
+    return f"{stem}_batched" if batched else stem
+
+
+# A quiet GPU holding model weights idles well under a fifth of its cap. Above
+# this, the baseline is somebody else's work and every net-energy figure derived
+# from it is wrong by that amount.
+IDLE_CONTENTION_POWER_FRACTION = 0.40
+IDLE_CONTENTION_UTILIZATION_PCT = 20
+
+
+def check_idle_baseline(
+    *, idle_watts: float, power_limit_w: float | None, utilization_pct: int | None
+) -> list[str]:
+    """Reasons the idle baseline is not idle. Empty means it is usable.
+
+    Run before the grid, not after. The idle-drift guard compares the windows
+    either side of a completed run, so it only fires once the GPU time has been
+    spent; on a contended box that is the whole measurement. Utilization is the
+    decisive signal, because a container cannot see a co-tenant's processes but
+    the device reports their work regardless.
+    """
+    problems: list[str] = []
+    if utilization_pct is not None and utilization_pct >= IDLE_CONTENTION_UTILIZATION_PCT:
+        problems.append(
+            f"GPU is {utilization_pct}% busy while idle (limit "
+            f"{IDLE_CONTENTION_UTILIZATION_PCT}%). Another workload is on this "
+            "device; a container cannot see a co-tenant's processes but its "
+            "energy lands in the board counter"
+        )
+    if power_limit_w and power_limit_w > 0:
+        fraction = idle_watts / power_limit_w
+        if fraction >= IDLE_CONTENTION_POWER_FRACTION:
+            problems.append(
+                f"idle draw {idle_watts:.1f} W is {fraction * 100:.0f}% of the "
+                f"{power_limit_w:.0f} W cap (limit "
+                f"{IDLE_CONTENTION_POWER_FRACTION * 100:.0f}%); the baseline "
+                "reflects work that is not ours"
+            )
+    return problems
+
+
+# vLLM applies these only at engine start. vetch does not own the server, so it
+# cannot set them; it can state them precisely and record that it could not
+# verify them.
+PINNED_SERVING_FLAGS = (
+    "--no-enable-prefix-caching",
+    "--no-enable-chunked-prefill",
+)
+
+
+def serving_path_guidance(pin_serving_path: bool) -> str:
+    """What the caller must have passed for the baseline arm to be pinned."""
+    if not pin_serving_path:
+        return (
+            "Serving path NOT pinned (--no-pin-serving-path). Engine defaults "
+            "apply; serving_config records this."
+        )
+    return (
+        "Serving path pinning is the caller's responsibility: vetch does not "
+        "start the server. For the protocol's baseline arm the engine must have "
+        "been started with " + " ".join(PINNED_SERVING_FLAGS) + ". These cannot "
+        "be set per request and vetch cannot verify them, so serving_config "
+        "records them as requested-not-confirmed."
+    )
+
+
 def _measure_idle_watts(meter: _CudaEnergyMeter, seconds: float = 3.0) -> float:
     """Average GPU power over an idle window, in Watts."""
     start = meter.mark()
@@ -371,28 +493,35 @@ def _measure_idle_watts(meter: _CudaEnergyMeter, seconds: float = 3.0) -> float:
 
 
 def _cuda_rejection_reasons(
-    fit: FitResult,
+    fit: Any,
     samples: int,
     idle_drift_pct: float,
+    *,
+    nested_active: bool | None = None,
+    nested_rejection: Sequence[str] | None = None,
 ) -> list[str]:
     """Reasons a run should not become the active local calibration.
 
-    Note: the power-sampling fallback (energy counter unavailable) is NOT a
-    rejection. It is a coarser but legitimate measurement path — hard-failing it
-    would mean a full paid run on virtualized hardware could never install a
-    calibration. It is recorded in the detail JSON (energy_source) and warned
-    about instead.
+    Nested-model identifiability replaces v1's "any negative coefficient
+    rejects the record". Structured residuals are a flag, not a reject.
+    Idle drift and sample count remain whole-record gates.
     """
     import math
 
-    reasons = list(fit.invalid_reasons)
-    if not fit.valid and not reasons:
-        reasons.append("valid=false in fit")
-    if math.isfinite(fit.condition_number) and fit.condition_number > 30:
-        reasons.append(
-            f"condition_number={fit.condition_number:.1f} > 30 "
-            "(workload shapes not distinct enough)"
-        )
+    reasons: list[str] = []
+    if nested_rejection is not None:
+        reasons.extend(nested_rejection)
+        if nested_active is False and not reasons:
+            reasons.append("nested model produced no identified coefficient")
+    else:
+        reasons = list(fit.invalid_reasons)
+        if not fit.valid and not reasons:
+            reasons.append("valid=false in fit")
+        if math.isfinite(fit.condition_number) and fit.condition_number > 30:
+            reasons.append(
+                f"condition_number={fit.condition_number:.1f} > 30 "
+                "(workload shapes not distinct enough)"
+            )
     if samples < 8:
         reasons.append(f"samples={samples} < 8 minimum")
     if idle_drift_pct > _MAX_IDLE_DRIFT_PCT:
@@ -416,6 +545,18 @@ def calibrate_cuda(
     precision: str | None = None,
     serving_engine: str | None = None,
     modality: str = "image",
+    *,
+    protocol: str = "v2",
+    grid: str = "v1",
+    idle_seconds: float | None = None,
+    pin_serving_path: bool = True,
+    infrastructure_provider: str | None = None,
+    provider_kind: str | None = None,
+    tenancy: str = "unknown",
+    site: str | None = None,
+    region: str | None = None,
+    grid_zone: str | None = None,
+    gpu_form_factor: str | None = None,
 ) -> CalibrationResult:
     """Measure NVIDIA GPU energy coefficients for a locally-served model.
 
@@ -487,7 +628,7 @@ def calibrate_cuda(
             try:
                 return _raw_generate(
                     base_url, model, prompt, image_b64, max_tokens,
-                    modality=modality, **kwargs,
+                    modality=modality, pin_serving_path=pin_serving_path, **kwargs,
                 )
             except TypeError:
                 # Test doubles / older generate() shims may omit modality=.
@@ -578,9 +719,40 @@ def calibrate_cuda(
         # Build grid + pre-generate unique per-run images (busts Ollama's image
         # KV cache; a reused image skips the vision encoder and zeroes the
         # per-image energy). All generation happens outside the timing windows.
-        grid = _build_grid(seed=_GRID_SEED) * max(1, iterations)
+        from vetch.calibrate_metal import WorkloadSpec as _WS
+
+        # `grid` is the grid NAME (a str parameter); the built
+        # WorkloadSpec list lives in `specs`. Reusing one name for both
+        # changed its type mid-function and hid the specs from type checking.
+        specs: list[_WS]
+        grid_name = (grid or "v1").strip().lower()
+        if grid_name == "v2":
+            from vetch.calibrate_v2 import v2_grid_design
+            # Ask the server what it will accept. A prefill point over the
+            # limit is rejected outright, and that bites hardest at the long
+            # end, which is where the arm gets its span.
+            context_limit = (
+                server_max_model_len(base_url) if backend == "openai" else None
+            )
+            raw_grid = v2_grid_design(
+                vision=True, quick=False, context_limit=context_limit
+            )
+            if context_limit:
+                print(f"  Server context limit: {context_limit} tokens")
+            specs = [
+                _WS(
+                    n_images=int(s["n_images"]),
+                    approx_text_tokens=int(s["approx_text_tokens"]),
+                    max_tokens=int(s["max_tokens"]),
+                    replicate=bool(s.get("replicate")),
+                    requests=int(s.get("requests") or 1),
+                )
+                for s in raw_grid
+            ] * max(1, iterations)
+        else:
+            specs = _build_legacy_grid(seed=_GRID_SEED) * max(1, iterations)
         run_images: list[list[str]] = []
-        for i, spec in enumerate(grid):
+        for i, spec in enumerate(specs):
             run_seed = i + 100
             run_images.append(
                 [
@@ -588,7 +760,7 @@ def calibrate_cuda(
                     for j in range(spec.n_images)
                 ]
             )
-        total_runs = len(grid)
+        total_runs = len(specs)
 
         # Probe how the model accounts for image tokens (outside the meter).
         model_is_vlm = True
@@ -613,9 +785,9 @@ def calibrate_cuda(
             )
 
         if not model_is_vlm:
-            grid = [spec for spec in grid if spec.n_images == 0]
-            run_images = [[] for _ in grid]
-            total_runs = len(grid)
+            specs = [spec for spec in specs if spec.n_images == 0]
+            run_images = [[] for _ in specs]
+            total_runs = len(specs)
 
         with _CudaEnergyMeter(monitor) as meter:
             # Single source of truth for the measurement mode: the meter decides
@@ -638,25 +810,78 @@ def calibrate_cuda(
             generate(base_url, model, warmup_prompt, warmup_img, max_tokens=10)
             time.sleep(2.0)
 
-            print("Measuring idle baseline (before)...")
-            idle_watts_before = _measure_idle_watts(meter)
+            idle_window = 60.0 if idle_seconds is None and protocol == "v2" else (
+                3.0 if idle_seconds is None else float(idle_seconds)
+            )
+            print(f"Measuring idle baseline (before, {idle_window:.0f}s)...")
+            idle_watts_before = _measure_idle_watts(meter, seconds=idle_window)
             # Contamination baseline: at idle, only the serving process should be
             # on the (whole-device) GPU. More than one compute process suggests a
             # co-tenant whose draw would inflate every reading.
             idle_proc_count = monitor.compute_process_count()
+            idle_utilization = (
+                monitor.get_utilization_pct()
+                if hasattr(monitor, "get_utilization_pct") else None
+            )
 
+            # Refuse before the grid, not after. The idle-drift check compares
+            # the windows either side of a finished run, so on a contended box
+            # it only reports the problem once the GPU time is already spent.
+            contention = check_idle_baseline(
+                idle_watts=idle_watts_before,
+                power_limit_w=power_limit_w,
+                utilization_pct=idle_utilization,
+            )
+            if contention:
+                raise RuntimeError(
+                    "Idle baseline is not idle, so no measurement here can be "
+                    "trusted:\n  - " + "\n  - ".join(contention)
+                    + "\n\nEvery row's net energy is measured against this "
+                    "baseline. On shared or marketplace hardware, wait for the "
+                    "device to quiesce or move to another host."
+                )
+
+            print(serving_path_guidance(pin_serving_path), file=sys.stderr)
             print(f"Running calibration grid ({total_runs} runs)...")
             raw_records: list[dict[str, Any]] = []
             grid_failures = 0
-            for i, (spec, images) in enumerate(zip(grid, run_images)):
-                prompt = _unique_prompt(approx_tokens=spec.approx_text_tokens, seed=i + 100)
+            for i, (spec, images) in enumerate(zip(specs, run_images)):
+                n_requests = max(1, int(getattr(spec, "requests", 1) or 1))
                 try:
+                    # One timing window may cover several identical requests, so
+                    # a design point that is inherently short still occupies a
+                    # measurable window. Prompts stay unique per request to
+                    # defeat prefix caching; tokens and energy are summed. The
+                    # fit normalises these totals back to one request before
+                    # building its design matrix, including the constant
+                    # intercept column.
                     start = meter.mark()
-                    text_tokens, output_tokens = generate(
-                        base_url, model, prompt,
-                        image_b64=images[0] if images else None,
-                        max_tokens=spec.max_tokens,
-                    )
+                    text_tokens = output_tokens = 0
+                    for rep in range(n_requests):
+                        prompt = _unique_prompt(
+                            approx_tokens=spec.approx_text_tokens,
+                            seed=i * 1000 + rep + 100,
+                        )
+                        output_kwargs: dict[str, Any] = {}
+                        if grid_name == "v2" and backend == "openai":
+                            # v2's decode arm is an output-length design. On
+                            # OpenAI/vLLM, max_tokens is only a cap; without
+                            # these controls the model may stop at EOS and
+                            # collapse the output span. Ollama does not
+                            # support this pair, so leave its request shape
+                            # unchanged.
+                            output_kwargs = {
+                                "min_tokens": spec.max_tokens,
+                                "ignore_eos": True,
+                            }
+                        t_tok, o_tok = generate(
+                            base_url, model, prompt,
+                            image_b64=images[0] if images else None,
+                            max_tokens=spec.max_tokens,
+                            **output_kwargs,
+                        )
+                        text_tokens += t_tok
+                        output_tokens += o_tok
                     end = meter.mark()
                     gross_wh = meter.energy_between(start, end)
                 except RuntimeError as e:
@@ -674,7 +899,8 @@ def calibrate_cuda(
                 # idle term can use the pre/post average (thermal drift over the
                 # grid otherwise biases later runs high). Store gross now.
                 raw_records.append({
-                    "n_images": spec.n_images,
+                    "requests": n_requests,
+                    "n_images": spec.n_images * n_requests,
                     "text_tokens": text_tokens,
                     "output_tokens": output_tokens,
                     "raw_energy_wh": gross_wh,
@@ -692,8 +918,8 @@ def calibrate_cuda(
                 time.sleep(1.0)
             print()
 
-            print("Measuring idle baseline (after)...")
-            idle_watts_after = _measure_idle_watts(meter)
+            print(f"Measuring idle baseline (after, {idle_window:.0f}s)...")
+            idle_watts_after = _measure_idle_watts(meter, seconds=idle_window)
 
     # --- Quality gates -------------------------------------------------------
     if grid_failures > total_runs // 2:
@@ -756,22 +982,52 @@ def calibrate_cuda(
     vlm_measured = model_is_vlm and image_runs >= _MIN_IMAGE_RUNS
 
     print(f"Fitting energy model ({len(run_records)} runs)...")
-    fit = _fit(run_records, visual_tokens_per_image=fit_visual_tokens)
+    from vetch.calibrate_v2 import (
+        CALIBRATION_PROTOCOL_VERSION,
+        fit_nested_models,
+        nested_fit_to_dict,
+    )
+
+    avg_idle = 0.5 * (idle_watts_before + idle_watts_after)
+    nested = fit_nested_models(
+        run_records,
+        idle_watts=avg_idle,
+        energy_source=_energy_source(energy_counter),
+        visual_tokens_per_image=fit_visual_tokens,
+    )
+    # Keep the shared fit object as the provenance source for CIs and gate
+    # metadata; the store accepts the shared NestedFitResult directly.
+    fit = nested
     rejection_reasons = _cuda_rejection_reasons(
-        fit=fit,
+        fit=nested,
         samples=len(run_records),
         idle_drift_pct=idle_drift_pct,
+        nested_active=nested.active,
+        nested_rejection=nested.rejection_reasons,
     )
     if contaminated:
-        rejection_reasons.append(
-            f"gpu_shared: {idle_proc_count} compute processes on device during run"
-        )
+        if (tenancy or "unknown") == "unknown":
+            rejection_reasons.append(
+                f"gpu_shared: {idle_proc_count} compute processes on device during run "
+                "(tenancy=unknown; fail closed)"
+            )
+        else:
+            rejection_reasons.append(
+                f"gpu_shared: {idle_proc_count} compute processes on device during run"
+            )
     if model_is_vlm and not vlm_measured:
         rejection_reasons.append(
             f"vlm_image_runs={image_runs} < {_MIN_IMAGE_RUNS} minimum: the visual "
             "term could not be measured (image runs failed); wh_per_image withheld"
         )
-    calibration_valid = not rejection_reasons
+    calibration_valid = nested.active and not rejection_reasons
+
+    if nested.residuals_structured:
+        print(
+            "NOTE: residuals_structured=true on the published nested model "
+            "(misspecification flag; does not reject an identified decode slope).",
+            file=sys.stderr,
+        )
 
     if not calibration_valid:
         print("\nWARNING: Calibration quality issues:")
@@ -780,36 +1036,34 @@ def calibrate_cuda(
         print("  Detail JSON saved, but active calibration will not be installed.")
 
     if not energy_counter:
+        counter_reason = (
+            monitor.counter_unavailable_reason()
+            if hasattr(monitor, "counter_unavailable_reason") else None
+        )
         print(
-            "NOTE: energy measured via power-sampling integration (energy counter "
-            "unavailable). Coarser than the hardware counter but still installed.",
+            "NOTE: energy measured via power-sampling integration, because "
+            + (counter_reason or "the energy counter is unavailable")
+            + ".",
             file=sys.stderr,
         )
 
     # Withhold the visual term entirely (None, never 0) unless it was actually
-    # measured. A None wh_per_image makes calculate_energy flag visual calls as
-    # energy_completeness="text_only" — honest — whereas a 0 would present them
-    # as complete with no image cost.
-    wh_per_image = fit.wh_per_image if vlm_measured else None
-    # Save the MEASURED per-image visual-token count (probe delta), not the
-    # assumed constant: calculate_energy uses this to subtract visual tokens from
-    # text at inference time, so it must match what the model actually charges.
-    # fit_visual_tokens is the probe delta for "includes" models, 0 for
-    # "excludes" (image tokens not folded into the text count -> nothing to
-    # subtract), and None applies when the visual term wasn't measured.
+    # measured AND identified. A None wh_per_image makes calculate_energy flag
+    # visual calls as energy_completeness="text_only".
+    wh_per_image = nested.wh_per_image if vlm_measured else None
     visual_tokens_for_result = fit_visual_tokens if vlm_measured else None
 
     result = CalibrationResult(
         model=model,
         provider=provider,
-        wh_per_1k_input=fit.wh_per_1k_input,
-        wh_per_1k_output=fit.wh_per_1k_output,
+        wh_per_1k_input=nested.wh_per_1k_input,
+        wh_per_1k_output=nested.wh_per_1k_output,
         tier=0,
         samples=len(run_records),
         gpu_name=gpu_info["name"],
         wh_per_image=wh_per_image,
         visual_tokens_per_image=visual_tokens_for_result,
-        intercept_wh=fit.intercept_wh,
+        intercept_wh=nested.intercept_wh,
         active=calibration_valid,
         rejection_reasons=rejection_reasons if rejection_reasons else None,
         serving_engine=engine,
@@ -817,7 +1071,7 @@ def calibrate_cuda(
         precision=precision,
     )
 
-    # --- Data-rich v1 record (single artifact: coefficients + full provenance) ---
+    # --- Data-rich schema-2 record (coefficients + host + provenance) ---
     try:
         import numpy  # noqa: F401
         fit_engine, ci_method = "numpy", "bootstrap_500"
@@ -825,7 +1079,6 @@ def calibrate_cuda(
         fit_engine, ci_method = "pure_python", "heuristic_pm20"
 
     from vetch import __version__ as _vetch_version
-    from vetch.calculation import METHODOLOGY_VERSION
 
     def _rng(key: str) -> list[int]:
         vals = [r[key] for r in run_records]
@@ -840,10 +1093,8 @@ def calibrate_cuda(
     )
     provenance = measurement_provenance_core(
         samples=len(run_records),
-        energy_source=(
-            "nvmlDeviceGetTotalEnergyConsumption" if energy_counter else "power_integration"
-        ),
-        measurement_basis="nvml_gpu_energy",
+        energy_source=_energy_source(energy_counter),
+        measurement_basis=_measurement_basis(energy_counter),
         energy_domain="gpu_board",
         energy_domain_includes=GPU_BOARD_INCLUDES,
         energy_domain_excludes=GPU_BOARD_EXCLUDES,
@@ -865,7 +1116,7 @@ def calibrate_cuda(
         visual_tokens_assumed=visual_tokens,
         visual_tokens_assumed_source=visual_tokens_source,
         vetch_version=_vetch_version,
-        methodology_version=METHODOLOGY_VERSION,
+        methodology_version=CALIBRATION_PROTOCOL_VERSION,
         extra={
             "samples_per_modality": {
                 "text_only": len(run_records) - image_runs, "image": image_runs,
@@ -885,7 +1136,9 @@ def calibrate_cuda(
             "enforced_power_limit_w": power_limit_w,
             "clocks": clocks,
             "sm_clock_locked": sm_clock_locked,
-            "grid_design_id": grid_design_id(),
+            "grid_design_id": (
+                legacy_grid_design_id() if grid_name != "v2" else grid_design_id()
+            ),
             "grid_seed": _GRID_SEED,
             "memory_total_mb": gpu_info["memory_total_mb"],
             "driver_version": gpu_info["driver_version"],
@@ -895,9 +1148,60 @@ def calibrate_cuda(
             "gpu_shared_warning": contaminated,
             "api_backend": backend,  # HTTP shape (ollama|openai), not serving_engine
             "model_revision": None,
+            "identifiability": nested_fit_to_dict(nested),
         },
     )
-    record_path = commit_calibration(result, identity, provenance)
+    form = gpu_form_factor or infer_gpu_form_factor(gpu_canonical)
+    sm_mhz = clocks.get("sm_clock_mhz")
+    record_path = commit_calibration(
+        result, identity, provenance,
+        host=default_host(
+            infrastructure_provider=infrastructure_provider,
+            provider_kind=provider_kind,
+            tenancy=tenancy,
+            site=site,
+            region=region,
+            grid_zone=grid_zone,
+            gpu_form_factor=form,
+            gpu_count_in_host=gpu_count,
+        ),
+        serving_config=default_serving_config(
+            engine=engine,
+            engine_version=server_version,
+            # extra_body knobs are a request, not a confirmed engine state.
+            prefix_caching=None,
+            speculative_decoding=None,
+            flags_raw=(
+                "caller-supplied engine flags, unverified by vetch; the "
+                "protocol baseline requires " + " ".join(PINNED_SERVING_FLAGS)
+                if pin_serving_path else "engine defaults (--no-pin-serving-path)"
+            ),
+            engine_specific={
+                "pin_serving_path": pin_serving_path,
+                "api_backend": backend,
+                **({
+                    # What the protocol's baseline arm requires of the engine.
+                    # vetch does not start the server and cannot read these back
+                    # from an OpenAI-compatible endpoint, so they are a
+                    # requirement on the caller, never an observation.
+                    "baseline_requires": {
+                        "prefix_caching": False,
+                        "chunked_prefill": False,
+                        "speculative_decoding": False,
+                        "set_via": "engine_start_flags",
+                        "verified_by_vetch": False,
+                    },
+                } if pin_serving_path else {}),
+            },
+        ),
+        measurement_conditions=default_measurement_conditions(
+            enforced_power_limit_w=power_limit_w,
+            sm_clock_locked=sm_clock_locked,
+            sm_clock_mhz=int(sm_mhz) if isinstance(sm_mhz, (int, float)) else None,
+        ),
+        energy_basis=nested.energy_basis,
+        coefficient_meta=nested_fit_to_dict(nested),
+    )
     print(f"\nCalibration record written to {record_path}")
     if not calibration_valid:
         print("  (active=false: recorded for audit, will not auto-load)")
@@ -976,6 +1280,45 @@ def _scrape_vllm_num_running(base_url: str) -> float | None:
         return float(m.group(1))
     except ValueError:
         return None
+
+
+class _ConcurrencySampler:
+    """Scrape ``vllm:num_requests_running`` while a block is in flight.
+
+    Sampling before or after the block necessarily reads ~0, because nothing is
+    running then. Only an in-flight sample measures whether the requested
+    concurrency was actually reached.
+    """
+
+    def __init__(self, base_url: str, interval_s: float = 0.5) -> None:
+        self._base_url = base_url
+        self._interval = interval_s
+        self._samples: list[float] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> _ConcurrencySampler:
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._interval):
+            value = _scrape_vllm_num_running(self._base_url)
+            if value is not None and value > 0:
+                self._samples.append(value)
+
+    @property
+    def achieved(self) -> float | None:
+        """Median in-flight concurrency, or None when metrics were unavailable."""
+        if not self._samples:
+            return None
+        return float(statistics.median(self._samples))
 
 
 def _run_concurrent_block(
@@ -1088,18 +1431,16 @@ def measure_concurrency_level(
     idle_w = _measure_idle_watts(meter, seconds=idle_seconds)
     power_before = monitor.get_power_w()
     clocks_before = monitor.get_clocks() if hasattr(monitor, "get_clocks") else {}
-    running_sample = _scrape_vllm_num_running(base_url)
-
-    # Text-only steady-state block.
+    # Text-only steady-state block, with concurrency sampled while in flight.
     start = meter.mark()
-    p_tok, o_tok, wall_s = _run_concurrent_block(
-        generate=generate, base_url=base_url, model=model,
-        concurrency=concurrency, n_requests=requests_per_level, in_words=in_words,
-        out_tokens=out_tokens, fixed_output=fixed_output,
-        prompt_seed_base=text_prompt_base,
-    )
+    with _ConcurrencySampler(base_url) as _conc:
+        p_tok, o_tok, wall_s = _run_concurrent_block(
+            generate=generate, base_url=base_url, model=model,
+            concurrency=concurrency, n_requests=requests_per_level, in_words=in_words,
+            out_tokens=out_tokens, fixed_output=fixed_output,
+            prompt_seed_base=text_prompt_base,
+        )
     end = meter.mark()
-    running_after = _scrape_vllm_num_running(base_url)
     gross_wh = meter.energy_between(start, end)
     net_wh = _net_energy_wh(gross_wh, idle_w, wall_s * 1000.0)
     wh_per_1k_out = (net_wh / o_tok * 1000.0) if o_tok > 0 else 0.0
@@ -1119,7 +1460,9 @@ def measure_concurrency_level(
     # algebraically equal to the requested concurrency, so it would report a
     # tautology as if it were measured. If metrics are unavailable, leave it None
     # (unknown) rather than assert the target was reached.
-    achieved = running_after if running_after is not None else running_sample
+    # Median in-flight concurrency. None when metrics were unavailable: unknown,
+    # never an assertion that the requested target was reached.
+    achieved = _conc.achieved
 
     wh_per_image: float | None = None
     if image_b64 is not None:
@@ -1381,16 +1724,15 @@ def calibrate_cuda_batched(
             result = CalibrationResult(
                 model=model,
                 provider=provider,
-                # Input energy is negligible at decode-dominated batched load;
-                # report ~0 rather than a false-precision prefill coefficient.
-                wh_per_1k_input=0.0,
+                # Batched load does not identify prefill; null, never a clamped 0.0.
+                wh_per_1k_input=None,
                 wh_per_1k_output=float(lv["wh_per_1k_out"]),
                 tier=0,
                 samples=int(requests_per_level),
                 gpu_name=gpu_info["name"],
                 wh_per_image=lv["wh_per_image"],
                 visual_tokens_per_image=visual_tokens if lv["wh_per_image"] is not None else None,
-                intercept_wh=0.0,
+                intercept_wh=None,
                 active=active,
                 rejection_reasons=rejection or None,
                 serving_engine=engine,
@@ -1407,11 +1749,8 @@ def calibrate_cuda_batched(
             )
             provenance = measurement_provenance_core(
                 samples=int(requests_per_level),
-                energy_source=(
-                    "nvmlDeviceGetTotalEnergyConsumption"
-                    if energy_counter else "power_integration"
-                ),
-                measurement_basis="nvml_gpu_energy_batched",
+                energy_source=_energy_source(energy_counter),
+                measurement_basis=_measurement_basis(energy_counter, batched=True),
                 energy_domain="gpu_board",
                 energy_domain_includes=GPU_BOARD_INCLUDES,
                 energy_domain_excludes=GPU_BOARD_EXCLUDES,

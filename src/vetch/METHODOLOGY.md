@@ -1,7 +1,7 @@
 # Vetch Methodology
 
-methodology_version: "1.3"
-sdk_version: "0.11.1"
+methodology_version: "1.5"
+sdk_version: "0.12.0"
 
 ## Preamble
 Vetch exists because AI systems currently operate with no feedback on their energy consumption. Every inference draws power from infrastructure with real costs—financial, environmental, and systemic. None of this is visible to the developer making the API call.
@@ -35,8 +35,11 @@ This means the tracking boundary is the individual API call, not a manually deli
 ## Methodology Version
 This document is versioned. If we change the energy heuristics (e.g., input:output ratio from 1:3 to 1:2.5), methodology_version will increment. Check this field to understand why historical data may differ from current calculations.
 
-**Current: methodology_version 1.3**
+**Current: methodology_version 1.5**
 
+- **1.5:** PUE attribution is provenance-tiered, applying the same rule water adopted in 1.4. `pue_tier` gains tier 2, meaning an operator-published figure applied through an undisclosed-hosting assumption. OpenAI and Anthropic move from tier 1 to tier 2 (their PUE figures are Microsoft's and AWS's; neither vendor discloses where it serves), and open-weight model names (`llama-*`, `mixtral-*`, `gemma-*`) no longer imply a datacenter operator. `pue_source` now states the assumption inline. PUE values themselves are unchanged; `tracking_degraded` scores shift slightly because `pue_tier` is an input.
+- **Calibration protocol 2.0** (record `methodology_version`, not this SDK field): nested-model identifiability, null coefficients, host provenance. See `docs/calibration-protocol-v2.md`. Does not change cloud-API energy coefficients.
+- **1.4:** Water is provenance-gated. `calculate_water()` returns `None` unless a registry-backed WUE or an explicit `wue_override` is present. Unsourced provider defaults (the 1.8 L/kWh industry guess and guessed OpenAI/Anthropic coefficients) are removed. Registry entries carry `tier`, `boundary`, `accounting`, and a `basis` citation. Google/AWS/Azure fleet or region figures are sourced from publisher reports; OpenAI and Anthropic remain unpublished.
 - **1.3 (v0.10.x):** Extended the visual energy term to the registry path and added honest-incompleteness reporting. Registry VLM rows may declare `wh_per_visual_unit` (Wh per normalized visual unit) and `visual_tokens_per_unit`; when present, the visual portion is priced separately and its tokens are removed from the text total (`energy_wh += wh_per_visual_unit × visual_units`, mirroring the calibration path's `wh_per_image`). A call that carries visual input but has no visual coefficient is flagged `energy_completeness="text_only"` and warns, rather than emitting a text-only figure as if it were complete. No shipped registry row declares a visual coefficient yet — populate one only from a live-verified measurement or a Tier-0 calibration (see registry hygiene in CLAUDE.md); until then visual calls on cloud VLMs are correctly reported as text-only partials.
 - **1.2 (v0.8.0):** Added VLM image energy term (`wh_per_image`), Apple Silicon powermetrics Tier-0 calibration, and per-request fixed overhead intercept (`intercept_wh`). Energy formula now optionally includes `n_images × wh_per_image + intercept_wh` for VLM providers.
 - **1.1:** Reasoning token path, schema v2, session advisory engine.
@@ -53,10 +56,12 @@ Energy is the primary metric. It is derived from model-specific estimates (see t
 
 Carbon is a derived metric. It compounds energy uncertainty with grid data. Grid intensity is real-time and accurate when available (signal_quality: live). Carbon inherits all uncertainty from energy, plus regional and temporal variation in grid mix.
 
-### Water (derived from energy + WUE)
-`water_l = (energy_wh / 1000) × WUE`
+### Water (derived from energy + WUE, nullable)
+`water_l = (energy_wh / 1000) × WUE` when a sourced WUE exists; otherwise `null`.
 
-Water measures datacenter cooling consumption. WUE (Water Usage Effectiveness, liters per kWh) varies significantly by datacenter location and cooling technology (range: 0.2–3.5 L/kWh). Water estimates carry ±200% uncertainty vs ±50% for carbon.
+Water attributes facility water under each publisher's disclosed definition. WUE is taken from publisher reports (Google, AWS, Azure) at fleet, geography, or region level. OpenAI and Anthropic do not publish facility WUE, so a typical cloud-API call without a known host region has `estimated_water_l = null`. Publisher definitions differ (`withdrawal`, `consumption`, or `cooling_and_humidification_water`), are emitted with `water_boundary` and `water_accounting_kind`, and are never collapsed into one session total or ranked against each other. `water_totals_ml_by_definition` preserves separate totals keyed by both fields.
+
+Open-weight model names do not identify a datacenter operator. Gemma, Llama, Mixtral, and similar names therefore do not select a provider WUE unless instrumentation observes the hosting provider or the user supplies `provider_hint`/`wue_override`. An override remains event-level unless `wue_boundary` and `water_accounting_kind` are also supplied; incomplete definitions are not aggregated or compared. `calculate_water_with_provenance()` returns the estimate together with its tier, basis, boundary, accounting kind, and registry warnings. Uncertainty is returned only when the caller supplied one alongside `wue_override`: publishers report a WUE, not a band around it, so the registry states none.
 
 ## Token Counts
 Exact. Extracted from provider response usage field. For interrupted streams where usage is unavailable, we report null. We do not estimate tokens from text. We do not bundle tokenizer libraries.
@@ -77,9 +82,17 @@ This is our largest uncertainty.
 
 **Tier 0 (Measured)**: Available when users run local GPU inference (Ollama, vLLM, llama.cpp) and use hardware sensors to capture actual power draw. Limitations: Requires compatible GPU (NVIDIA via pynvml, AMD via rocm-smi), baseline subtraction introduces noise, short inferences are less accurate.
 
-#### Local hardware calibration records (v1)
+#### Local hardware calibration records (v2)
 
-NVIDIA (`vetch calibrate-cuda`) and Apple Silicon (`vetch calibrate-apple-silicon`) produce Tier-0 coefficients for **your** stack. CUDA writes a versioned record (`schema_version: 1`) keyed by a full **identity** — `(provider, model, canonical_gpu, backend, precision)` — so the same model on H100-SXM vs A100, or BF16 vs FP8, cannot silently overwrite each other. At inference the SDK only has `(provider, model)`, so `calibration_store.resolve` is deliberately honest:
+NVIDIA (`vetch calibrate-cuda`) and Apple Silicon (`vetch calibrate-apple-silicon`) produce Tier-0 coefficients for **your** stack. CUDA writes a versioned record (`schema_version`: integer 2, distinct from the event schema string `"2"`) keyed by a **measurement identity** — resolve identity plus host (infrastructure provider, site, tenancy, form factor, power cap) plus serving-config hash — so two providers or two power caps never overwrite each other. At inference the SDK only has `(provider, model)`, so `calibration_store.resolve` is deliberately honest. The resolve key itself is unchanged: `self-hosted`, model, gpu, engine, precision, concurrency. Multiple measurement files under one resolve key tier-cap unless a hint selects one.
+
+`identity.provider` is the event label (`self-hosted` for local inference). Infrastructure owner belongs on `host.infrastructure_provider`.
+
+Schema 1 files in `~/.vetch/calibrations/` remain resolvable with their original clamp-to-zero semantics, behind a warning. Newly written records are schema 2. A null coefficient means do not attribute energy on that axis; it never means zero. Partial energy overrides attach.
+
+Nested-model identifiability, the pre-run leverage rule, dual energy basis, and phase-separation limits are specified in `docs/calibration-protocol-v2.md`. `vetch validate-calibration` runs that gate on a laptop with no GPU. `--batched` is the shipped concurrency ladder (`Wh/1k_out ≈ a/C + b`); v2 does not rebuild it. Phase-separated prefill/decode integration applies only at concurrency 1. CUDA and Apple Silicon use the shared `v2-unbalanced` workload design; Apple Silicon aggregates repeated requests because powermetrics is a sampling path.
+
+Hardware-local records (including the H100 batch-1 re-fit) must not be copied into the shipped community set or into someone else's `~/.vetch/calibrations/` as default Tier 0. `resolve()` only loads that directory.
 
 | Situation | `energy_source` | Tier | `calibration_match` |
 |-----------|-----------------|------|---------------------|
@@ -312,22 +325,38 @@ PUE measures datacenter overhead efficiency (cooling, power distribution). Vetch
 | **Google Cloud** | 1.09 | 1 | 2026-06 | [Google 2026 Environmental Report (FY2025)](https://sustainability.google/reports/google-2026-environmental-report/) |
 | **Microsoft Azure** | 1.12 | 1 | 2025-05 | [Microsoft 2025 Environmental Sustainability Report](https://blogs.microsoft.com/on-the-issues/2025/05/29/environmental-sustainability-report/) |
 | **AWS** | 1.14 | 1 | 2025 | [AWS 2025 Sustainability Report](https://aws.amazon.com/sustainability/data-centers/) |
+| **OpenAI** | 1.12 | 2 | 2025-05 | Microsoft's Azure figure, applied on the assumption OpenAI serves from Azure (not disclosed) |
+| **Anthropic** | 1.14 | 2 | 2025 | AWS's figure, applied on the assumption Anthropic serves from AWS (not disclosed) |
 | **Unknown/Default** | 1.2 | 3 | — | Industry average (Uptime Institute 2025 enterprise ~1.54) |
 
-**Basis caveat:** Google and AWS values are fleet-wide averages. Microsoft does not publish a clean operational fleet average, so Azure/OpenAI use Microsoft's newest-generation figure (~1.12) — a slightly more favorable basis. Reconciling to a common basis would require an *estimated* Azure fleet PUE (~1.18, tier 2), a deliberate methodology change rather than a report refresh.
+**Basis caveat:** Google and AWS values are fleet-wide averages. Microsoft does not publish a clean operational fleet average, so Azure (and, by assumption, OpenAI) uses Microsoft's newest-generation figure (~1.12) — a slightly more favorable basis. Reconciling to a common basis would require an *estimated* Azure fleet PUE (~1.18, tier 2), a deliberate methodology change rather than a report refresh.
 
 **PUE Tier Definitions:**
-- **Tier 1**: Known value (vendor-published OR user-configured via `VETCH_DEFAULT_PUE`)
-- **Tier 3**: Default fallback when provider unknown (1.2 industry average)
 
-Note: There is no Tier 0 or Tier 2 for PUE because:
-- No "measured PUE" exists (users don't have datacenter-level sensors)
-- No "crowdsourced PUE" makes sense (PUE is a facility property, not per-request)
+The tier describes the provenance of the *attribution*, not of the figure. Every PUE value Vetch ships is operator-published; what varies is whether Vetch knows the number applies to the call in front of it.
 
-**Auto-detection:** Vetch infers provider from model name:
-- `gpt-*`, `o1-*`, `o3-*`, `o4-*` → OpenAI (Azure-backed, PUE 1.12)
-- `claude-*` → Anthropic (AWS-backed, PUE 1.14)
-- `gemini-*`, `gemma-*` → Vertex AI (Google Cloud, PUE 1.09)
+- **Tier 1**: Operator-disclosed. The operator publishes this PUE for infrastructure it also runs (Google for Gemini, AWS for Bedrock), or the user configured it via `VETCH_DEFAULT_PUE`.
+- **Tier 2**: Sourced figure, assumed host. The PUE is published by a datacenter operator, but the model vendor does not disclose where it serves, so applying that figure is an assumption. OpenAI and Anthropic sit here.
+- **Tier 3**: No operator resolved. Falls back to the 1.2 industry average.
+
+Tier 2 entries carry the assumption in `pue_source`, so it travels with the number into events, dashboards, and OTLP spans rather than living only in this document. The CLI prints `PUE ~1.12` rather than `PUE 1.12` for anything above tier 1.
+
+**Auto-detection:** Vetch infers a provider from the model name, and the tier records how much that inference is worth:
+- `gemini-*`, `palm-*` → Google Cloud, PUE 1.09 (**tier 1** — Google operates the facilities serving its own models)
+- `gpt-*`, `o1-*`, `o3-*`, `o4-*` → assumed Azure, PUE 1.12 (**tier 2** — OpenAI does not disclose its hosting)
+- `claude-*` → assumed AWS, PUE 1.14 (**tier 2** — Anthropic does not disclose its hosting)
+- `llama-*`, `mixtral-*`, `gemma-*` → **tier 2** regardless of resolved operator. An open-weight checkpoint name identifies a model, not a datacenter; it can be served anywhere.
+
+### Why PUE keeps a default and WUE does not
+
+A coefficient may carry a default only when the published spread is narrow enough that a wrong pick stays inside the metric's stated uncertainty.
+
+| | Published spread | Worst case from a wrong default | Verdict |
+|---|---|---|---|
+| PUE | 1.09–1.27 | ~15%, inside the ±50% already claimed for carbon | Default permitted, stated as tier 3 |
+| WUE | 0.02–2.85 | ~140x | No default; return null |
+
+A default inside a narrow spread approximates a number. A default inside a wide one manufactures it. Apply this test before adding any `DEFAULT_*` coefficient — `scripts/check_registry_provenance.py` fails the build on an undocumented one.
 
 Google's 1.09 PUE is a fleet-average value. Combining a regional grid intensity with a fleet-average PUE is intentionally transparent but mixed precision: it is better than a generic datacenter default, but it is not a facility-specific request measurement. If you know the deployment PUE, set `VETCH_DEFAULT_PUE` for the audit.
 
@@ -349,25 +378,28 @@ Google's 1.09 PUE is a fleet-average value. Combining a regional grid intensity 
 
 ## WUE (Water Usage Effectiveness)
 
-WUE measures datacenter water consumption for cooling, in liters per kWh of IT energy. Vetch uses **provider-specific WUE values**:
+WUE is annual site water relative to IT energy, in liters per kWh. Vetch reports water only when a publisher discloses WUE or the caller passes `wue_override`. There is no industry-average default.
 
-| Provider | WUE (L/kWh) | Source |
-|----------|-------------|--------|
-| **Google Cloud** | 1.1 | Efficient water-free cooling in many datacenters |
-| **Microsoft Azure / OpenAI** | 1.7 | Microsoft sustainability disclosures |
-| **AWS / Anthropic** | 2.2 | AWS sustainability report |
-| **Unknown/Default** | 1.8 | Industry average for air-cooled datacenters |
+| Tier | Meaning |
+|------|---------|
+| **1** | Publisher-reported WUE for that specific AWS region (or an explicit override) |
+| **2** | Derived from published water volume and energy for that facility (unused; both inputs were not available) |
+| **3** | Publisher fleet, geography, or continental average, including that average applied to a named region |
+
+**Lookup:** explicit override → `{provider}-{region}` in `wue.json` → provider-level key if that provider publishes a fleet WUE → `None`.
+
+**What is sourced today:** Google fleet ISO WUE Category 2 (consumptive) 1.15 L/kWh for `google` / `vertexai`; AWS withdrawal WUE by region and 0.12 L/kWh global for `aws` / `bedrock`; Microsoft site WUE 0.27 L/kWh global and continental averages for Azure regions. **OpenAI and Anthropic are unpublished.**
+
+**Boundary:** every registry entry is `onsite`. AWS reports withdrawal; Google reports consumption (ISO Category 2); Microsoft reports water used for humidification and cooling. These are not comparable across publishers. Source-boundary WUE (on-site plus electricity-generation water) is not in the registry.
 
 **Water calculation:**
-`water_l = (energy_wh / 1000) × WUE`
-
-**Cascading lookup:** WUE resolution follows: explicit override → region-specific (from `wue.json`) → provider-specific → default (1.8).
+`water_l = (energy_wh / 1000) × WUE` when a coefficient resolves; otherwise `estimated_water_l` is `null`.
 
 **Limitations:**
-- WUE varies dramatically by datacenter location (arid vs. humid climates, water-free vs. evaporative cooling)
-- Provider WUE values are fleet averages; individual datacenters may differ by 3-5x
-- Water estimates carry **±200% uncertainty** — higher than carbon estimates
-- Some datacenters use water-free cooling (WUE ≈ 0), others rely heavily on evaporative cooling (WUE > 3.0)
+- Fleet and continental averages hide facility-level variation
+- A known cloud region is what makes water available at all for AWS/Azure; without it, only a provider fleet key (Google, AWS, Azure) can resolve
+- `wue_override` is the escape hatch for self-hosted facilities
+- Do not compare AWS, Google, and Azure water numbers as if they used the same definition
 
 ## Grid Carbon Intensity
 
@@ -501,8 +533,12 @@ and is flagged rather than reported with false precision. (An earlier internal
 ### Batched calibration mode (`--batched`; experimental preview)
 `vetch calibrate-cuda --batched` sweeps serving concurrency and fits
 `Wh/1k_out(C) ≈ a/C + b`. This mode is an **experimental preview**: no batched
-records are shipped, and its output must not be treated as Tier-0. Use the batch=1
-path for reproducible calibration.
+records are shipped, and its output must not be treated as Tier-0. Protocol v2
+does not rebuild this ladder; it relates to it. Phase-separated prefill/decode
+integration applies only at concurrency 1. At C>1 the device mixes phases
+across requests, so keep this amortization curve. Use `--grid v2` for the
+unbalanced concurrency-1 design (prefill isolation, decode isolation,
+verification). Use the batch=1 path for reproducible calibration.
 
 ### Relationship to published API estimates
 Our batch=1 bf16 figures run higher than published API-based estimates such as

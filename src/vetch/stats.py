@@ -66,7 +66,13 @@ class SessionStats:
     total_output_tokens: int = 0
     total_energy_wh: float = 0.0
     total_carbon_g: float = 0.0
-    total_water_ml: float = 0.0
+    total_water_ml: float | None = None
+    water_attributed_calls: int = 0
+    water_unattributed_calls: int = 0
+    water_unclassified_calls: int = 0
+    water_totals_ml_by_definition: dict[str, float] = field(
+        default_factory=lambda: defaultdict(float)
+    )
     total_cost_usd: float = 0.0
     total_effective_input_usd: float = 0.0
     total_billable_input_tokens: int = 0
@@ -85,6 +91,14 @@ class SessionStats:
     # is a text-only partial rather than a complete measurement.
     energy_text_only_wh: float = 0.0
     energy_text_only_count: int = 0
+
+    # Incompleteness roll-up (v0.12.x). `energy_text_only_*` counts one CAUSE of
+    # an incomplete figure (an unpriced modality). An unidentified coefficient
+    # axis is the other, and it leaves `energy_completeness == "complete"`, so
+    # it never reached the counters above. `energy_estimate_kind` is the union:
+    # every event whose energy is a floor rather than a point.
+    energy_lower_bound_wh: float = 0.0
+    energy_lower_bound_count: int = 0
 
     # Min-confidence floor roll-up (v0.11.x). When get_min_match_confidence() is
     # set, events below the floor are still counted (fail-open at emit) but
@@ -232,6 +246,12 @@ class SessionStats:
             self.energy_text_only_wh += call_energy
             self.energy_text_only_count += 1
 
+        # Floor figures of every cause, including an unidentified coefficient
+        # axis on a text-only call, which `energy_completeness` cannot see.
+        if event.get("energy_estimate_kind") == "lower_bound":
+            self.energy_lower_bound_wh += call_energy
+            self.energy_lower_bound_count += 1
+
         cost_in = float(event.get("estimated_cost_input_usd") or 0.0)
         cost_cache_read = float(event.get("estimated_cost_cache_read_usd") or 0.0)
         self.total_effective_input_usd += max(0.0, cost_in - cost_cache_read)
@@ -240,9 +260,32 @@ class SessionStats:
         self._accumulate_capability_fields(event)
 
         # Water: wrapper emits liters, MCP tools emit ml — accept both.
-        water_ml = event.get("estimated_water_ml") or 0.0
-        water_l = event.get("estimated_water_l") or 0.0
-        self.total_water_ml += water_ml + water_l * 1000
+        # None means unpublished WUE, not zero consumption. Count attributed
+        # vs unattributed so a total of 0 mL is distinguishable from no data.
+        water_ml_raw = event.get("estimated_water_ml")
+        water_l_raw = event.get("estimated_water_l")
+        if water_ml_raw is None and water_l_raw is None:
+            self.water_unattributed_calls += 1
+        else:
+            self.water_attributed_calls += 1
+            water_ml = float(water_ml_raw or 0.0)
+            water_l = float(water_l_raw or 0.0)
+            attributed_ml = water_ml + water_l * 1000
+            boundary = str(event.get("water_boundary") or "").strip().lower()
+            accounting = str(
+                event.get("water_accounting_kind") or ""
+            ).strip().lower()
+            if boundary and accounting:
+                definition = f"{boundary}:{accounting}"
+                self.water_totals_ml_by_definition[definition] += attributed_ml
+            else:
+                self.water_unclassified_calls += 1
+            self.total_water_ml = (
+                next(iter(self.water_totals_ml_by_definition.values()))
+                if len(self.water_totals_ml_by_definition) == 1
+                and self.water_unclassified_calls == 0
+                else None
+            )
 
         # Track for advisory
         if in_tok > 0:
@@ -490,6 +533,13 @@ class SessionStats:
                 if self.total_energy_wh > 0
                 else None
             ),
+            "energy_lower_bound_wh": round(self.energy_lower_bound_wh, 6),
+            "energy_lower_bound_count": self.energy_lower_bound_count,
+            "energy_lower_bound_fraction": (
+                round(self.energy_lower_bound_wh / self.total_energy_wh, 4)
+                if self.total_energy_wh > 0
+                else None
+            ),
             "min_match_confidence": floor,
             "below_min_confidence_count": self.below_min_confidence_count,
             "below_min_confidence_energy_wh": round(self.below_min_confidence_energy_wh, 6),
@@ -612,6 +662,12 @@ class SessionStats:
             "total_input_tokens": self.total_input_tokens,
             "total_output_tokens": self.total_output_tokens,
             "total_water_ml": self.total_water_ml,
+            "water_attributed_calls": self.water_attributed_calls,
+            "water_unattributed_calls": self.water_unattributed_calls,
+            "water_unclassified_calls": self.water_unclassified_calls,
+            "water_totals_ml_by_definition": dict(
+                self.water_totals_ml_by_definition
+            ),
             "average_input_output_ratio": ratio,
             "confidence": self._confidence_summary(),
             **self._capability_summary(),

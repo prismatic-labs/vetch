@@ -127,7 +127,11 @@ def export_event_as_span(
         - vetch.carbon.operational_g: Operational carbon emissions (gCO2eq)
         - vetch.carbon.embodied_g: Embodied carbon emissions (gCO2eq)
         - vetch.carbon.total_g: Total carbon emissions (gCO2eq)
-        - vetch.water.total_l: Water usage (liters)
+        - vetch.water.total_l: Water usage (liters); omitted when unpublished
+        - vetch.water.tier: WUE provenance tier (1=region-published, 3=fleet average)
+        - vetch.water.boundary: Physical accounting boundary
+        - vetch.water.accounting_kind: Consumption/withdrawal definition
+        - vetch.water.uncertainty_pct: set only when supplied with wue_override
         - vetch.duration_s: Inference duration (seconds)
         - vetch.region: Cloud region (if known)
         - vetch.tier: Energy data tier (1=measured, 2=derived, 3=estimated)
@@ -232,6 +236,20 @@ def export_event_as_span(
         water_l = event.get("estimated_water_l")
         if water_l is not None:
             span.set_attribute("vetch.water.total_l", water_l)
+        water_tier = event.get("water_tier")
+        if water_tier is not None:
+            span.set_attribute("vetch.water.tier", water_tier)
+        water_boundary = event.get("water_boundary")
+        if water_boundary is not None:
+            span.set_attribute("vetch.water.boundary", water_boundary)
+        water_accounting_kind = event.get("water_accounting_kind")
+        if water_accounting_kind is not None:
+            span.set_attribute("vetch.water.accounting_kind", water_accounting_kind)
+        water_uncertainty_pct = event.get("water_uncertainty_pct")
+        if water_uncertainty_pct is not None:
+            span.set_attribute(
+                "vetch.water.uncertainty_pct", water_uncertainty_pct
+            )
 
         # Vetch Custom Attributes - Latency
         latency_ms = event.get("latency_ms")
@@ -254,6 +272,12 @@ def export_event_as_span(
         energy_completeness = event.get("energy_completeness")
         if energy_completeness is not None:
             span.set_attribute("vetch.energy_completeness", energy_completeness)
+
+        # Unidentified coefficient axes leave energy_completeness == "complete"
+        # while still making the figure a floor. Export the union signal too.
+        estimate_kind = event.get("energy_estimate_kind")
+        if estimate_kind is not None:
+            span.set_attribute("vetch.energy_estimate_kind", estimate_kind)
 
         cal_match = event.get("calibration_match")
         if cal_match:

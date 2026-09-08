@@ -60,6 +60,20 @@ class TestToolListing:
             assert tool.inputSchema is not None
             assert tool.inputSchema["type"] == "object"
 
+    def test_estimate_schema_exposes_host_and_wue_override(self) -> None:
+        estimate = next(tool for tool in TOOLS if tool.name == "vetch_estimate")
+        properties = estimate.inputSchema["properties"]
+        assert "provider_hint" in properties
+        assert "wue_override" in properties
+        assert "wue_boundary" in properties
+        assert "water_accounting_kind" in properties
+
+    def test_compare_schema_exposes_provider_hints(self) -> None:
+        compare = next(tool for tool in TOOLS if tool.name == "vetch_compare")
+        properties = compare.inputSchema["properties"]
+        assert "provider_hints" in properties
+        assert "wue_override" in properties
+
 
 class TestToolDispatch:
     """Tests for handle_call_tool dispatch."""

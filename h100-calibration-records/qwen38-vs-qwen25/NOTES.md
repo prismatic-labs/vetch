@@ -4,7 +4,11 @@ Same-box comparison on Vast.ai H100 SXM 80GB, vLLM 0.27.1, bf16, `max-model-len=
 
 ## Batch=1 Tier-0 grid (preserved)
 
-File: `../self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16-5cb685a8.json`
+    # Host block reconstructed after the fact rather than captured at measurement
+    # time. File: parent-directory schema-2 record (measurement slug includes
+    # vast.ai and the 700 W cap). After the v2 nested re-fit, decode is
+    # identified and the record is `active: true`; it remains hardware-local
+    # and must not be copied into `~/.vetch/calibrations/` as default Tier 0.
 
 | field | value |
 |---|---|
@@ -12,7 +16,7 @@ File: `../self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16-5cb685a8.json
 | samples | 22 |
 | idle drift | 1.0% |
 | fit R² | 0.9943 |
-| active | False (negative-intercept quality gate; audit artifact) |
+| active | True after v2 nested re-fit (decode identified; input/intercept nulled). Hardware-local. |
 
 Qwen3.8 served with `--default-chat-template-kwargs '{"enable_thinking": false}'`.
 

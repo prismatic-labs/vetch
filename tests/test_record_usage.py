@@ -44,6 +44,22 @@ class TestRecordUsageStandalone:
         vetch.record_usage("gpt-4o", 10, 10)
         assert _emitter.events[0]["provider"] == "openai"
 
+    def test_open_weight_developer_does_not_imply_water_host(self, _emitter):
+        event = vetch.record_usage("gemma-3-27b", 100, 50)
+        assert event["estimated_water_l"] is None
+
+    def test_wue_override_reaches_manual_instrumentation(self, _emitter):
+        event = vetch.record_usage(
+            "gpt-4o",
+            100,
+            50,
+            wue_override=0.5,
+            wue_boundary="onsite",
+            water_accounting_kind="consumption",
+        )
+        assert event["estimated_water_l"] is not None
+        assert event["water_accounting_kind"] == "consumption"
+
     def test_reasoning_tokens_surfaced_and_counted(self, _emitter):
         ev = vetch.record_usage("gpt-4o", 100, 50, reasoning_tokens=30)
         assert ev["usage"]["reasoning"]["output_tokens"] == 30

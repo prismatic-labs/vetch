@@ -106,9 +106,18 @@ class TestWrapFunction:
 
     def test_wrap_passes_parameters(self) -> None:
         """wrap() passes parameters to VetchContext."""
-        with wrap(region="ap-south-1", tags={"k": "v"}) as ctx:
+        with wrap(
+            region="ap-south-1",
+            tags={"k": "v"},
+            wue_override=0.42,
+            wue_boundary="onsite",
+            water_accounting_kind="consumption",
+        ) as ctx:
             assert ctx.region == "ap-south-1"
             assert ctx.tags == {"k": "v"}
+            assert ctx._wue_override == pytest.approx(0.42)
+            assert ctx._wue_boundary == "onsite"
+            assert ctx._water_accounting_kind == "consumption"
 
 
 class TestEnergyOverrideValidation:
@@ -140,6 +149,17 @@ class TestEnergyOverrideValidation:
         """None energy_override is accepted (no validation)."""
         ctx = VetchContext(energy_override=None)
         assert ctx._energy_override is None
+
+
+class TestWueOverrideValidation:
+    def test_invalid_override_fails_open(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            ctx = VetchContext(wue_override=-1)
+
+        assert ctx._wue_override is None
+        assert "Invalid wue_override" in caplog.text
 
 
 class TestWrapperEdgeCases:

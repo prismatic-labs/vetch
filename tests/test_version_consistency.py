@@ -1,4 +1,4 @@
-"""Guard against version-string drift.
+"""Guard against version-string drift and undocumented releases.
 
 `vetch/__init__.py` reads the real version from installed package metadata and
 only falls back to a hard-coded string when running from an uninstalled source
@@ -60,3 +60,29 @@ def test_init_fallback_matches_pyproject() -> None:
 def test_runtime_version_matches_pyproject() -> None:
     # Holds whether the version came from installed metadata or the fallback.
     assert vetch.__version__ == _pyproject_version()
+
+
+def _changelog() -> str:
+    return (_REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+
+
+def test_version_is_documented() -> None:
+    """A bump with no entry ships changes nobody can find.
+
+    During protocol-v2 development the public event gained two fields and
+    changed when p95 is populated, while the version stayed put and the
+    CHANGELOG stopped at the first commit of the branch. Version agreement
+    alone does not catch that.
+    """
+    version = _pyproject_version()
+    changelog = _changelog()
+    if f"## [{version}]" in changelog:
+        return  # already cut as a release section
+    # Anchor on exactly one newline. Allowing \s* here lets an EMPTY Unreleased
+    # section swallow the separator and capture the next release's body, which
+    # makes this guard silently inert -- the failure mode it exists to prevent.
+    unreleased = re.search(r"## \[Unreleased\]\n(.*?)(?=\n## \[)", changelog, re.S)
+    assert unreleased and unreleased.group(1).strip(), (
+        f"pyproject.toml is at {version} but CHANGELOG.md has neither a section "
+        "for it nor any content under [Unreleased]."
+    )

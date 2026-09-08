@@ -1,6 +1,6 @@
 # Energy and carbon methodology
 
-Vetch reports energy, carbon, and water for every inference call. These numbers are useful for comparison, prioritization, and reduction decisions. They are not carbon certification, regulatory disclosure, or water accounting. This document explains where each number comes from and how much to trust it.
+Vetch reports energy and carbon for every inference call, and water when a publisher discloses WUE. These numbers are useful for comparison, prioritization, and reduction decisions. They are not carbon certification, regulatory disclosure, or water accounting. This document explains where each number comes from and how much to trust it.
 
 The short version: hosted APIs expose no power meter, so their energy is estimated from infrastructure-aware benchmarks, not measured. Only self-hosted models you calibrate yourself produce a genuinely metered figure. Every event tells you which case it is.
 
@@ -64,7 +64,7 @@ Closed hosted-API models have no public power telemetry, so they stay inferred b
 
 ## Water
 
-Water estimates are the most facility-dependent number Vetch produces. Consumption depends on datacenter cooling design, local climate, and the source of the grid's own generation, none of which a client-side SDK can observe. Vetch reports a directional estimate so water shows up in the same conversation as energy and carbon. Do not use it for any external claim.
+Water is sourced where a publisher reports WUE, and null where they do not. Google, AWS, and Azure disclose fleet or regional figures; OpenAI and Anthropic do not. Publisher definitions also differ (on-site withdrawal vs consumption vs cooling/humidification water), so even sourced values are not comparable across providers. Vetch keys separate totals by both `water_boundary` and `water_accounting_kind`, and does not retain or rank a mixed scalar total. Open-weight model names are not treated as evidence of a hosting provider. Region is what makes a regional WUE available at all. Do not use Vetch water figures for any external claim.
 
 ## Per-model provenance
 

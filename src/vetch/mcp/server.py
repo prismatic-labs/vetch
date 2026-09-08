@@ -78,6 +78,37 @@ TOOLS = [
                         "Uses VETCH_REGION env if omitted."
                     ),
                 },
+                "provider_hint": {
+                    "type": "string",
+                    "description": (
+                        "Physical hosting provider when it cannot be inferred "
+                        "from the model name (e.g. 'aws', 'azure', 'google', "
+                        "'bedrock'). Required for AWS/Azure water attribution."
+                    ),
+                },
+                "wue_override": {
+                    "type": "number",
+                    "description": (
+                        "Facility WUE in liters per kWh. Pass wue_boundary and "
+                        "water_accounting_kind to make the estimate aggregatable."
+                    ),
+                },
+                "wue_boundary": {
+                    "type": "string",
+                    "enum": ["onsite", "source"],
+                    "description": "Physical boundary for wue_override.",
+                },
+                "water_accounting_kind": {
+                    "type": "string",
+                    "description": (
+                        "Accounting definition for wue_override "
+                        "(e.g. 'consumption', 'withdrawal')."
+                    ),
+                },
+                "wue_uncertainty_pct": {
+                    "type": "number",
+                    "description": "Optional uncertainty percentage for wue_override.",
+                },
             },
             "required": ["model", "input_tokens", "output_tokens"],
         },
@@ -112,6 +143,31 @@ TOOLS = [
                     "type": "string",
                     "enum": ["cost_usd", "carbon_g", "energy_wh", "water_ml"],
                     "description": "Sort by this field (default: cost_usd)",
+                },
+                "provider_hints": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": (
+                        "Per-model hosting provider, keyed by model name "
+                        "(e.g. {'llama-3.1-70b': 'aws'})."
+                    ),
+                },
+                "wue_override": {
+                    "type": "number",
+                    "description": "Facility WUE in liters per kWh, applied to all models.",
+                },
+                "wue_boundary": {
+                    "type": "string",
+                    "enum": ["onsite", "source"],
+                    "description": "Physical boundary for wue_override.",
+                },
+                "water_accounting_kind": {
+                    "type": "string",
+                    "description": "Accounting definition for wue_override.",
+                },
+                "wue_uncertainty_pct": {
+                    "type": "number",
+                    "description": "Optional uncertainty percentage for wue_override.",
                 },
             },
             "required": ["models", "input_tokens", "output_tokens"],

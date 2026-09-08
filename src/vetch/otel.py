@@ -102,6 +102,12 @@ def attach_to_otel_span(event: InferenceEvent) -> bool:
         span.set_attribute(
             "vetch.energy_completeness", event.get("energy_completeness", "complete")
         )
+        # A figure can be a floor without being text_only (an unidentified
+        # coefficient axis). Export both, or a consumer filtering on
+        # energy_completeness alone sees an incomplete number as a point.
+        span.set_attribute(
+            "vetch.energy_estimate_kind", event.get("energy_estimate_kind", "point")
+        )
         cal_match = event.get("calibration_match")
         if cal_match:
             span.set_attribute("vetch.calibration_match", cal_match)
@@ -343,6 +349,9 @@ def _export_event_sync(event: InferenceEvent) -> bool:
             span.set_attribute("vetch.model_match", event.get("model_match", "fallback"))
             span.set_attribute(
                 "vetch.energy_completeness", event.get("energy_completeness", "complete")
+            )
+            span.set_attribute(
+                "vetch.energy_estimate_kind", event.get("energy_estimate_kind", "point")
             )
             cal_match = event.get("calibration_match")
             if cal_match:

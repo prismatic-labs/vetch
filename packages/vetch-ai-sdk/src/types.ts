@@ -121,6 +121,20 @@ export interface VetchEvent {
   carbon_p95_g: number | null;
   energy_source: string;
   energy_override_source: string | null;
+  /** Coefficient axes the calibration could not identify, so no energy was
+   *  attributed on them (e.g. ["wh_per_1k_input"] means prefill energy is
+   *  absent from the figure entirely). Empty means every axis was priced.
+   *  A null coefficient never means zero cost. */
+  energy_axes_unattributed: string[];
+  /** Whether the energy figure is a complete estimate or a floor. "lower_bound"
+   *  means some of the call's energy was never priced -- an unpriced visual
+   *  portion or an unidentified coefficient axis. On a lower_bound,
+   *  energy_p95_wh and carbon_p95_g are null because the upper end is unknown.
+   *  energy_uncertainty_pct continues to describe the portion that was priced. */
+  energy_estimate_kind: "point" | "lower_bound";
+  /** Whether non-text input was priced. "text_only" means media energy is
+   * absent even if the text portion has a numeric estimate. */
+  energy_completeness: "complete" | "text_only";
   energy_basis: string | null;
   grid_intensity_gco2e_kwh: number | null;
   grid_intensity_timestamp: string | null;
@@ -130,6 +144,11 @@ export interface VetchEvent {
   pue: number | null;
   pue_tier: number | null;
   pue_source: string | null;
+  water_tier: number | null;
+  water_basis: string | null;
+  water_boundary: string | null;
+  water_accounting_kind: string | null;
+  water_uncertainty_pct: number | null;
 
   is_stream: boolean;
   is_batch: boolean;
@@ -247,6 +266,14 @@ export interface VetchOptions {
   budgets?: VetchBudgets | (() => VetchBudgets);
   /** Tier-0 hardware coefficients; auto-loaded from ~/.vetch on Node when omitted. */
   energyOverride?: import("./calculation.js").EnergyOverride | null;
+  /** Facility WUE in liters per kWh for explicit water attribution. */
+  wueOverride?: number | null;
+  /** Physical boundary for wueOverride; required for safe aggregation. */
+  wueBoundary?: "onsite" | "source" | null;
+  /** Accounting definition for wueOverride; required for safe aggregation. */
+  waterAccountingKind?: string | null;
+  /** Optional uncertainty percentage for wueOverride. */
+  wueUncertaintyPct?: number | null;
   protocol?: VetchProtocolProgress;
   thresholds?: VetchThresholds;
   /** Called when an LRU-evicted session_id drops advisory state. */

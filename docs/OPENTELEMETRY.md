@@ -204,7 +204,11 @@ Vetch adds custom attributes for sustainability and cost tracking:
 - `vetch.cost.usd`: Estimated cost in USD (e.g., `0.00045`)
 - `vetch.energy.wh`: Energy consumption in watt-hours (e.g., `1.2`)
 - `vetch.carbon.g`: Carbon emissions in grams CO2e (e.g., `0.48`)
-- `vetch.water.l`: Water usage in liters (e.g., `0.0013`)
+- `vetch.water.l` / `vetch.water.total_l`: Water usage in liters, omitted when WUE is unpublished
+- `vetch.water.tier`: WUE provenance tier (1 = region-published, 3 = fleet/geography average)
+- `vetch.water.boundary`: Physical boundary of the WUE coefficient
+- `vetch.water.accounting_kind`: Publisher definition such as withdrawal or consumption
+- `vetch.water.uncertainty_pct`: set only when the caller supplied one with `wue_override`
 - `vetch.region`: Cloud region for carbon calculation (`us-east-1`, `eu-west-1`, etc.)
 - `vetch.tier`: Energy estimate quality (1=measured, 2=derived, 3=estimated)
 - `vetch.tracking_degraded`: Boolean indicating reduced tracking accuracy

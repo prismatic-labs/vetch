@@ -13,11 +13,10 @@ from pathlib import Path
 
 from vetch.calculation import (
     DEFAULT_PUE,
-    DEFAULT_WUE,
     PROMPT_LENGTH_MEDIUM_THRESHOLD,
     PROMPT_LENGTH_SHORT_THRESHOLD,
     PROVIDER_PUE,
-    PROVIDER_WUE,
+    _infer_wue_provider_from_model,
     infer_provider_for_model,
 )
 
@@ -60,18 +59,26 @@ REGION_LABELS: dict[str, str] = {
 }
 
 
-def _load_wue_registry() -> dict[str, float]:
+def _load_wue_registry() -> dict[str, dict]:
     data = json.loads(WUE_PATH.read_text())
-    return {k: float(v) for k, v in data.items() if not k.startswith("_")}
+    return {
+        k: v
+        for k, v in data.items()
+        if not k.startswith("_") and isinstance(v, dict) and "value" in v
+    }
 
 
-def _resolve_provider_wue(provider: str | None, wue_registry: dict[str, float]) -> float:
-    """Match calculate_water() provider-level lookup (no region)."""
-    if not provider:
-        return DEFAULT_WUE
-    if provider in wue_registry:
-        return wue_registry[provider]
-    return PROVIDER_WUE.get(provider, DEFAULT_WUE)
+def _calculator_wue(wue_registry: dict[str, dict]) -> dict[str, dict]:
+    """Sourced provider and regional WUE records used by the calculator."""
+    return {
+        key: {
+            "value": float(entry["value"]),
+            "tier": int(entry["tier"]),
+            "boundary": str(entry["boundary"]),
+            "accounting": str(entry["accounting"]),
+        }
+        for key, entry in sorted(wue_registry.items())
+    }
 
 
 def build_calc_constants() -> dict:
@@ -79,19 +86,12 @@ def build_calc_constants() -> dict:
     # sorted() makes embed output deterministic: a bare set() iterates in
     # PYTHONHASHSEED-dependent order, which shuffles the JSON key order each
     # run and breaks the "rebuild -> git diff --exit-code" CI gate.
-    providers = sorted(set(PROVIDER_PUE.keys()) | set(PROVIDER_WUE.keys()) | {"default"})
-    provider_wue = {
-        prov: _resolve_provider_wue(prov, wue_registry)
-        for prov in providers
-        if prov != "default"
-    }
     return {
         "prompt_short_threshold": PROMPT_LENGTH_SHORT_THRESHOLD,
         "prompt_medium_threshold": PROMPT_LENGTH_MEDIUM_THRESHOLD,
         "default_pue": DEFAULT_PUE,
-        "default_wue": DEFAULT_WUE,
         "provider_pue": PROVIDER_PUE,
-        "provider_wue": provider_wue,
+        "provider_wue": _calculator_wue(wue_registry),
     }
 
 
@@ -100,6 +100,7 @@ def build_models(energy: dict, pricing: dict) -> dict:
     for model, entry in energy.items():
         price = pricing.get(model, {})
         provider = infer_provider_for_model(model) or "default"
+        water_provider = _infer_wue_provider_from_model(model)
 
         obj: dict = {
             "tier": entry["tier"],
@@ -107,6 +108,7 @@ def build_models(energy: dict, pricing: dict) -> dict:
             "params": entry.get("total_params_b", 0),
             "active": entry.get("active_params_b", 0),
             "prov": provider,
+            "water_prov": water_provider,
             "usd_in": price.get("usd_per_1k_input", 0.0),
             "usd_out": price.get("usd_per_1k_output", 0.0),
         }

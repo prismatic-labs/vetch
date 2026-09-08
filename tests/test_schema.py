@@ -64,36 +64,53 @@ class TestValidateEnergyOverride:
         assert "must be a dict" in warnings[0]
 
     def test_invalid_missing_input(self) -> None:
-        """Missing wh_per_1k_input returns None with warning."""
+        """Missing wh_per_1k_input is a valid partial override when output is identified."""
         override = {"wh_per_1k_output": 1.5}
         result, warnings = validate_energy_override(override)
-        assert result is None
-        assert len(warnings) == 1
-        assert "wh_per_1k_input" in warnings[0]
+        assert result is not None
+        assert result["wh_per_1k_input"] is None
+        assert result["wh_per_1k_output"] == 1.5
+        assert any("wh_per_1k_input omitted" in w for w in warnings)
 
     def test_invalid_missing_output(self) -> None:
-        """Missing wh_per_1k_output returns None with warning."""
+        """Missing wh_per_1k_output is a valid partial override when input is identified."""
         override = {"wh_per_1k_input": 0.5}
         result, warnings = validate_energy_override(override)
-        assert result is None
-        assert len(warnings) == 1
-        assert "wh_per_1k_output" in warnings[0]
+        assert result is not None
+        assert result["wh_per_1k_output"] is None
+        assert result["wh_per_1k_input"] == 0.5
+        assert any("wh_per_1k_output omitted" in w for w in warnings)
 
     def test_invalid_zero_input(self) -> None:
-        """Zero wh_per_1k_input returns None with warning."""
+        """Zero input is unidentified (null), not a discarded override."""
         override = {"wh_per_1k_input": 0, "wh_per_1k_output": 1.5}
         result, warnings = validate_energy_override(override)
-        assert result is None
-        assert len(warnings) == 1
-        assert "positive number" in warnings[0]
+        assert result is not None
+        assert result["wh_per_1k_input"] is None
+        assert result["wh_per_1k_output"] == 1.5
+        assert any("never zero" in w for w in warnings)
 
     def test_invalid_negative_output(self) -> None:
-        """Negative wh_per_1k_output returns None with warning."""
+        """Negative output is dropped; identified input still attaches."""
         override = {"wh_per_1k_input": 0.5, "wh_per_1k_output": -1.0}
         result, warnings = validate_energy_override(override)
+        assert result is not None
+        assert result["wh_per_1k_input"] == 0.5
+        assert result["wh_per_1k_output"] is None
+        assert any("wh_per_1k_output" in w for w in warnings)
+
+    def test_null_input_partial_attaches(self) -> None:
+        override = {"wh_per_1k_input": None, "wh_per_1k_output": 0.5}
+        result, warnings = validate_energy_override(override)
+        assert result is not None
+        assert result["wh_per_1k_input"] is None
+        assert result["wh_per_1k_output"] == 0.5
+        assert any("null" in w for w in warnings)
+
+    def test_empty_override_falls_back(self) -> None:
+        result, warnings = validate_energy_override({})
         assert result is None
-        assert len(warnings) == 1
-        assert "positive number" in warnings[0]
+        assert any("no identified coefficient" in w for w in warnings)
 
     def test_invalid_tier_out_of_range(self) -> None:
         """Invalid tier is warned and defaults to 1."""

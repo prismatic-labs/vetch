@@ -1,22 +1,22 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "identity": {
     "provider": "self-hosted",
     "model": "Qwen/Qwen3.8-27B",
     "gpu": "h100-sxm-80gb",
     "serving_engine": "vllm",
     "precision": "bf16",
-    "instance_type": null,
     "visual_token_budget": null,
-    "concurrency": 16
+    "concurrency": 16,
+    "instance_type": null
   },
   "gpu_raw": "NVIDIA H100 80GB HBM3",
   "coefficients": {
-    "wh_per_1k_input": 0.0,
+    "wh_per_1k_input": null,
     "wh_per_1k_output": 0.1705983292671912,
     "wh_per_image": 0.010024082700355152,
     "visual_tokens_per_image": 729,
-    "intercept_wh": 0.0
+    "intercept_wh": null
   },
   "provenance": {
     "tier": 0,
@@ -62,7 +62,22 @@
         0.0,
         0.0
       ],
-      "residuals_structured": false
+      "residuals_structured": false,
+      "gate": {
+        "protocol_version": "2.0",
+        "max_relative_ci_half_width": 0.1,
+        "max_condition_number": 30.0,
+        "min_r2": 0.85,
+        "design_leverage_multiple": 10.0,
+        "design_idle_integration_uncertainty": 0.02,
+        "prefill_arm_min_input_tokens": 1024,
+        "prefill_arm_max_output_tokens": 8,
+        "prefill_arm_min_rows": 2,
+        "prefill_arm_min_span_tokens": 1024,
+        "image_arm_min_rows_each": 2,
+        "bootstrap_resamples": 500,
+        "bootstrap_seed": 42
+      }
     },
     "fit_engine": "amortization_1_over_c",
     "ci_method": "none",
@@ -96,7 +111,7 @@
     "out_tokens_target": 64,
     "in_words": 96,
     "fixed_output_length": true,
-    "achieved_concurrency": 0.0,
+    "achieved_concurrency": null,
     "amortization_curve": [
       {
         "concurrency": 1,
@@ -180,11 +195,86 @@
     "gpu_shared_warning": false,
     "compute_process_count": 1,
     "device_count": 1,
-    "timestamp": 1786740216.3211017
+    "timestamp": 1786740216.3211017,
+    "schema_migration": [
+      "Host block reconstructed after the fact rather than captured at measurement time; weaker evidence than a contemporaneous record.",
+      "achieved_concurrency was recorded as 0.0 by a sampler that never observed the block in flight; reset to null (unknown)."
+    ]
   },
   "active": true,
   "rejection_reasons": null,
   "timestamp": 1786740216.3211017,
-  "profile_hash": "sha256:2934aacf8aef28503a308e9a895976e070d8d8353911fbfe63c9b24827bafcdc",
-  "content_hash": "sha256:11c617b4e55cf4208157d1c29f361a5497a3e48f203d419a5feab77a15a4cf2d"
+  "profile_hash": "sha256:ce0f7a374df1ac2b05851c2a4bd065956eb416bb984f3f975b6a75b35cd08138",
+  "content_hash": "sha256:15fc779ff48447b8e6e611b4b7ebd5b6328c1d04aea54633ed18aa72316feaaf",
+  "host": {
+    "infrastructure_provider": "vast.ai",
+    "provider_kind": "marketplace",
+    "instance_type": null,
+    "site": null,
+    "region": null,
+    "grid_zone": null,
+    "country": null,
+    "host_cpu": null,
+    "host_cpu_cores": null,
+    "gpu_form_factor": "sxm",
+    "gpu_count_in_host": null,
+    "tenancy": "unknown",
+    "facility": {
+      "pue": null,
+      "pue_source": null,
+      "pue_basis": null,
+      "wue_l_per_kwh": null,
+      "wue_source": null,
+      "water_boundary": null,
+      "water_accounting_kind": null,
+      "grid_intensity_gco2_per_kwh": null,
+      "grid_intensity_source": null,
+      "grid_accounting_convention": null
+    }
+  },
+  "measurement_conditions": {
+    "enforced_power_limit_w": null,
+    "sm_clock_locked": null,
+    "sm_clock_mhz": null
+  },
+  "serving_config": {
+    "engine": null,
+    "engine_version": null,
+    "prefix_caching": null,
+    "speculative_decoding": null,
+    "tensor_parallel_size": null,
+    "flags_raw": null,
+    "engine_specific": {}
+  },
+  "energy_basis": {
+    "marginal": {
+      "wh_per_1k_output": null,
+      "idle_subtracted": true
+    },
+    "attributed": {
+      "attribution_rule": "idle_amortised_over_measured_tokens",
+      "levels": [
+        {
+          "assumed_utilisation": 0.2,
+          "wh_per_1k_output": null
+        },
+        {
+          "assumed_utilisation": 0.5,
+          "wh_per_1k_output": null
+        },
+        {
+          "assumed_utilisation": 0.8,
+          "wh_per_1k_output": null
+        }
+      ]
+    }
+  },
+  "node_power": {
+    "available": false,
+    "source": null,
+    "board_wh": null,
+    "node_wh": null,
+    "node_to_board_ratio": null,
+    "sampling_hz": null
+  }
 }

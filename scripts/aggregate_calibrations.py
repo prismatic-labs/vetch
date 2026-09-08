@@ -254,8 +254,7 @@ def validate_record(record: dict[str, Any]) -> list[str]:
             f"image_resolution_px={resolution} — only {REQUIRED_IMAGE_RESOLUTION_PX}px accepted"
         )
 
-    if record.get("residuals_structured") is True:
-        reasons.append("residuals_structured=true — structured residual pattern detected")
+    # residuals_structured is a misspecification flag, not a reject (protocol v2).
 
     fit = record.get("fit") or {}
     r2 = fit.get("r2")

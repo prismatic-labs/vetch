@@ -60,7 +60,7 @@ def _sdk_metrics(model: str, input_tokens: int, output_tokens: int, region_key: 
         "pue": pue,
         "carbon_g": carbon_g,
         "cost_usd": cost_usd,
-        "water_ml": water_l * 1000.0,
+        "water_ml": None if water_l is None else water_l * 1000.0,
     }
 
 
@@ -72,7 +72,14 @@ def _extract_calculator_script() -> str:
     return calc_scripts[0].strip()
 
 
-def _js_metrics(model: str, input_tokens: int, output_tokens: int, grid_gco2: float) -> dict:
+def _js_metrics(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    grid_gco2: float,
+    water_host: str = "auto",
+    water_region: str = "global",
+) -> dict:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node not installed")
@@ -88,6 +95,10 @@ def _js_metrics(model: str, input_tokens: int, output_tokens: int, grid_gco2: fl
         + str(output_tokens)
         + ", "
         + str(grid_gco2)
+        + ", "
+        + json.dumps(water_host)
+        + ", "
+        + json.dumps(water_region)
         + ");\n"
         + "console.log(JSON.stringify(m));\n"
     )
@@ -105,11 +116,18 @@ def _js_metrics(model: str, input_tokens: int, output_tokens: int, grid_gco2: fl
     return json.loads(result.stdout.strip())
 
 
-def _assert_close(actual: float, expected: float, label: str) -> None:
-    if expected == 0.0:
-        assert actual == pytest.approx(expected, abs=ABS_TOL), label
+def _assert_close(actual: object, expected: object, label: str) -> None:
+    if expected is None:
+        assert actual is None, f"{label}: expected null, got {actual!r}"
         return
-    assert actual == pytest.approx(expected, rel=REL_TOL, abs=ABS_TOL), label
+    if actual is None:
+        raise AssertionError(f"{label}: expected {expected!r}, got null")
+    actual_f = float(actual)  # type: ignore[arg-type]
+    expected_f = float(expected)  # type: ignore[arg-type]
+    if expected_f == 0.0:
+        assert actual_f == pytest.approx(expected_f, abs=ABS_TOL), label
+        return
+    assert actual_f == pytest.approx(expected_f, rel=REL_TOL, abs=ABS_TOL), label
 
 
 @pytest.mark.parametrize(
@@ -129,3 +147,25 @@ def test_calculator_matches_sdk(
 
     for key in ("energy_it_wh", "pue", "carbon_g", "cost_usd", "water_ml"):
         _assert_close(js[key], sdk[key], f"{model} {key}")
+
+
+def test_calculator_host_selector_reaches_aws_region() -> None:
+    energy_wh, *_ = calculate_energy(1000, 500, "llama-3.1-70b")
+    expected_l = calculate_water(
+        energy_wh,
+        model="llama-3.1-70b",
+        provider_hint="aws",
+        region="us-east-1",
+    )
+    js = _js_metrics(
+        "llama-3.1-70b",
+        1000,
+        500,
+        _grid_intensity("us-east-1"),
+        water_host="aws",
+        water_region="us-east-1",
+    )
+
+    assert expected_l is not None
+    assert js["water_ml"] == pytest.approx(expected_l * 1000)
+    assert js["water_accounting_kind"] == "withdrawal"

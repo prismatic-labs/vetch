@@ -94,6 +94,12 @@ jobs:
       - name: Registry parity and freshness
         run: python scripts/check_registry_freshness.py
 
+      - name: Registry provenance
+        run: python scripts/check_registry_provenance.py
+
+      - name: Calibration record invariants
+        run: python scripts/check_calibration_invariants.py
+
   security:
     runs-on: ubuntu-latest
     steps:

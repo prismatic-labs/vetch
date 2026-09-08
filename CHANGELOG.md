@@ -7,6 +7,173 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — calibration protocol v2
+
+Adds per-coefficient identifiability to hardware calibration records.
+
+- Schema 2 records carry `host` (infrastructure owner, site, tenancy, form
+  factor, facility), `serving_config`, `measurement_conditions` (including
+  `enforced_power_limit_w` in the storage key), `energy_basis` (marginal plus
+  attributed at 20/50/80% utilisation), and `node_power`. Resolve identity is
+  unchanged; two hosts or two power caps never overwrite each other.
+  `identity.provider` stays `self-hosted` for local inference.
+- Null coefficients mean "do not attribute on this axis". Partial energy
+  overrides attach. v1 files in `~/.vetch/calibrations/` still resolve with
+  clamp-to-zero semantics, behind a warning.
+- Nested-model status: decode can be identified while input is null. Gemma 4
+  31B fp8 input stays `not_identified` despite a positive v1 interval because
+  the design lacks a prefill isolation arm. `residuals_structured` is a flag, not a
+  whole-record reject. No 30% idle gate and no 2 second energy-counter floor.
+- `vetch validate-calibration` runs on a laptop with no GPU. Published JSON
+  Schema checks types/required fields; identifiability lives on the
+  `calibrate` extra (NumPy).
+- Protocol: `docs/calibration-protocol-v2.md`. `--batched` is already shipped;
+  phase separation applies only at concurrency 1.
+- Batch-1 H100 records migrated and re-fit offline. They stay hardware-local
+  and are not copied into the community set.
+
+### Fixed — calibration protocol v2 review
+
+- Published coefficients now come from the published nested rung. Pairing an
+  identified intercept with a through-origin slope double-counted per-request
+  fixed cost.
+- `vetch validate-calibration` treats `--batched` records as amortization
+  points instead of failing nested OLS on a one-row table.
+- `residuals_structured=true` is a misspecification flag in
+  `aggregate_calibrations.py`, not a whole-record reject.
+- Serving-path pin is recorded as requested-not-confirmed. Per-request
+  `extra_body` keys are not a measured engine-start state; `prefix_caching`
+  and `speculative_decoding` stay null unless confirmed.
+
+### Changed — provenance-gated water estimates
+
+- `estimated_water_l` is now `null` unless a registry-backed WUE or an explicit
+  `wue_override` is present. Unsourced defaults (`DEFAULT_WUE` 1.8 and guessed
+  OpenAI/Anthropic/provider coefficients) are removed. Google, AWS, and Azure
+  keep sourced fleet or region figures with `tier`, `boundary`, `accounting`,
+  and a `basis` citation; OpenAI and Anthropic do not publish facility WUE.
+- Session stats distinguish "0 mL of water" from "water not available" via
+  `water_attributed_calls` / `water_unattributed_calls`, and split incompatible
+  definitions into `water_totals_ml_by_definition` instead of emitting or
+  retaining a mixed scalar total.
+- Python and TypeScript instrumentation accept explicit `wue_override` /
+  `wueOverride` values. Overrides require boundary and accounting metadata for
+  aggregation/comparison. Open-weight model names no longer imply a datacenter
+  operator, and Bedrock regional lookups resolve through AWS registry keys.
+- Methodology version bumped to 1.4.
+
+### Changed — PUE attribution is provenance-tiered
+
+PUE values now carry provenance for the infrastructure assumption behind their
+application to a call.
+
+- `pue_tier` gains tier 2: an operator-published PUE applied through an
+  undisclosed-hosting assumption. OpenAI (Microsoft's Azure figure) and
+  Anthropic (AWS's figure) move from tier 1 to tier 2 — neither vendor
+  discloses where it serves. PUE *values* are unchanged.
+- Open-weight model names (`llama-*`, `mixtral-*`, `gemma-*`) no longer imply a
+  datacenter operator for PUE. A checkpoint name identifies a model, not a
+  facility, and it can be served anywhere. Water already refused this
+  inference; carbon now matches.
+- `pue_source` states the assumption inline, so it travels with the number into
+  events, dashboards, and OTLP spans. The CLI renders `PUE ~1.12` rather than
+  `PUE 1.12` for anything above tier 1 (existing behaviour, newly reached).
+- `DEFAULT_PUE` is retained and documented: a default is permitted only where
+  the published spread keeps a wrong pick inside the metric's stated
+  uncertainty (PUE spans 1.09–1.27, ~15%; WUE spans 0.02–2.85, ~140x).
+- JS SDK PUE values resynced to Python. They had drifted (`google` 1.10 vs
+  1.09, `aws` 1.15 vs 1.14) and `deepseek` was missing entirely, so the two
+  SDKs reported different carbon for the same call.
+- New `scripts/check_registry_provenance.py`, wired into CI: fails the build on
+  an unsourced WUE entry, an unclassified or self-contradicting PUE
+  attribution, or a new undocumented `DEFAULT_*` coefficient.
+- Methodology version bumped to 1.5.
+
+### Removed — `uncertainty_pct` from the WUE registry
+
+- `wue.json` no longer carries `uncertainty_pct`; it was null on all 35
+  entries. Publishers report WUE values, not uncertainty bands. `tier` remains
+  the registry's confidence signal.
+- `water_uncertainty_pct` remains available on events and spans when a caller
+  supplies `wue_uncertainty_pct` with `wue_override`. The override API is
+  unchanged.
+- `scripts/check_registry_provenance.py` fails the build if the field returns
+  to the registry.
+
+### Added — prefill isolation and per-axis publication
+
+- The v2 workload includes a prefill isolation arm. The first batch-2 H100
+  record identifies `wh_per_1k_input` to ±3.1%; batch-1 designs did not have
+  enough input span to identify that axis.
+- The record's decode coefficient agrees with the earlier measurement within
+  1.1%, but the hosts, power caps, and designs differ. This is not a
+  replication, and cap sensitivity remains unmeasured.
+- The record discloses that chunked prefill was not confirmed disabled, so the
+  coefficient describes prefill as served by vLLM 0.28.
+
+### Changed — one fitting path for every accelerator
+
+- CUDA and Apple Silicon share the nested fit, per-axis status, workload design,
+  and published-rung semantics. The energy sampler and hardware domain remain
+  accelerator-specific.
+- Apple Silicon now filters workload points to the available context budget,
+  sizes prefill repeats from a measured rate, corrects prompt lengths against
+  the model tokenizer, and records per-request normalisation.
+- Decode output length is controlled where the backend supports it. Ollama
+  uses prompt shaping and a neutral repeat penalty because it ignores
+  `ignore_eos`.
+- Idle drift remains visible and can prevent active installation, but does not
+  discard a completed run. The writer now stores the fit verdict and energy
+  basis on the record.
+- The `--quick` option is intended for smoke testing; its reduced grid is not
+  sufficient to publish a coefficient.
+- **Validated on one machine and one model.** The Apple Silicon path has been
+  run end to end on an M5 (16 GB) against `llama3.2:3b`, where decode is
+  identified at +/-2.0% and reproduces to 0.55% across three runs. No other
+  chip, memory size or model has been measured. Six of the defects fixed above
+  were invisible to the test suite and surfaced only by running it, so treat a
+  first run on different hardware as an experiment rather than a measurement.
+  Prefill remains unidentified there at about 13.6%, against a 10% publication
+  target.
+
+### Known limitations
+
+- The idle-uncertainty gate has been validated by replaying every shipped
+  record, where H100 records score 0.32-2.13% against a 10% limit. It has not
+  yet run inside a live CUDA calibration.
+- The eight shipped H100 records were judged under the previous idle-drift rule.
+  They pass the new gate, and `gate_parameters` records which rule judged each
+  one, so nothing is misreported; they have simply not been re-attested.
+- `wh_per_1k_input` is identified on H100 (batch 2, +/-3.1%) and not yet on
+  Apple Silicon.
+
+### Added — provenance and self-consistency
+
+- Records store the identifiability thresholds used for their verdict.
+- `vetch.calibration_invariants` checks records when they are written, validated,
+  and scanned in CI.
+- Events distinguish complete estimates from lower bounds and identify which
+  coefficient axes were not priced. Percentile upper bounds are omitted for
+  lower-bound estimates.
+
+### Fixed
+
+- `vetch[calibrate]` now depends on the maintained NVML bindings. The fallback
+  notice identifies the missing counter support and the installation command.
+- Calibration aborts before the grid when the idle baseline is not idle.
+  Utilization is the decisive signal: a container cannot see a co-tenant's
+  processes, so the process count reads 1 while a neighbour saturates the card.
+- Prefill-isolation rows may aggregate several requests into one timing window,
+  so a design point that is short by construction still clears the sampling
+  duration floor. Rows are normalised per request, and the request count is
+  recorded.
+- `measurement_basis` is derived from `energy_source` rather than asserted
+  beside it, so a record cannot claim a counter basis for sampled numbers.
+- The workload grid respects the server's context window, so a long prefill
+  point is not rejected outright.
+- `achieved_concurrency` is sampled while requests are in flight. It was read
+  before the block began and after it ended, so it was structurally always ~0.
+
 ## [0.11.1] - 2026-08-10
 
 ### Added — multimodal media split + record_usage visuals

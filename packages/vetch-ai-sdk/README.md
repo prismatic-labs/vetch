@@ -47,7 +47,7 @@ npm install /absolute/path/to/vetch/packages/vetch-ai-sdk
 
 Publish: [`docs/NPM_PUBLISH.md`](../../docs/NPM_PUBLISH.md). Next.js reference: [`examples/nextjs-app-router`](examples/nextjs-app-router/README.md).
 
-`enrichVetchEvent` auto-loads Tier-0 coefficients from `~/.vetch/calibrations/` on Node.js (not Edge). Pass `energyOverride` explicitly on Edge or when you need custom coefficients.
+`enrichVetchEvent` auto-loads Tier-0 coefficients from `~/.vetch/calibrations/` on Node.js (not Edge). Pass `energyOverride` explicitly on Edge or when you need custom coefficients. Pass `wueOverride` in liters per kWh when you have a facility-specific WUE; include `wueBoundary` and `waterAccountingKind` to make that estimate eligible for aggregation or comparison. Otherwise water remains `null` unless the hosting provider has a sourced registry entry.
 
 ## Current Limits
 

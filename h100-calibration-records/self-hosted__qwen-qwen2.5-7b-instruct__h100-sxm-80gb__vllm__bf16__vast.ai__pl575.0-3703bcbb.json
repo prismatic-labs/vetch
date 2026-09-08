@@ -1,0 +1,638 @@
+{
+  "schema_version": 2,
+  "identity": {
+    "provider": "self-hosted",
+    "model": "Qwen/Qwen2.5-7B-Instruct",
+    "gpu": "h100-sxm-80gb",
+    "serving_engine": "vllm",
+    "precision": "bf16",
+    "instance_type": null,
+    "visual_token_budget": null,
+    "concurrency": null
+  },
+  "host": {
+    "infrastructure_provider": "vast.ai",
+    "provider_kind": "marketplace",
+    "instance_type": null,
+    "site": null,
+    "region": null,
+    "grid_zone": null,
+    "country": null,
+    "host_cpu": null,
+    "host_cpu_cores": null,
+    "gpu_form_factor": "sxm",
+    "gpu_count_in_host": 1,
+    "tenancy": "unknown",
+    "facility": {
+      "pue": null,
+      "pue_source": null,
+      "pue_basis": null,
+      "wue_l_per_kwh": null,
+      "wue_source": null,
+      "water_boundary": null,
+      "water_accounting_kind": null,
+      "grid_intensity_gco2_per_kwh": null,
+      "grid_intensity_source": null,
+      "grid_accounting_convention": null
+    }
+  },
+  "measurement_conditions": {
+    "enforced_power_limit_w": 575.0,
+    "sm_clock_locked": null,
+    "sm_clock_mhz": 1980
+  },
+  "serving_config": {
+    "engine": "vllm",
+    "engine_version": "openai-compatible (Qwen/Qwen2.5-7B-Instruct)",
+    "prefix_caching": null,
+    "speculative_decoding": null,
+    "tensor_parallel_size": null,
+    "flags_raw": "requested: enable_prefix_caching=false disable_chunked_prefill=true speculative_config=null (per-request extra_body; engine-start flags not confirmed)",
+    "engine_specific": {
+      "pin_serving_path": true,
+      "api_backend": "openai",
+      "requested": {
+        "prefix_caching": false,
+        "chunked_prefill": false,
+        "speculative_decoding": false,
+        "via": "openai_compat_extra_body",
+        "confirmed": false
+      }
+    }
+  },
+  "energy_basis": {
+    "marginal": {
+      "wh_per_1k_output": 0.4916837844625219,
+      "idle_subtracted": true
+    },
+    "attributed": {
+      "attribution_rule": "idle_amortised_over_measured_tokens",
+      "levels": [
+        {
+          "assumed_utilisation": 0.2,
+          "wh_per_1k_output": 3.149434771318055
+        },
+        {
+          "assumed_utilisation": 0.5,
+          "wh_per_1k_output": 1.5547841792047352
+        },
+        {
+          "assumed_utilisation": 0.8,
+          "wh_per_1k_output": 1.1561215311764053
+        }
+      ]
+    }
+  },
+  "node_power": {
+    "available": false,
+    "source": null,
+    "board_wh": null,
+    "node_wh": null,
+    "node_to_board_ratio": null,
+    "sampling_hz": null
+  },
+  "gpu_raw": "NVIDIA H100 80GB HBM3",
+  "coefficients": {
+    "wh_per_1k_input": 0.0036636187586418264,
+    "wh_per_1k_output": 0.4916837844625219,
+    "wh_per_image": null,
+    "visual_tokens_per_image": null,
+    "intercept_wh": null,
+    "status": {
+      "wh_per_1k_output": "identified",
+      "intercept_wh": "not_identified",
+      "wh_per_1k_input": "identified",
+      "wh_per_image": "not_identified"
+    },
+    "null_reasons": {
+      "intercept_wh": "coefficient determined only to +/-133%, worse than the +/-10% publication target",
+      "wh_per_image": "no image feature in the design"
+    },
+    "published_rung": "output_input"
+  },
+  "provenance": {
+    "tier": 0,
+    "samples": 32,
+    "energy_source": "nvmlDeviceGetTotalEnergyConsumption",
+    "measurement_basis": "nvml_gpu_energy",
+    "energy_domain": "gpu_board",
+    "energy_domain_includes": [
+      "gpu_core",
+      "hbm"
+    ],
+    "energy_domain_excludes": [
+      "host_cpu",
+      "host_dram",
+      "nvlink_switch",
+      "nic",
+      "storage",
+      "psu_loss",
+      "cooling"
+    ],
+    "not_wall_power": true,
+    "pue_applied": false,
+    "grid_applied": false,
+    "idle_subtracted": true,
+    "idle_subtraction_method": "pre_post_average",
+    "idle_watts_before": 131.83,
+    "idle_watts_after": 132.788,
+    "idle_drift_pct": 0.726,
+    "concurrency": 1,
+    "batch_size": 1,
+    "fit": {
+      "r2": 0.9695,
+      "condition_number": 3.1,
+      "input_ci95": [
+        0.003526809836543234,
+        0.003755587095036152
+      ],
+      "output_ci95": [
+        0.46929555414640495,
+        0.5151249691924145
+      ],
+      "image_ci95": null,
+      "intercept_ci95": [
+        -0.004213470794811625,
+        0.0002080114711076304
+      ],
+      "residuals_structured": false,
+      "published_rung": "output_input",
+      "gate": {
+        "protocol_version": "2.0",
+        "max_relative_ci_half_width": 0.1,
+        "max_condition_number": 30.0,
+        "min_r2": 0.85,
+        "design_leverage_multiple": 10.0,
+        "design_idle_integration_uncertainty": 0.02,
+        "prefill_arm_min_input_tokens": 1024,
+        "prefill_arm_max_output_tokens": 8,
+        "prefill_arm_min_rows": 2,
+        "prefill_arm_min_span_tokens": 1024,
+        "image_arm_min_rows_each": 2,
+        "bootstrap_resamples": 500,
+        "bootstrap_seed": 42
+      }
+    },
+    "fit_engine": "numpy",
+    "ci_method": "bootstrap_500",
+    "raw_run_table": [
+      {
+        "n_images": 0,
+        "text_tokens": 51904,
+        "output_tokens": 512,
+        "requests": 64,
+        "energy_wh": 0.43446331362880963,
+        "raw_energy_wh": 0.6495397222222222,
+        "duration_ms": 5852.023620009422,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 51904,
+        "output_tokens": 512,
+        "requests": 64,
+        "energy_wh": 0.4428117434534958,
+        "raw_energy_wh": 0.6578,
+        "duration_ms": 5849.625087022781,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 93450,
+        "output_tokens": 240,
+        "requests": 30,
+        "energy_wh": 0.4192195043566771,
+        "raw_energy_wh": 0.5854822222222222,
+        "duration_ms": 4523.849725961685,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 92805,
+        "output_tokens": 120,
+        "requests": 15,
+        "energy_wh": 0.37457401147964076,
+        "raw_energy_wh": 0.5124219444444444,
+        "duration_ms": 3750.7105728387833,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 98648,
+        "output_tokens": 64,
+        "requests": 8,
+        "energy_wh": 0.3900288477879541,
+        "raw_energy_wh": 0.5269666666666667,
+        "duration_ms": 3725.947237968445,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 98648,
+        "output_tokens": 64,
+        "requests": 8,
+        "energy_wh": 0.38877527441071447,
+        "raw_energy_wh": 0.5254788888888889,
+        "duration_ms": 3719.5747599601746,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 67,
+        "requests": 1,
+        "energy_wh": 0.03761650096811883,
+        "raw_energy_wh": 0.05332638888888889,
+        "duration_ms": 427.451043009758,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 94,
+        "requests": 1,
+        "energy_wh": 0.05044731120255031,
+        "raw_energy_wh": 0.072035,
+        "duration_ms": 587.3803899288177,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 84,
+        "requests": 1,
+        "energy_wh": 0.03949498174457062,
+        "raw_energy_wh": 0.05898333333333333,
+        "duration_ms": 530.2594299316406,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 72,
+        "requests": 1,
+        "energy_wh": 0.038853374740987406,
+        "raw_energy_wh": 0.0556875,
+        "duration_ms": 458.0404670238495,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 17,
+        "requests": 1,
+        "energy_wh": 0.0026433035293008857,
+        "raw_energy_wh": 0.007534722222222222,
+        "duration_ms": 133.09082996845245,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 37,
+        "requests": 1,
+        "energy_wh": 0.02030720088609444,
+        "raw_energy_wh": 0.02951138888888889,
+        "duration_ms": 250.43716299533844,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 1579,
+        "output_tokens": 86,
+        "requests": 1,
+        "energy_wh": 0.0505158419672385,
+        "raw_energy_wh": 0.07232361111111112,
+        "duration_ms": 593.3685659170151,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 811,
+        "output_tokens": 79,
+        "requests": 1,
+        "energy_wh": 0.040139500897417225,
+        "raw_energy_wh": 0.05925888888888889,
+        "duration_ms": 520.2202829122543,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 3115,
+        "output_tokens": 90,
+        "requests": 1,
+        "energy_wh": 0.06111730419588687,
+        "raw_energy_wh": 0.08519138888888889,
+        "duration_ms": 655.0328470468521,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 427,
+        "output_tokens": 125,
+        "requests": 1,
+        "energy_wh": 0.05776509956759383,
+        "raw_energy_wh": 0.08637805555555556,
+        "duration_ms": 778.5311990976334,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 51904,
+        "output_tokens": 512,
+        "requests": 64,
+        "energy_wh": 0.4404577901737047,
+        "raw_energy_wh": 0.6552863888888889,
+        "duration_ms": 5845.280949950218,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 51904,
+        "output_tokens": 512,
+        "requests": 64,
+        "energy_wh": 0.44086741824700837,
+        "raw_energy_wh": 0.6554566666666667,
+        "duration_ms": 5838.768457055092,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 93450,
+        "output_tokens": 240,
+        "requests": 30,
+        "energy_wh": 0.42090818812433384,
+        "raw_energy_wh": 0.5865416666666666,
+        "duration_ms": 4506.728725075722,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 92805,
+        "output_tokens": 120,
+        "requests": 15,
+        "energy_wh": 0.36210627429372244,
+        "raw_energy_wh": 0.5008275,
+        "duration_ms": 3774.472034096718,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 98648,
+        "output_tokens": 64,
+        "requests": 8,
+        "energy_wh": 0.40565468345417255,
+        "raw_energy_wh": 0.5420844444444445,
+        "duration_ms": 3712.1234681606293,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 98648,
+        "output_tokens": 64,
+        "requests": 8,
+        "energy_wh": 0.39632558352721814,
+        "raw_energy_wh": 0.5326972222222223,
+        "duration_ms": 3710.542016029358,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 53,
+        "requests": 1,
+        "energy_wh": 0.01947837492449362,
+        "raw_energy_wh": 0.032258888888888886,
+        "duration_ms": 347.7455760240555,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 48,
+        "requests": 1,
+        "energy_wh": 0.029320936053046052,
+        "raw_energy_wh": 0.040896666666666665,
+        "duration_ms": 314.9645719528198,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 51,
+        "requests": 1,
+        "energy_wh": 0.021905523187852126,
+        "raw_energy_wh": 0.03434555555555555,
+        "duration_ms": 338.48139703273773,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 44,
+        "requests": 1,
+        "energy_wh": 0.01989492782433752,
+        "raw_energy_wh": 0.030671666666666667,
+        "duration_ms": 293.224769115448,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 51,
+        "requests": 1,
+        "energy_wh": 0.018365681203265757,
+        "raw_energy_wh": 0.03061527777777778,
+        "duration_ms": 333.29982101917267,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 67,
+        "output_tokens": 22,
+        "requests": 1,
+        "energy_wh": 0.008629235060725412,
+        "raw_energy_wh": 0.014595277777777778,
+        "duration_ms": 162.33032310009003,
+        "replicate": true
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 1579,
+        "output_tokens": 94,
+        "requests": 1,
+        "energy_wh": 0.04851767233446894,
+        "raw_energy_wh": 0.07140111111111111,
+        "duration_ms": 622.6365090608597,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 811,
+        "output_tokens": 64,
+        "requests": 1,
+        "energy_wh": 0.03870699876959778,
+        "raw_energy_wh": 0.05453388888888889,
+        "duration_ms": 430.63456106185913,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 3115,
+        "output_tokens": 99,
+        "requests": 1,
+        "energy_wh": 0.061572340891455205,
+        "raw_energy_wh": 0.0875975,
+        "duration_ms": 708.1197180747986,
+        "replicate": false
+      },
+      {
+        "n_images": 0,
+        "text_tokens": 427,
+        "output_tokens": 132,
+        "requests": 1,
+        "energy_wh": 0.06732684327854187,
+        "raw_energy_wh": 0.09744416666666667,
+        "duration_ms": 819.4635989665985,
+        "replicate": false
+      }
+    ],
+    "gpu_name": "NVIDIA H100 80GB HBM3",
+    "gpu_canonical": "h100-sxm-80gb",
+    "gpu_known": true,
+    "serving_engine": "vllm",
+    "server_version": "openai-compatible (Qwen/Qwen2.5-7B-Instruct)",
+    "image_set": "vetch_standard_v1",
+    "image_resolution_px": 378,
+    "model_supports_images": false,
+    "visual_tokens_assumed": 729,
+    "visual_tokens_assumed_source": "assumed_default",
+    "vetch_version": "0.12.0",
+    "methodology_version": "2.0",
+    "measured_at": "2026-09-06T00:14:49Z",
+    "measured_by": null,
+    "samples_per_modality": {
+      "text_only": 32,
+      "image": 0
+    },
+    "tensor_parallel_size": null,
+    "sampler_cadence_ms": null,
+    "integration_method": "energy_counter",
+    "token_accounting_basis": "prompt_tokens",
+    "image_token_accounting": "unsupported",
+    "calibrated_range": {
+      "text_tokens": [
+        67,
+        98648
+      ],
+      "output_tokens": [
+        17,
+        512
+      ],
+      "n_images": [
+        0,
+        0
+      ]
+    },
+    "enforced_power_limit_w": 575.0,
+    "clocks": {
+      "sm_clock_mhz": 1980,
+      "sm_max_clock_mhz": 1980,
+      "mem_clock_mhz": 2619,
+      "applications_sm_clock_mhz": 1980
+    },
+    "sm_clock_locked": null,
+    "grid_design_id": "v2-unbalanced",
+    "grid_seed": 20240808,
+    "memory_total_mb": 81559,
+    "driver_version": "610.57.04",
+    "device_id": 0,
+    "device_count": 1,
+    "compute_process_count_at_idle": 1,
+    "gpu_shared_warning": false,
+    "api_backend": "openai",
+    "model_revision": null,
+    "identifiability": {
+      "published_rung": "output_input",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "identified",
+        "wh_per_image": "not_identified"
+      },
+      "null_reasons": {
+        "intercept_wh": "coefficient determined only to +/-133%, worse than the +/-10% publication target",
+        "wh_per_image": "no image feature in the design"
+      },
+      "residuals_structured": false,
+      "design_leverage": {
+        "rung_quality": {
+          "output_only": {
+            "ok": false,
+            "condition_number": 1.0,
+            "r2": 0.14106935201603232,
+            "problems": [
+              "r2 0.1411 < 0.85"
+            ]
+          },
+          "output_intercept": {
+            "ok": false,
+            "condition_number": 3.176498623661261,
+            "r2": 0.45484270620868694,
+            "problems": [
+              "r2 0.4548 < 0.85"
+            ]
+          },
+          "output_input": {
+            "ok": true,
+            "condition_number": 3.0973036790274318,
+            "r2": 0.9694595940766617,
+            "problems": []
+          },
+          "output_intercept_input": {
+            "ok": true,
+            "condition_number": 4.430885116663403,
+            "r2": 0.9712488683330288,
+            "problems": []
+          }
+        },
+        "max_condition_number": 30.0,
+        "min_r2": 0.85,
+        "max_relative_ci_half_width": 0.1,
+        "axis_assessed_on_rung": {
+          "wh_per_1k_output": "output_input",
+          "wh_per_1k_input": "output_input"
+        },
+        "output": {
+          "relative_ci_half_width": 0.04660456221482612,
+          "span_k": 0.124
+        },
+        "input": {
+          "design_leverage": true,
+          "reason": "prefill isolation arm present",
+          "relative_ci_half_width": 0.031222852808206775,
+          "span_k": 12.264,
+          "prefill_arm_rows": 8
+        },
+        "intercept": {
+          "relative_ci_half_width": 1.327735599506301,
+          "n": 32
+        },
+        "image": {
+          "design_leverage": false,
+          "reason": "design lacked image arm (0 with-image rows, 32 without; need 2 each)",
+          "relative_ci_half_width": null
+        }
+      },
+      "admitted_rows": 32,
+      "dropped_zero_raw": 0
+    },
+    "timestamp": 1788653689.7724211,
+    "requests_measured": 398
+  },
+  "active": true,
+  "rejection_reasons": null,
+  "timestamp": 1788653689.7724211,
+  "profile_hash": "sha256:3fce5e8e9f2b53372854ba95874161635acfd87aae7712acd0fd20a91dae0b91",
+  "content_hash": "sha256:97e12efb6f3f50f028c13e3f4fb358dac18fc3b5455f29ff3da995a85794ed27"
+}

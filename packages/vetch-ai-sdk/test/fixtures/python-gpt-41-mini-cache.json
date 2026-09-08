@@ -14,7 +14,7 @@
   "fields": {
     "estimated_energy_wh": 0.14567999999999998,
     "estimated_carbon_g": 0.062001408,
-    "estimated_water_l": 0.00024765599999999996,
+    "estimated_water_l": null,
     "estimated_cost_usd": 0.00041,
     "estimated_cost_input_usd": 0.00017,
     "estimated_cost_output_usd": 0.00024,
@@ -27,7 +27,7 @@
     "energy_source": "registry",
     "grid_intensity_gco2e_kwh": 380,
     "pue": 1.12,
-    "pue_tier": 1,
+    "pue_tier": 2,
     "tracking_degraded": false,
     "cache_energy_saving_wh": 0.12852000000000002,
     "cache_cost_saving_usd": 0.0002400000000000001,

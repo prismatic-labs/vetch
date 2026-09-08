@@ -1,22 +1,34 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "identity": {
     "provider": "self-hosted",
     "model": "google/gemma-4-31B-it",
     "gpu": "h100-sxm-80gb",
     "serving_engine": "vllm",
     "precision": "bf16",
-    "instance_type": null,
     "visual_token_budget": null,
-    "concurrency": null
+    "concurrency": null,
+    "instance_type": null
   },
   "gpu_raw": "NVIDIA H100 80GB HBM3",
   "coefficients": {
-    "wh_per_1k_input": 0.0,
-    "wh_per_1k_output": 2.2865705530505744,
-    "wh_per_image": 0.0,
+    "wh_per_1k_input": null,
+    "wh_per_1k_output": 2.3064366427688867,
+    "wh_per_image": null,
     "visual_tokens_per_image": 258,
-    "intercept_wh": 0.0
+    "intercept_wh": null,
+    "status": {
+      "wh_per_1k_output": "identified",
+      "intercept_wh": "not_identified",
+      "wh_per_1k_input": "not_identified",
+      "wh_per_image": "not_identified"
+    },
+    "null_reasons": {
+      "intercept_wh": "interval includes zero",
+      "wh_per_1k_input": "design lacked prefill isolation arm (max input 669 < 1024 or span 627 < 1024)",
+      "wh_per_image": "design span 2.5x idle uncertainty < 10x leverage multiple"
+    },
+    "published_rung": "output_only"
   },
   "provenance": {
     "tier": 0,
@@ -48,21 +60,55 @@
     "concurrency": 1,
     "batch_size": 1,
     "fit": {
-      "r2": 0.9886,
+      "r2": 0.9853056761740304,
       "condition_number": 6.65,
       "input_ci95": [
-        -0.008189947024821443,
-        0.03383305358422742
+        -0.008499646557334638,
+        0.03499087777946173
       ],
       "output_ci95": [
-        2.148262736317636,
-        2.4279225051803417
+        2.246232869241384,
+        2.370246530156489
       ],
       "image_ci95": [
-        -0.0017237489645760828,
-        0.007813889918433709
+        -0.001723748964576046,
+        0.007813889918433877
       ],
-      "residuals_structured": false
+      "residuals_structured": true,
+      "v1": {
+        "input_ci95": [
+          -0.008189947024821443,
+          0.03383305358422742
+        ],
+        "output_ci95": [
+          2.148262736317636,
+          2.4279225051803417
+        ],
+        "image_ci95": [
+          -0.0017237489645760828,
+          0.007813889918433709
+        ]
+      },
+      "published_rung": "output_only",
+      "intercept_ci95": [
+        -0.006457137640948663,
+        0.005190330955538819
+      ],
+      "gate": {
+        "protocol_version": "2.0",
+        "max_relative_ci_half_width": 0.1,
+        "max_condition_number": 30.0,
+        "min_r2": 0.85,
+        "design_leverage_multiple": 10.0,
+        "design_idle_integration_uncertainty": 0.02,
+        "prefill_arm_min_input_tokens": 1024,
+        "prefill_arm_max_output_tokens": 8,
+        "prefill_arm_min_rows": 2,
+        "prefill_arm_min_span_tokens": 1024,
+        "image_arm_min_rows_each": 2,
+        "bootstrap_resamples": 500,
+        "bootstrap_seed": 42
+      }
     },
     "fit_engine": "numpy",
     "ci_method": "bootstrap_500",
@@ -277,7 +323,7 @@
     "visual_tokens_assumed": 729,
     "visual_tokens_assumed_source": "assumed_default",
     "vetch_version": "0.10.5",
-    "methodology_version": "1.3",
+    "methodology_version": "2.0",
     "measured_at": "2026-08-10T04:44:40Z",
     "measured_by": null,
     "samples_per_modality": {
@@ -321,13 +367,127 @@
     "gpu_shared_warning": false,
     "api_backend": "openai",
     "model_revision": null,
-    "timestamp": 1786337080.5622985
+    "timestamp": 1786337080.5622985,
+    "schema_migration": [
+      "Host block reconstructed after the fact rather than captured at measurement time; weaker evidence than a contemporaneous record."
+    ],
+    "identifiability": {
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "null_reasons": {
+        "intercept_wh": "interval includes zero",
+        "wh_per_1k_input": "design lacked prefill isolation arm (max input 669 < 1024 or span 627 < 1024)",
+        "wh_per_image": "design span 2.5x idle uncertainty < 10x leverage multiple"
+      },
+      "residuals_structured": true,
+      "design_leverage": {
+        "leverage_multiple": 10.0,
+        "idle_integration_uncertainty": 0.02,
+        "sigma_idle_wh": 0.0012358160459055199,
+        "output": {
+          "leverage": 113.84593659796053,
+          "span_k": 0.061000000000000006
+        },
+        "input": {
+          "design_leverage": false,
+          "reason": "design lacked prefill isolation arm (max input 669 < 1024 or span 627 < 1024)",
+          "fitted_leverage": 4.918511169013998,
+          "span_k": 0.369,
+          "prefill_arm_rows": 0
+        },
+        "intercept": {
+          "leverage": null,
+          "n": 22
+        },
+        "image": {
+          "design_leverage": true,
+          "reason": "image arm present",
+          "fitted_leverage": 2.4774395986193203
+        }
+      },
+      "admitted_rows": 22,
+      "dropped_zero_raw": 0
+    }
   },
-  "active": false,
-  "rejection_reasons": [
-    "intercept_wh=-0.00386288 is negative (regression artifact)"
-  ],
+  "active": true,
+  "rejection_reasons": null,
   "timestamp": 1786337080.5622985,
-  "profile_hash": "sha256:405c4dd2e206e1ae99505e260b91fe09bf6603a57200c0cba151edcd85826b01",
-  "content_hash": "sha256:3714879ca6128a87f2356bfe63355cf3d1d5952a0cc41a70741373048eb9d9bf"
+  "profile_hash": "sha256:be22c3ca0b4c92901d397a890d5df4c6fcc6cc132852fb1b4afc6c553db9b684",
+  "content_hash": "sha256:2aea1c49671c31833f9a2e33132aa7d89417f1b312a4e1dc1b1a9c31caff18eb",
+  "host": {
+    "infrastructure_provider": "vast.ai",
+    "provider_kind": "marketplace",
+    "instance_type": null,
+    "site": null,
+    "region": null,
+    "grid_zone": null,
+    "country": null,
+    "host_cpu": null,
+    "host_cpu_cores": null,
+    "gpu_form_factor": "sxm",
+    "gpu_count_in_host": null,
+    "tenancy": "unknown",
+    "facility": {
+      "pue": null,
+      "pue_source": null,
+      "pue_basis": null,
+      "wue_l_per_kwh": null,
+      "wue_source": null,
+      "water_boundary": null,
+      "water_accounting_kind": null,
+      "grid_intensity_gco2_per_kwh": null,
+      "grid_intensity_source": null,
+      "grid_accounting_convention": null
+    }
+  },
+  "measurement_conditions": {
+    "enforced_power_limit_w": 525.0,
+    "sm_clock_locked": null,
+    "sm_clock_mhz": 1980
+  },
+  "serving_config": {
+    "engine": null,
+    "engine_version": null,
+    "prefix_caching": null,
+    "speculative_decoding": null,
+    "tensor_parallel_size": null,
+    "flags_raw": null,
+    "engine_specific": {}
+  },
+  "energy_basis": {
+    "marginal": {
+      "wh_per_1k_output": 2.3064366427688867,
+      "idle_subtracted": true
+    },
+    "attributed": {
+      "attribution_rule": "idle_amortised_over_measured_tokens",
+      "levels": [
+        {
+          "assumed_utilisation": 0.2,
+          "wh_per_1k_output": 11.617379454385816
+        },
+        {
+          "assumed_utilisation": 0.5,
+          "wh_per_1k_output": 6.030813767415658
+        },
+        {
+          "assumed_utilisation": 0.8,
+          "wh_per_1k_output": 4.634172345673119
+        }
+      ]
+    }
+  },
+  "node_power": {
+    "available": false,
+    "source": null,
+    "board_wh": null,
+    "node_wh": null,
+    "node_to_board_ratio": null,
+    "sampling_hz": null
+  }
 }

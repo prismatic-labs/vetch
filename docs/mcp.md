@@ -42,7 +42,7 @@ Add the server to your MCP client. For Claude Desktop, in `claude_desktop_config
 
 Notes on behavior:
 
-- `vetch_estimate` maps the energy tier to a `confidence` label (`high` / `medium` / `low`) so an agent can act on trust level without parsing tier numbers. It also returns water in both liters and milliliters, since per-call values are more readable in milliliters.
+- `vetch_estimate` maps the energy tier to a `confidence` label (`high` / `medium` / `low`) so an agent can act on trust level without parsing tier numbers. Water is returned in liters and milliliters when a sourced WUE exists, otherwise `null`, with tier, basis, boundary, and accounting-kind provenance. `water_uncertainty_pct` is populated only when the caller supplied one with `wue_override`. Pass `provider_hint` to identify an AWS/Azure/Google host that cannot be inferred safely from the model name. `vetch_compare` accepts per-model `provider_hints` and does not rank water when definitions differ or are incomplete.
 - `vetch_compare` calls `vetch_estimate` per model, drops any that error into a separate `errors` list, and sorts the rest by `sort_by` (default `cost_usd`). Cheapest and greenest are computed independently, so they can point at different models.
 - `vetch_cleanest_region` and `vetch_grid_intensity` reflect live grid data only when `ELECTRICITY_MAPS_API_KEY` is set; otherwise they use annual-average intensity. See [region-config.md](region-config.md).
 - Every tool is wrapped to fail safe: an internal error returns an `error` field rather than crashing the agent's turn.

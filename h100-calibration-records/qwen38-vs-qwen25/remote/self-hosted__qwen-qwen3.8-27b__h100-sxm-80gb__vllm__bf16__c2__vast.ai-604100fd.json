@@ -1,22 +1,22 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "identity": {
     "provider": "self-hosted",
     "model": "Qwen/Qwen3.8-27B",
     "gpu": "h100-sxm-80gb",
     "serving_engine": "vllm",
     "precision": "bf16",
-    "instance_type": null,
     "visual_token_budget": null,
-    "concurrency": 32
+    "concurrency": 2,
+    "instance_type": null
   },
   "gpu_raw": "NVIDIA H100 80GB HBM3",
   "coefficients": {
-    "wh_per_1k_input": 0.0,
-    "wh_per_1k_output": 0.10780067000403588,
-    "wh_per_image": 0.014539378895798517,
+    "wh_per_1k_input": null,
+    "wh_per_1k_output": 1.00758428620479,
+    "wh_per_image": 0.003715531349948689,
     "visual_tokens_per_image": 729,
-    "intercept_wh": 0.0
+    "intercept_wh": null
   },
   "provenance": {
     "tier": 0,
@@ -42,11 +42,11 @@
     "grid_applied": false,
     "idle_subtracted": true,
     "idle_subtraction_method": "pre_post_average",
-    "idle_watts_before": 125.596,
-    "idle_watts_after": 137.558,
-    "idle_drift_pct": 9.525,
-    "concurrency": 32,
-    "batch_size": 32,
+    "idle_watts_before": 128.964,
+    "idle_watts_after": 130.722,
+    "idle_drift_pct": 1.363,
+    "concurrency": 2,
+    "batch_size": 2,
     "fit": {
       "r2": 1.0,
       "condition_number": null,
@@ -62,7 +62,22 @@
         0.0,
         0.0
       ],
-      "residuals_structured": false
+      "residuals_structured": false,
+      "gate": {
+        "protocol_version": "2.0",
+        "max_relative_ci_half_width": 0.1,
+        "max_condition_number": 30.0,
+        "min_r2": 0.85,
+        "design_leverage_multiple": 10.0,
+        "design_idle_integration_uncertainty": 0.02,
+        "prefill_arm_min_input_tokens": 1024,
+        "prefill_arm_max_output_tokens": 8,
+        "prefill_arm_min_rows": 2,
+        "prefill_arm_min_span_tokens": 1024,
+        "image_arm_min_rows_each": 2,
+        "bootstrap_resamples": 500,
+        "bootstrap_seed": 42
+      }
     },
     "fit_engine": "amortization_1_over_c",
     "ci_method": "none",
@@ -71,9 +86,9 @@
         "n_images": 1,
         "text_tokens": 6272,
         "output_tokens": 4096,
-        "energy_wh": 0.441551544336531,
-        "raw_energy_wh": 0.5729577777777778,
-        "duration_ms": 3766.550066007767,
+        "energy_wh": 4.127065236294819,
+        "raw_energy_wh": 5.737730277777778,
+        "duration_ms": 44961.20080904802,
         "replicate": 0
       }
     ],
@@ -96,7 +111,7 @@
     "out_tokens_target": 64,
     "in_words": 96,
     "fixed_output_length": true,
-    "achieved_concurrency": 0.0,
+    "achieved_concurrency": null,
     "amortization_curve": [
       {
         "concurrency": 1,
@@ -162,9 +177,9 @@
     "device_id": 0,
     "driver_version": "590.48.01",
     "memory_total_mb": 81559,
-    "power_before_w": 125.503,
-    "power_after_w": 125.678,
-    "block_drift_pct": 0.13943889787494892,
+    "power_before_w": 128.9,
+    "power_after_w": 129.055,
+    "block_drift_pct": 0.12024825446082321,
     "clocks_before": {
       "sm_clock_mhz": 1980,
       "sm_max_clock_mhz": 1980,
@@ -180,11 +195,86 @@
     "gpu_shared_warning": false,
     "compute_process_count": 1,
     "device_count": 1,
-    "timestamp": 1786740216.321649
+    "timestamp": 1786740216.3191452,
+    "schema_migration": [
+      "Host block reconstructed after the fact rather than captured at measurement time; weaker evidence than a contemporaneous record.",
+      "achieved_concurrency was recorded as 0.0 by a sampler that never observed the block in flight; reset to null (unknown)."
+    ]
   },
   "active": true,
   "rejection_reasons": null,
-  "timestamp": 1786740216.321649,
-  "profile_hash": "sha256:7d70de20bf6789e1614a314bf8cfbea3c6190aa653197ab07ed1e44026fe9db2",
-  "content_hash": "sha256:a5bd8a1ddf44f8a5daf3e9d10bd6a5a441cf7fc4b5cbeacfa964e62d7a098d6d"
+  "timestamp": 1786740216.3191452,
+  "profile_hash": "sha256:ae1a0cbd435dd791e7f407ab705b1397a1a38376403512f4c08bd00ede85673c",
+  "content_hash": "sha256:69eb4ff723573f8ee2420af0cee25af779fc60a56d1f605ce3e2533ec270bf30",
+  "host": {
+    "infrastructure_provider": "vast.ai",
+    "provider_kind": "marketplace",
+    "instance_type": null,
+    "site": null,
+    "region": null,
+    "grid_zone": null,
+    "country": null,
+    "host_cpu": null,
+    "host_cpu_cores": null,
+    "gpu_form_factor": "sxm",
+    "gpu_count_in_host": null,
+    "tenancy": "unknown",
+    "facility": {
+      "pue": null,
+      "pue_source": null,
+      "pue_basis": null,
+      "wue_l_per_kwh": null,
+      "wue_source": null,
+      "water_boundary": null,
+      "water_accounting_kind": null,
+      "grid_intensity_gco2_per_kwh": null,
+      "grid_intensity_source": null,
+      "grid_accounting_convention": null
+    }
+  },
+  "measurement_conditions": {
+    "enforced_power_limit_w": null,
+    "sm_clock_locked": null,
+    "sm_clock_mhz": null
+  },
+  "serving_config": {
+    "engine": null,
+    "engine_version": null,
+    "prefix_caching": null,
+    "speculative_decoding": null,
+    "tensor_parallel_size": null,
+    "flags_raw": null,
+    "engine_specific": {}
+  },
+  "energy_basis": {
+    "marginal": {
+      "wh_per_1k_output": null,
+      "idle_subtracted": true
+    },
+    "attributed": {
+      "attribution_rule": "idle_amortised_over_measured_tokens",
+      "levels": [
+        {
+          "assumed_utilisation": 0.2,
+          "wh_per_1k_output": null
+        },
+        {
+          "assumed_utilisation": 0.5,
+          "wh_per_1k_output": null
+        },
+        {
+          "assumed_utilisation": 0.8,
+          "wh_per_1k_output": null
+        }
+      ]
+    }
+  },
+  "node_power": {
+    "available": false,
+    "source": null,
+    "board_wh": null,
+    "node_wh": null,
+    "node_to_board_ratio": null,
+    "sampling_hz": null
+  }
 }

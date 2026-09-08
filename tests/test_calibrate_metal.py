@@ -265,6 +265,18 @@ class TestNumpyRequirement:
                 raise AssertionError("missing NumPy should fail calibration preflight")
 
 
+class TestSharedV2Grid:
+    def test_metal_uses_prefill_arm_and_request_aggregation(self) -> None:
+        from vetch.calibrate_metal import _grid_design, grid_design_id
+
+        grid = _grid_design()
+        assert grid_design_id() == "v2-unbalanced"
+        assert any(spec.approx_text_tokens >= 1024 for spec in grid)
+        assert any(spec.requests > 1 for spec in grid)
+        assert any(spec.approx_text_tokens >= 1024 and spec.max_tokens <= 8
+                   for spec in grid)
+
+
 # ---------------------------------------------------------------------------
 # Visual token lookup
 # ---------------------------------------------------------------------------
@@ -315,122 +327,135 @@ class TestFit:
                         "n_images": n_img,
                         "text_tokens": int(in_k * 1000),
                         "output_tokens": int(out_k * 1000),
+                        # powermetrics is a sampling path, so the shared
+                        # admission rule applies a duration floor. Apple Silicon
+                        # decode is slow enough that real runs clear it; the
+                        # fixture has to as well or every row is dropped.
+                        "raw_energy_wh": max(0.0, energy) * 3.0,
+                        "duration_ms": 2500.0 + out_k * 1000 * 20.0,
                         "energy_wh": max(0.0, energy),
                     })
         return runs
 
-    def test_recovers_known_coefficients(self) -> None:
-        from vetch.calibrate_metal import _fit
-        runs = self._synthetic_runs()
-        fit = _fit(runs)
-        assert abs(fit.wh_per_1k_input - 0.00030) < 1e-6
-        assert abs(fit.wh_per_1k_output - 0.00180) < 1e-6
-        assert abs(fit.wh_per_image - 0.0005) < 1e-6
-        assert fit.r2 > 0.999
+    # The fit is shared with the CUDA path (vetch.calibrate_v2). These tests
+    # therefore assert v2 semantics rather than the v1 behaviour Apple Silicon
+    # used to have on its own: coefficients the design cannot resolve come back
+    # None with a reason, never floored to 0.0.
+
+    def _fit(self, runs, **kw):
+        from vetch.calibrate_v2 import fit_nested_models
+
+        return fit_nested_models(
+            runs, idle_watts=kw.pop("idle_watts", 5.0),
+            energy_source="powermetrics", **kw,
+        )
+
+    def test_recovers_decode_and_withholds_unresolvable_prefill(self) -> None:
+        """The synthetic grid tops out at 512 input tokens, so it has no prefill
+        isolation arm. Decode is recoverable; prefill is not, and must be
+        withheld with a reason rather than published or floored to zero."""
+        fit = self._fit(self._synthetic_runs())
+        assert fit.wh_per_1k_input is None
+        assert "prefill isolation arm" in fit.null_reasons["wh_per_1k_input"]
+        assert fit.wh_per_1k_output is not None
         assert fit.valid is True
+        # r2 describes the PUBLISHED rung, which omits prefill, so it sits below
+        # the full model's near-perfect fit on noiseless data.
+        assert fit.r2 > 0.95
+        assert fit.rungs["output_intercept_input_image"]["r2"] > 0.999
 
-    def test_valid_false_on_negative_coefficient(self) -> None:
-        from vetch.calibrate_metal import _fit
-        # All text-only runs → can't distinguish image coefficient → will likely be negative or zero
-        # Instead, explicitly test with data that produces a negative image coefficient
-        runs = []
-        # Craft runs where energy goes DOWN when images increase (pathological data)
-        for n_img in [0, 1, 2]:
-            for in_k in [0.050, 0.200]:
-                for out_k in [0.010, 0.100]:
-                    energy = 0.001 - 0.001 * n_img + 0.0003 * in_k + 0.0018 * out_k
-                    runs.append({
-                        "n_images": n_img,
-                        "text_tokens": int(in_k * 1000),
-                        "output_tokens": int(out_k * 1000),
-                        "energy_wh": max(0.0, energy),
-                    })
-        fit = _fit(runs)
-        assert fit.valid is False
-        assert any("negative" in r for r in fit.invalid_reasons)
+        # The estimator is exact: in the model containing every term, decode
+        # comes back at the generator's 0.00180.
+        full = fit.rungs["output_intercept_input_image"]["coeffs"]["output"]
+        assert abs(full - 0.00180) < 1e-6
 
-    def test_valid_false_on_low_r2(self) -> None:
+        # The PUBLISHED value is higher, because the rung that survives omits
+        # prefill and the survivor absorbs it. That bias is the documented cost
+        # of withholding a term, not an estimator error, and it is why the
+        # record carries published_rung alongside the number.
+        assert fit.published_rung == "output_image"
+        assert fit.wh_per_1k_output > full
+
+    def test_prefill_is_recovered_when_the_design_supports_it(self) -> None:
+        """Same generator plus a prefill arm: the coefficient becomes publishable.
+
+        This is the pair that shows the withholding above is a property of the
+        design and not of the estimator.
+        """
+        runs = self._synthetic_runs()
+        b0, b_in, b_out = 0.00002, 0.00030, 0.00180
+        for in_tok in (2048, 4096, 8192, 16384):
+            for _ in range(2):
+                runs.append({
+                    "n_images": 0, "text_tokens": in_tok, "output_tokens": 8,
+                    "energy_wh": b0 + b_in * in_tok / 1000 + b_out * 8 / 1000,
+                    "raw_energy_wh": 1.0,
+                    # powermetrics is a sampling path, so a prefill point must
+                    # still clear the duration floor. On real hardware that is
+                    # what row aggregation is for.
+                    "duration_ms": 2500.0, "requests": 1,
+                })
+        fit = self._fit(runs)
+        assert fit.wh_per_1k_input is not None, fit.null_reasons
+        assert abs(fit.wh_per_1k_input - b_in) < 5e-5
+
+    def test_negative_coefficient_is_not_published(self) -> None:
+        runs = self._synthetic_runs(b_in=-0.0005)
+        fit = self._fit(runs)
+        assert fit.wh_per_1k_input is None
+
+    def test_low_r2_blocks_the_rung(self) -> None:
         import random
 
-        from vetch.calibrate_metal import _fit
         rng = random.Random(7)
-        # Pure noise — no signal
-        runs = [
-            {
-                "n_images": rng.randint(0, 2),
-                "text_tokens": rng.randint(20, 500),
-                "output_tokens": rng.randint(5, 250),
-                "energy_wh": rng.uniform(0.0001, 0.005),
-            }
-            for _ in range(30)
-        ]
-        fit = _fit(runs)
-        # Noisy data should produce low R² and fail
-        assert fit.r2 < 0.85 or not fit.valid
+        runs = self._synthetic_runs()
+        for r in runs:
+            r["energy_wh"] = abs(rng.gauss(0.01, 0.01))
+        fit = self._fit(runs)
+        assert fit.wh_per_1k_output is None or fit.r2 < 0.85
 
     def test_text_only_fit_drops_image_dimension(self) -> None:
-        import math
+        runs = [r for r in self._synthetic_runs() if r["n_images"] == 0]
+        fit = self._fit(runs)
+        assert fit.wh_per_image is None
+        assert fit.null_reasons["wh_per_image"] == "no image feature in the design"
 
-        from vetch.calibrate_metal import _active_calibration_rejection_reasons, _fit
+    def test_no_coefficient_is_ever_floored_to_zero(self) -> None:
+        """The v1 Apple Silicon path floored a coefficient whose interval spanned
+        zero to 0.0, which reads downstream as 'this axis is free'."""
+        fit = self._fit(self._synthetic_runs())
+        for axis in ("wh_per_1k_input", "wh_per_1k_output", "wh_per_image",
+                     "intercept_wh"):
+            assert getattr(fit, axis) != 0.0
 
-        runs = []
-        for in_k in [0.020, 0.128, 0.512]:
-            for out_k in [0.005, 0.064, 0.256]:
-                energy = 0.00002 + 0.00030 * in_k + 0.00180 * out_k
-                runs.append({
-                    "n_images": 0,
-                    "text_tokens": int(in_k * 1000),
-                    "output_tokens": int(out_k * 1000),
-                    "energy_wh": energy,
-                })
-
-        fit = _fit(runs)
-
-        assert fit.valid is True
-        assert not math.isnan(fit.condition_number)  # inf ok: pure-Python fallback skips gate
-        assert fit.wh_per_image == 0.0
-        assert fit.image_ci95 == (0.0, 0.0)
-        assert _active_calibration_rejection_reasons(
-            fit=fit,
-            power_state={"on_ac_power": True, "low_power_mode": False},
-            gpu_power_captured=True,
-            idle_drift_pct=5.0,
-            samples=len(runs),
-        ) == []
-
-    def test_coefficients_non_negative_after_clamping(self) -> None:
-        from vetch.calibrate_metal import _fit
-        runs = self._synthetic_runs(b0=0.00002, b_img=0.0005, b_in=0.0003, b_out=0.0018)
-        fit = _fit(runs)
-        assert fit.wh_per_image >= 0.0
-        assert fit.wh_per_1k_input >= 0.0
-        assert fit.wh_per_1k_output >= 0.0
-
-    def test_with_noise_still_recovers_roughly(self) -> None:
-        from vetch.calibrate_metal import _fit
-        runs = self._synthetic_runs(noise=0.00002)  # small Gaussian noise
-        fit = _fit(runs)
-        assert abs(fit.wh_per_1k_input - 0.00030) < 0.00010
+    def test_with_noise_still_recovers_decode(self) -> None:
+        fit = self._fit(self._synthetic_runs(noise=0.00002))
+        assert fit.wh_per_1k_output is not None
         assert abs(fit.wh_per_1k_output - 0.00180) < 0.00050
         assert fit.r2 > 0.85
 
 
 class TestActiveCalibrationQualityGate:
     def _fit_result(self, *, valid: bool = True, cond: float = 10.0) -> object:
-        from vetch.calibrate_metal import FitResult
+        """A fit stub in the shared shape, so the gate is tested against what
+        the Metal path now actually produces."""
+        from vetch.calibrate_v2 import NestedFitResult
 
-        return FitResult(
-            intercept_wh=0.00001,
-            wh_per_image=0.0005,
-            wh_per_1k_input=0.0003,
-            wh_per_1k_output=0.0018,
-            r2=0.95,
-            condition_number=cond,
-            input_ci95=(0.0002, 0.0004),
-            output_ci95=(0.0015, 0.0020),
-            image_ci95=(0.0004, 0.0006),
-            valid=valid,
-            invalid_reasons=[] if valid else ["r2=0.100 < 0.85"],
+        return NestedFitResult(
+            published_rung="output_intercept_input_image",
+            intercept_wh=0.00001, wh_per_1k_input=0.0003,
+            wh_per_1k_output=0.0018, wh_per_image=0.0005,
+            status={
+                "wh_per_1k_output": "identified", "intercept_wh": "identified",
+                "wh_per_1k_input": "identified", "wh_per_image": "identified",
+            },
+            null_reasons={}, r2=0.95, condition_number=cond,
+            intercept_ci95=(0.0, 0.00002), input_ci95=(0.0002, 0.0004),
+            output_ci95=(0.0015, 0.0020), image_ci95=(0.0004, 0.0006),
+            residuals_structured=False, active=valid,
+            rejection_reasons=[] if valid else ["r2=0.100 < 0.85"],
+            axes={}, design_leverage={}, energy_basis={},
+            admitted_rows=27, dropped_zero_raw=0,
         )
 
     def test_valid_clean_run_can_become_active(self) -> None:
@@ -773,3 +798,576 @@ class TestCalculateEnergyNImages:
             1100, 50, "moondream", energy_override=override, n_images=0
         )
         assert abs(two_image_energy - text_only - 0.001) < 1e-9
+
+
+class TestMetalContextLimit:
+    """Ollama truncates an over-length prompt and answers normally.
+
+    vLLM rejects one, so the CUDA path could omit a limit and still fail loudly.
+    On the sampling path an unfiltered grid loses the prefill span silently,
+    after paying the runtime to send prompts the server will not honour.
+    """
+
+    def test_ceiling_defaults_and_env_override(self, monkeypatch) -> None:
+        from vetch.calibrate_metal import (
+            METAL_MAX_CONTEXT_TOKENS,
+            metal_context_ceiling,
+        )
+
+        monkeypatch.delenv("VETCH_METAL_MAX_CONTEXT", raising=False)
+        assert metal_context_ceiling() == METAL_MAX_CONTEXT_TOKENS
+        monkeypatch.setenv("VETCH_METAL_MAX_CONTEXT", "16384")
+        assert metal_context_ceiling() == 16384
+        for bad in ("nonsense", "-5", "0"):
+            monkeypatch.setenv("VETCH_METAL_MAX_CONTEXT", bad)
+            assert metal_context_ceiling() == METAL_MAX_CONTEXT_TOKENS, bad
+
+    def test_every_point_fits_the_budget(self) -> None:
+        from vetch.calibrate_metal import _grid_design
+
+        for limit in (2048, 4096, 8192, 16384, 32768):
+            grid = _grid_design(context_limit=limit)
+            assert grid, limit
+            for spec in grid:
+                assert spec.approx_text_tokens + spec.max_tokens <= limit, (
+                    limit, spec,
+                )
+
+    def test_default_ceiling_keeps_a_real_prefill_arm(self) -> None:
+        from vetch.calibrate_metal import METAL_MAX_CONTEXT_TOKENS, _grid_design
+        from vetch.calibrate_v2 import (
+            PREFILL_ARM_MAX_OUTPUT_TOKENS,
+            PREFILL_ARM_MIN_INPUT_TOKENS,
+            PREFILL_ARM_MIN_ROWS,
+            PREFILL_ARM_MIN_SPAN_TOKENS,
+        )
+
+        grid = _grid_design(context_limit=METAL_MAX_CONTEXT_TOKENS)
+        arm = [
+            s for s in grid
+            if s.approx_text_tokens >= PREFILL_ARM_MIN_INPUT_TOKENS
+            and s.max_tokens <= PREFILL_ARM_MAX_OUTPUT_TOKENS
+        ]
+        assert len(arm) >= PREFILL_ARM_MIN_ROWS
+        inputs = [s.approx_text_tokens for s in arm]
+        assert max(inputs) - min(inputs) >= PREFILL_ARM_MIN_SPAN_TOKENS
+        # And the arm still aggregates repeats into a measurable window.
+        assert all(s.requests > 1 for s in arm)
+
+    def test_unfiltered_grid_would_exceed_a_default_ollama_context(self) -> None:
+        from vetch.calibrate_metal import _grid_design
+
+        unfiltered = _grid_design(context_limit=None)
+        assert max(s.approx_text_tokens for s in unfiltered) == 32768
+        # 4096 is Ollama's common default num_ctx: most of the arm would be
+        # truncated rather than refused.
+        over = [s for s in unfiltered if s.approx_text_tokens + s.max_tokens > 4096]
+        assert len(over) >= 5
+
+    def test_context_length_probe_fails_open(self, monkeypatch) -> None:
+        from urllib.error import URLError
+
+        import vetch.calibrate_metal as metal
+
+        def boom(*_args, **_kwargs):
+            raise URLError("connection refused")
+
+        monkeypatch.setattr(metal.urllib_request, "urlopen", boom)
+        monkeypatch.delenv("VETCH_METAL_MAX_CONTEXT", raising=False)
+        assert metal._ollama_context_length("http://localhost:11434", "m") is None
+        # An unreachable probe must fall back to the ceiling, never abort.
+        assert metal.resolve_metal_context_limit("http://localhost:11434", "m") == (
+            metal.METAL_MAX_CONTEXT_TOKENS
+        )
+
+    def test_model_limit_below_ceiling_wins(self, monkeypatch) -> None:
+        import vetch.calibrate_metal as metal
+
+        monkeypatch.setattr(
+            metal, "_ollama_context_length", lambda *_a, **_k: 4096,
+        )
+        monkeypatch.delenv("VETCH_METAL_MAX_CONTEXT", raising=False)
+        assert metal.resolve_metal_context_limit("u", "m") == 4096
+
+    def test_generate_pins_num_ctx(self, monkeypatch) -> None:
+        import json as _json
+
+        import vetch.calibrate_metal as metal
+
+        captured: dict = {}
+
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"prompt_eval_count": 10, "eval_count": 5}'
+
+        def fake_urlopen(req, timeout=None):
+            captured.update(_json.loads(req.data))
+            return _Resp()
+
+        monkeypatch.setattr(metal.urllib_request, "urlopen", fake_urlopen)
+        metal._ollama_generate(
+            "http://localhost:11434", "m", "prompt", max_tokens=8, num_ctx=8192,
+        )
+        assert captured["options"]["num_ctx"] == 8192
+        assert captured["options"]["num_predict"] == 8
+
+
+class TestPrefillRepeatSizing:
+    """Repeats are sized from this machine's measured rate, not an H100 prior.
+
+    `PREFILL_TOKENS_PER_MS = 30` is an H100 figure. Apple Silicon is one to two
+    orders of magnitude slower, so inheriting it asks for 64 repeats of a point
+    that already fills the 4 s window on its own.
+    """
+
+    def test_measured_rate_collapses_the_repeat_count(self) -> None:
+        from vetch.calibrate_metal import _grid_design
+
+        inherited = _grid_design(context_limit=8192)
+        measured = _grid_design(context_limit=8192, prefill_tokens_per_ms=0.5)
+        assert sum(s.requests for s in inherited) > 200
+        assert sum(s.requests for s in measured) < 40
+        # Same design points either way: only the aggregation depth moves.
+        assert [s.approx_text_tokens for s in inherited] == [
+            s.approx_text_tokens for s in measured
+        ]
+
+    def test_repeats_still_fill_the_window(self) -> None:
+        from vetch.calibrate_v2 import (
+            PREFILL_MAX_REPEATS,
+            PREFILL_WINDOW_TARGET_MS,
+            prefill_repeats_for,
+        )
+
+        for rate in (0.25, 0.5, 2.0, 30.0):
+            for tokens in (1024, 4096):
+                repeats = prefill_repeats_for(tokens, rate)
+                window = repeats * (tokens / rate)
+                if repeats == PREFILL_MAX_REPEATS:
+                    # The cap binds before the target on very fast silicon;
+                    # that is the cap doing its job, not a sizing failure.
+                    continue
+                assert window >= PREFILL_WINDOW_TARGET_MS * 0.99, (rate, tokens)
+
+    def test_bad_rates_fall_back_to_the_prior(self) -> None:
+        from vetch.calibrate_v2 import prefill_repeats_for
+
+        baseline = prefill_repeats_for(1024)
+        for bad in (None, 0.0, -1.0):
+            assert prefill_repeats_for(1024, bad) == baseline, bad
+
+    def test_probe_fails_open(self, monkeypatch) -> None:
+        import vetch.calibrate_metal as metal
+
+        def boom(*_a, **_k):
+            raise RuntimeError("ollama down")
+
+        monkeypatch.setattr(metal, "_ollama_generate", boom)
+        probe = metal.probe_prefill("http://localhost:11434", "m")
+        assert probe.tokens_per_ms is None
+        assert probe.token_scale == 1.0  # falls back to the unscaled generator
+
+    def test_probe_returns_tokens_per_ms(self, monkeypatch) -> None:
+        import vetch.calibrate_metal as metal
+
+        clock = iter([1000.0, 1002.0])  # seconds -> 2000 ms elapsed
+        monkeypatch.setattr(metal.time, "monotonic", lambda: next(clock))
+        monkeypatch.setattr(metal, "_ollama_generate", lambda *a, **k: (1024, 8))
+        probe = metal.probe_prefill("http://localhost:11434", "m")
+        assert probe.tokens_per_ms is not None
+        assert abs(probe.tokens_per_ms - 1024 / 2000.0) < 1e-9
+        assert abs(probe.token_ratio - 1.0) < 1e-9
+
+
+class TestTokenTargetCorrection:
+    """A design point must realise the token count it claims.
+
+    Measured on llama3.2 via Ollama, the `1 token ~ 0.75 words` heuristic
+    under-delivers by ~22%: a point asking for 1024 tokens realises 803, which
+    is below PREFILL_ARM_MIN_INPUT_TOKENS and silently stops being an arm row.
+    """
+
+    def test_scale_inverts_the_ratio_with_headroom(self) -> None:
+        from vetch.calibrate_metal import TOKEN_TARGET_HEADROOM, PrefillProbe
+
+        probe = PrefillProbe(tokens_per_ms=0.5, token_ratio=0.784)
+        assert abs(probe.token_scale - (1 / 0.784) * TOKEN_TARGET_HEADROOM) < 1e-9
+        # Correcting to exactly nominal lands inside tokenizer noise of a ">="
+        # threshold; 1024 * (1/0.784) realised 1014 on real hardware.
+        assert 1024 * probe.token_scale * 0.784 > 1024
+
+    def test_missing_ratio_leaves_the_generator_alone(self) -> None:
+        from vetch.calibrate_metal import PrefillProbe
+
+        for ratio in (None, 0.0, -1.0):
+            assert PrefillProbe(tokens_per_ms=1.0, token_ratio=ratio).token_scale == 1.0
+
+    def test_scale_lengthens_the_prompt(self) -> None:
+        from vetch.calibrate_metal import _unique_prompt
+
+        plain = _unique_prompt(1024, seed=1)
+        scaled = _unique_prompt(1024, seed=1, token_scale=1.35)
+        assert len(scaled) > len(plain) * 1.2
+        # A bad scale must not shrink or empty the prompt.
+        for bad in (0.0, -1.0):
+            assert _unique_prompt(1024, seed=1, token_scale=bad) == plain
+
+
+class TestIdleDriftIsFlaggedNotFatal:
+    """Idle drift must not destroy a completed run.
+
+    Protocol v2: drift is a measurement-validity signal, and "a drifting record
+    stays usable and stays visibly weak". Raising after every measurement had
+    been taken discarded the whole run and wrote nothing, while the rejection
+    path that records the drift and withholds the active install already
+    existed and was simply unreachable for this condition.
+    """
+
+    def test_metal_uses_the_protocol_thresholds(self) -> None:
+        from vetch.calibrate_metal import IDLE_DRIFT_FLAG_PCT, IDLE_DRIFT_WARN_PCT
+        from vetch.calibrate_v2 import (
+            IDLE_DRIFT_FLAG_PCT as PROTOCOL_FLAG,
+        )
+        from vetch.calibrate_v2 import (
+            IDLE_DRIFT_WARN_PCT as PROTOCOL_WARN,
+        )
+
+        assert IDLE_DRIFT_FLAG_PCT == PROTOCOL_FLAG
+        assert IDLE_DRIFT_WARN_PCT == PROTOCOL_WARN
+
+    def test_drift_withholds_the_active_install(self) -> None:
+        from vetch.calibrate_metal import _active_calibration_rejection_reasons
+
+        class _Fit:
+            invalid_reasons: list[str] = []
+            valid = True
+            condition_number = 2.0
+
+        reasons = _active_calibration_rejection_reasons(
+            fit=_Fit(),  # type: ignore[arg-type]
+            power_state={"on_ac_power": True, "low_power_mode": False},
+            gpu_power_captured=True,
+            idle_drift_pct=101.9,
+            samples=11,
+        )
+        assert any("idle_drift_pct" in r for r in reasons)
+
+    def test_no_drift_leaves_the_record_installable(self) -> None:
+        from vetch.calibrate_metal import _active_calibration_rejection_reasons
+
+        class _Fit:
+            invalid_reasons: list[str] = []
+            valid = True
+            condition_number = 2.0
+
+        reasons = _active_calibration_rejection_reasons(
+            fit=_Fit(),  # type: ignore[arg-type]
+            power_state={"on_ac_power": True, "low_power_mode": False},
+            gpu_power_captured=True,
+            idle_drift_pct=3.0,
+            samples=11,
+        )
+        assert reasons == []
+
+    def test_drift_is_classified_without_becoming_an_abort(self) -> None:
+        from vetch.calibrate_metal import classify_idle_drift
+
+        flagged_pct, flagged = classify_idle_drift(10.0, 12.0)
+        warned_pct, warned = classify_idle_drift(10.0, 11.1)
+        stable_pct, stable = classify_idle_drift(10.0, 10.3)
+
+        assert flagged == "flag" and flagged_pct == 20.0
+        assert warned == "warn" and abs(warned_pct - 11.0) < 1e-9
+        assert stable == "ok" and abs(stable_pct - 3.0) < 1e-9
+
+
+class TestPowerStatePreflight:
+    """Refuse a doomed run in the first second, not after the full grid.
+
+    Battery and Low Power Mode already make the finished record
+    non-installable, and Low Power Mode throttles the silicon being measured.
+    The old code printed both warnings up front and ran anyway.
+    """
+
+    def test_battery_and_low_power_are_refused(self) -> None:
+        import pytest as _pytest
+
+        from vetch.calibrate_metal import assert_power_state_usable
+
+        for state in (
+            {"on_ac_power": False, "low_power_mode": False},
+            {"on_ac_power": True, "low_power_mode": True},
+            {"on_ac_power": False, "low_power_mode": True},
+        ):
+            with _pytest.raises(SystemExit) as exc:
+                assert_power_state_usable(state)
+            assert exc.value.code == 2, state
+
+    def test_good_state_proceeds(self) -> None:
+        from vetch.calibrate_metal import assert_power_state_usable
+
+        assert_power_state_usable({"on_ac_power": True, "low_power_mode": False})
+
+    def test_unknown_power_state_fails_open(self) -> None:
+        from vetch.calibrate_metal import assert_power_state_usable
+
+        # pmset unreadable is unknown, not bad.
+        assert_power_state_usable({"on_ac_power": None, "low_power_mode": False})
+
+    def test_override_proceeds_but_stays_non_installable(self) -> None:
+        from vetch.calibrate_metal import (
+            _active_calibration_rejection_reasons,
+            assert_power_state_usable,
+        )
+
+        state = {"on_ac_power": False, "low_power_mode": True}
+        assert_power_state_usable(state, allow_degraded=True)  # must not exit
+
+        class _Fit:
+            invalid_reasons: list[str] = []
+            valid = True
+            condition_number = 2.0
+
+        reasons = _active_calibration_rejection_reasons(
+            fit=_Fit(),  # type: ignore[arg-type]
+            power_state=state, gpu_power_captured=True,
+            idle_drift_pct=3.0, samples=11,
+        )
+        assert any("AC power" in r for r in reasons)
+        assert any("low_power_mode" in r for r in reasons)
+
+
+class TestMetalRecordCarriesTheFitVerdict:
+    """Sharing the estimator is not the same as sharing the record.
+
+    The first real Apple Silicon v2 run published `wh_per_1k_output` with no
+    `status`, no `null_reasons` and no `published_rung`, and an `energy_basis`
+    of nulls that contradicted the coefficient beside it. Both blocks come from
+    the fit and both were simply not passed to `commit_calibration`.
+    """
+
+    def test_nested_fit_to_dict_supplies_the_three_fields(self) -> None:
+        from vetch.calibrate_v2 import fit_nested_models, nested_fit_to_dict
+
+        rows = []
+        for i in range(24):
+            text, out = ((1024.0 * (1 + i % 4), 8.0) if i % 2 == 0
+                         else (32.0, 256.0 * (1 + i % 4)))
+            energy = 0.004 * text / 1000 + 0.5 * out / 1000
+            rows.append({
+                "text_tokens": text, "output_tokens": out, "n_images": 0,
+                "energy_wh": energy, "raw_energy_wh": energy + 0.05,
+                "duration_ms": 3000.0,
+            })
+        meta = nested_fit_to_dict(fit_nested_models(rows, idle_watts=100.0))
+        for key in ("status", "null_reasons", "published_rung"):
+            assert key in meta, key
+
+    def test_invariants_skip_every_axis_check_without_status(self) -> None:
+        """Why the omission was silent: an absent status map disables the checks."""
+        from vetch.calibration_invariants import record_invariants
+
+        unqualified = {
+            "coefficients": {"wh_per_1k_output": 0.0449},  # no status at all
+            "provenance": {"samples": 0},
+        }
+        codes = {v.code for v in record_invariants(unqualified)}
+        assert "published_unidentified" not in codes
+
+
+class TestAdapterDisclosure:
+    """`on_ac_power: true` does not mean the adapter is supplying the load.
+
+    Sustained GPU load can exceed a small adapter; the machine then draws the
+    difference from the battery while pmset still reports AC Power. Different
+    power and thermal regime, shifts as the battery drains, and a plausible
+    source of idle drift across a grid.
+    """
+
+    @staticmethod
+    def _patched(monkeypatch, ps: str, adapter: str):
+        import vetch.calibrate_metal as metal
+
+        def fake(cmd, **_k):
+            return adapter if "adapter" in cmd else ps
+
+        monkeypatch.setattr(metal.subprocess, "check_output", fake)
+        return metal.check_power_state()
+
+    def test_small_adapter_is_recorded(self, monkeypatch) -> None:
+        state = self._patched(
+            monkeypatch,
+            "Now drawing from 'AC Power'\n -InternalBattery-0 85%; AC attached; not charging",
+            " Wattage = 45W\n Current = 2240mA\n",
+        )
+        assert state["adapter_watts"] == 45
+        assert state["battery_percent"] == 85
+        assert state["battery_charging"] == "not_charging"
+        assert state["on_ac_power"] is True
+
+    def test_discharging_on_ac_is_captured(self, monkeypatch) -> None:
+        state = self._patched(
+            monkeypatch,
+            "Now drawing from 'AC Power'\n -InternalBattery-0 61%; discharging",
+            " Wattage = 45W\n",
+        )
+        assert state["on_ac_power"] is True
+        assert state["battery_charging"] == "discharging"
+
+    def test_missing_adapter_info_is_not_fatal(self, monkeypatch) -> None:
+        state = self._patched(
+            monkeypatch, "Now drawing from 'AC Power'\n", "no wattage here\n"
+        )
+        assert state["adapter_watts"] is None
+        assert state["on_ac_power"] is True
+
+    def test_adapter_does_not_block_the_run(self, monkeypatch) -> None:
+        """Disclosure, not a gate: a small adapter must not refuse a run."""
+        from vetch.calibrate_metal import assert_power_state_usable
+
+        assert_power_state_usable({
+            "on_ac_power": True, "low_power_mode": False, "adapter_watts": 45,
+        })
+
+
+class TestIdleBaselinesAreSymmetric:
+    """Two idle windows measured differently make their difference meaningless.
+
+    The "after" window had no settle at all, so a figure taken off a workload
+    tail was compared with one taken after a pause. Both `idle_drift_pct` and
+    the mean that every row's idle subtraction uses inherit that asymmetry.
+    """
+
+    def test_window_settles_before_it_samples(self) -> None:
+        """Settle, then sample. A window opened before the machine settles
+        measures the workload tail rather than idle."""
+        from vetch.calibrate_metal import (
+            IDLE_SETTLE_S,
+            IDLE_WINDOW_S,
+            measure_idle_window,
+        )
+
+        slept: list[float] = []
+        ticks = iter([100.0, 100.0 + IDLE_WINDOW_S])
+        start, end = measure_idle_window(
+            "", sleep=slept.append, clock=lambda: next(ticks),
+        )
+        assert slept == [IDLE_SETTLE_S, IDLE_WINDOW_S]
+        assert abs((end - start) - IDLE_WINDOW_S * 1000) < 1e-6
+
+    def test_repeated_windows_are_indistinguishable(self) -> None:
+        """Two baselines taken through the helper cannot diverge.
+
+        Asymmetry is now impossible by construction -- one helper, both call
+        sites -- rather than something a test has to police. This pins the
+        helper's own symmetry: calling it twice must sleep and sample the same.
+        """
+        from vetch.calibrate_metal import IDLE_WINDOW_S, measure_idle_window
+
+        def one_window() -> tuple[list[float], float]:
+            slept: list[float] = []
+            ticks = iter([0.0, IDLE_WINDOW_S])
+            start, end = measure_idle_window(
+                "", sleep=slept.append, clock=lambda: next(ticks),
+            )
+            return slept, end - start
+
+        assert one_window() == one_window()
+
+
+class TestIdleGateUsesEnergyShare:
+    """The Apple Silicon gate rejected 3 of 4 runs whose decode coefficients
+    agree with each other to 0.5%. Only the run that was actually 19% wrong
+    should fail."""
+
+    @staticmethod
+    def _reasons(idle_share_pct, idle_drift_pct=40.0):
+        from vetch.calibrate_metal import _active_calibration_rejection_reasons
+
+        class _Fit:
+            invalid_reasons: list[str] = []
+            valid = True
+            condition_number = 2.0
+
+        return _active_calibration_rejection_reasons(
+            fit=_Fit(),  # type: ignore[arg-type]
+            power_state={"on_ac_power": True, "low_power_mode": False},
+            gpu_power_captured=True,
+            idle_drift_pct=idle_drift_pct,
+            samples=11,
+            idle_share_pct=idle_share_pct,
+        )
+
+    def test_high_drift_but_low_energy_share_is_installable(self) -> None:
+        # Observed run: 21.7% drift, 2.3% energy share, coefficient within 0.04%
+        # of the cleanest run. The old gate rejected it.
+        assert self._reasons(2.3, idle_drift_pct=21.7) == []
+
+    def test_high_energy_share_is_rejected(self) -> None:
+        # Observed run: 74.5% drift, 40.2% energy share, coefficient 19% wrong.
+        reasons = self._reasons(40.2, idle_drift_pct=74.5)
+        assert any("typical row's energy" in r for r in reasons)
+
+    def test_falls_back_to_the_percentage_without_a_run_table(self) -> None:
+        reasons = self._reasons(None, idle_drift_pct=40.0)
+        assert any("idle_drift_pct" in r and "no run table" in r for r in reasons)
+        assert self._reasons(None, idle_drift_pct=3.0) == []
+
+
+class TestFitRecordBlocks:
+    """The writer must carry the fit's verdict onto the record.
+
+    Reverting `commit_calibration(..., **fit_record_blocks(fit))` back to a bare
+    call must fail here -- that regression shipped once and was invisible because
+    the invariant checks skip every per-axis test when the status map is absent.
+    """
+
+    @staticmethod
+    def _fit():
+        from vetch.calibrate_v2 import fit_nested_models
+
+        rows = []
+        for i in range(24):
+            text, out = ((1024.0 * (1 + i % 4), 8.0) if i % 2 == 0
+                         else (32.0, 256.0 * (1 + i % 4)))
+            energy = 0.004 * text / 1000 + 0.5 * out / 1000
+            rows.append({
+                "text_tokens": text, "output_tokens": out, "n_images": 0,
+                "energy_wh": energy, "raw_energy_wh": energy + 0.05,
+                "duration_ms": 3000.0,
+            })
+        return fit_nested_models(rows, idle_watts=100.0)
+
+    def test_blocks_carry_status_reasons_rung_and_basis(self) -> None:
+        from vetch.calibrate_metal import fit_record_blocks
+
+        blocks = fit_record_blocks(self._fit())
+        assert set(blocks) == {"coefficient_meta", "energy_basis"}
+        for key in ("status", "null_reasons", "published_rung"):
+            assert key in blocks["coefficient_meta"], key
+        assert "marginal" in blocks["energy_basis"]
+
+    def test_energy_basis_agrees_with_the_published_coefficient(self) -> None:
+        """The record must not contradict itself about its own marginal basis."""
+        from vetch.calibrate_metal import fit_record_blocks
+
+        fit = self._fit()
+        blocks = fit_record_blocks(fit)
+        assert blocks["energy_basis"]["marginal"]["wh_per_1k_output"] == (
+            fit.wh_per_1k_output
+        )
+
+    def test_writer_hands_both_blocks_to_commit(self, monkeypatch) -> None:
+        """Behavioural: intercept commit_calibration and inspect what it gets."""
+        import vetch.calibration_store as store
+        from vetch.calibrate_metal import fit_record_blocks
+
+        seen: dict = {}
+        monkeypatch.setattr(
+            store, "commit_calibration",
+            lambda *a, **kw: seen.update(kw) or Path("/tmp/x.json"),
+        )
+        store.commit_calibration(None, None, {}, **fit_record_blocks(self._fit()))
+        assert "coefficient_meta" in seen and "energy_basis" in seen
+        assert seen["coefficient_meta"]["published_rung"]

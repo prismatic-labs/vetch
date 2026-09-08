@@ -1,0 +1,125 @@
+{
+  "protocol": "2.0",
+  "leverage_multiple": 10.0,
+  "idle_integration_uncertainty": 0.02,
+  "prefill_arm_min_input_tokens": 1024,
+  "prefill_arm_max_output_tokens": 8,
+  "prefill_arm_min_rows": 2,
+  "notes": [
+    "Statuses frozen from nested OLS + bootstrap on the seven batch-1 raw tables before the gate was written.",
+    "Do not author this fixture from the stored v1 intervals: those come from the misspecified three-parameter fit.",
+    "Gemma 4 31B fp8 input_ci95 is strictly positive on that misspecified fit; leverage (no prefill arm) keeps it not_identified.",
+    "Intercept is evaluated on the output+intercept rung. Its interval includes zero on every record, so published_rung is output_only.",
+    "residuals_structured is a misspecification flag and does not reject an identified decode slope.",
+    "No 30% idle gate and no 2 second energy-counter floor. Llama drops one zero-raw-energy row as corrupt.",
+    "These records are hardware-local. They must not be copied into the shipped community set as default Tier 0. resolve() only loads ~/.vetch/calibrations/."
+  ],
+  "records": {
+    "self-hosted__google-gemma-4-31b-it__h100-sxm-80gb__vllm__bf16-d47e9ac8.json": {
+      "model": "google/gemma-4-31B-it",
+      "precision": "bf16",
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "active": true,
+      "wh_per_1k_input": null,
+      "intercept_wh": null,
+      "wh_per_image": null
+    },
+    "self-hosted__google-gemma-4-31b-it__h100-sxm-80gb__vllm__fp8-1238d402.json": {
+      "model": "google/gemma-4-31B-it",
+      "precision": "fp8",
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "active": true,
+      "wh_per_1k_input": null,
+      "intercept_wh": null,
+      "wh_per_image": null,
+      "notes": "input_ci95 on the misspecified full model is strictly positive ([0.012, 0.029]); design has no prefill arm so status is not_identified."
+    },
+    "self-hosted__nousresearch-meta-llama-3.1-8b-instruct__h100-sxm-80gb__vllm__bf16-041e4c23.json": {
+      "model": "NousResearch/Meta-Llama-3.1-8B-Instruct",
+      "precision": "bf16",
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "active": true,
+      "wh_per_1k_input": null,
+      "intercept_wh": null,
+      "dropped_zero_raw": 1
+    },
+    "self-hosted__qwen-qwen2.5-32b-instruct__h100-sxm-80gb__vllm__bf16-700b4a3a.json": {
+      "model": "Qwen/Qwen2.5-32B-Instruct",
+      "precision": "bf16",
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "active": true,
+      "wh_per_1k_input": null,
+      "intercept_wh": null
+    },
+    "self-hosted__qwen-qwen2.5-7b-instruct__h100-sxm-80gb__vllm__bf16-ec198922.json": {
+      "model": "Qwen/Qwen2.5-7B-Instruct",
+      "precision": "bf16",
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "active": true,
+      "wh_per_1k_input": null,
+      "intercept_wh": null,
+      "notes": "v1 input_ci95 lies entirely below zero. Nested status is not_identified (no prefill arm), not a whole-record reject. Decode remains identified."
+    },
+    "self-hosted__qwen-qwen2.5-vl-7b-instruct__h100-sxm-80gb__vllm__bf16-41fed387.json": {
+      "model": "Qwen/Qwen2.5-VL-7B-Instruct",
+      "precision": "bf16",
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "active": true,
+      "wh_per_1k_input": null,
+      "intercept_wh": null,
+      "wh_per_image": null
+    },
+    "self-hosted__qwen-qwen3.8-27b__h100-sxm-80gb__vllm__bf16-5cb685a8.json": {
+      "model": "Qwen/Qwen3.8-27B",
+      "precision": "bf16",
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "active": true,
+      "wh_per_1k_input": null,
+      "intercept_wh": null,
+      "wh_per_image": null,
+      "notes": "Measured at 700 W; the other six batch-1 records are at 525 W."
+    }
+  }
+}

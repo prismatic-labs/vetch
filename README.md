@@ -324,7 +324,7 @@ result = calibrate_model("ollama", "llama3.1:8b", workload=my_inference)
 print(format_calibration_result(result))
 ```
 
-**Requirements:** NVIDIA GPU with `pynvml` (`pip install nvidia-ml-py3`). On Apple Silicon, use `vetch calibrate-apple-silicon` (powermetrics-based, requires `sudo`). Both paths write a versioned identity-keyed record under `~/.vetch/calibrations/` (picked up automatically). To share a calibration, open a GitHub issue with that JSON (see the CLI result footer). See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md).
+**Requirements:** NVIDIA GPU with `pynvml` (`pip install 'vetch[calibrate]'`). On Apple Silicon, use `vetch calibrate-apple-silicon` (powermetrics-based, requires `sudo`). Both paths write a schema-2 record under `~/.vetch/calibrations/` (picked up automatically). `vetch validate-calibration file.json` checks identifiability on a laptop with no GPU. See [docs/calibration-protocol-v2.md](docs/calibration-protocol-v2.md). To share a calibration, open a GitHub issue with that JSON (see the CLI result footer). See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md).
 
 ## Supported providers
 

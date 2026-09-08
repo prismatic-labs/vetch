@@ -115,7 +115,11 @@ class VetchCallbackHandler(_CallbackHandlerBase):
         self.total_cost: float = 0.0
         self.total_energy_wh: float = 0.0
         self.total_carbon_g: float = 0.0
-        self.total_water_l: float = 0.0
+        self.total_water_l: float | None = None
+        self.water_attributed_calls: int = 0
+        self.water_unattributed_calls: int = 0
+        self.water_unclassified_calls: int = 0
+        self.water_totals_l_by_definition: dict[str, float] = {}
         self.call_count: int = 0
 
         # Track individual events for detailed analysis
@@ -309,7 +313,29 @@ class VetchCallbackHandler(_CallbackHandlerBase):
                 self.total_cost += ctx.event.get("estimated_cost_usd", 0) or 0
                 self.total_energy_wh += ctx.event.get("estimated_energy_wh", 0) or 0
                 self.total_carbon_g += ctx.event.get("estimated_carbon_g", 0) or 0
-                self.total_water_l += ctx.event.get("estimated_water_l", 0) or 0
+                water_l = ctx.event.get("estimated_water_l")
+                if water_l is None:
+                    self.water_unattributed_calls += 1
+                else:
+                    self.water_attributed_calls += 1
+                    boundary = str(ctx.event.get("water_boundary") or "").strip().lower()
+                    accounting = str(
+                        ctx.event.get("water_accounting_kind") or ""
+                    ).strip().lower()
+                    if boundary and accounting:
+                        definition = f"{boundary}:{accounting}"
+                        self.water_totals_l_by_definition[definition] = (
+                            self.water_totals_l_by_definition.get(definition, 0.0)
+                            + water_l
+                        )
+                    else:
+                        self.water_unclassified_calls += 1
+                    self.total_water_l = (
+                        next(iter(self.water_totals_l_by_definition.values()))
+                        if len(self.water_totals_l_by_definition) == 1
+                        and self.water_unclassified_calls == 0
+                        else None
+                    )
                 self.call_count += 1
                 self.events.append(dict(ctx.event))
 
@@ -354,7 +380,11 @@ class VetchCallbackHandler(_CallbackHandlerBase):
         self.total_cost = 0.0
         self.total_energy_wh = 0.0
         self.total_carbon_g = 0.0
-        self.total_water_l = 0.0
+        self.total_water_l = None
+        self.water_attributed_calls = 0
+        self.water_unattributed_calls = 0
+        self.water_unclassified_calls = 0
+        self.water_totals_l_by_definition = {}
         self.call_count = 0
         self.events = deque(maxlen=1000)
         self._pending_tools_by_run.clear()
@@ -371,6 +401,12 @@ class VetchCallbackHandler(_CallbackHandlerBase):
             "total_energy_wh": self.total_energy_wh,
             "total_carbon_g": self.total_carbon_g,
             "total_water_l": self.total_water_l,
+            "water_attributed_calls": self.water_attributed_calls,
+            "water_unattributed_calls": self.water_unattributed_calls,
+            "water_unclassified_calls": self.water_unclassified_calls,
+            "water_totals_l_by_definition": dict(
+                self.water_totals_l_by_definition
+            ),
             "call_count": self.call_count,
             "avg_cost_per_call": self.total_cost / self.call_count if self.call_count > 0 else 0,
             "avg_energy_per_call": (

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import math
 import os
 import time
 import uuid
@@ -164,6 +165,8 @@ def auto_context_for_instrumented_call(
         get_default_provider_hint,
         get_default_region,
         get_default_tags,
+        get_default_wue_metadata,
+        get_default_wue_override,
     )
 
     # Check if manual wrap() context is already active
@@ -174,10 +177,17 @@ def auto_context_for_instrumented_call(
         return
 
     # No context exists - create automatic context using defaults from instrument()
+    wue_boundary, water_accounting_kind, wue_uncertainty_pct = (
+        get_default_wue_metadata()
+    )
     auto_ctx = VetchContext(
         region=region or get_default_region(),
         tags=get_default_tags(),
         energy_override=get_default_energy_override(),
+        wue_override=get_default_wue_override(),
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
         emit=True,
         provider_hint=get_default_provider_hint(),
     )
@@ -221,6 +231,8 @@ async def async_auto_context_for_instrumented_call(
         get_default_provider_hint,
         get_default_region,
         get_default_tags,
+        get_default_wue_metadata,
+        get_default_wue_override,
     )
 
     # Check if manual wrap() context is already active
@@ -231,10 +243,17 @@ async def async_auto_context_for_instrumented_call(
         return
 
     # No context exists - create automatic context using defaults from instrument()
+    wue_boundary, water_accounting_kind, wue_uncertainty_pct = (
+        get_default_wue_metadata()
+    )
     auto_ctx = VetchContext(
         region=region or get_default_region(),
         tags=get_default_tags(),
         energy_override=get_default_energy_override(),
+        wue_override=get_default_wue_override(),
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
         emit=True,
         provider_hint=get_default_provider_hint(),
     )
@@ -260,6 +279,10 @@ class VetchContext:
         price_multiplier: float = 1.0,
         emit: bool = True,
         provider_hint: str | None = None,
+        wue_override: float | None = None,
+        wue_boundary: str | None = None,
+        water_accounting_kind: str | None = None,
+        wue_uncertainty_pct: float | None = None,
         _disabled: bool = False,
         _manual: bool = False,
         _manual_latency_ms: float | None = None,
@@ -270,6 +293,10 @@ class VetchContext:
             region: Grid region for carbon calculation.
             tags: Key-value pairs for cost attribution.
             energy_override: User-provided energy values.
+            wue_override: Facility WUE in liters per kWh for water attribution.
+            wue_boundary: Boundary for ``wue_override``.
+            water_accounting_kind: Accounting definition for ``wue_override``.
+            wue_uncertainty_pct: Optional uncertainty for ``wue_override``.
             price_multiplier: Factor to adjust list pricing (e.g. 0.8 for 20% discount).
             emit: If True, emit JSON to configured output. Set False for quiet mode.
             provider_hint: Explicit provider override (e.g. "self-hosted",
@@ -337,6 +364,10 @@ class VetchContext:
             self.tags = None
 
         self._energy_override: EnergyOverride | None = None
+        self._wue_override: float | None = None
+        self._wue_boundary: str | None = None
+        self._water_accounting_kind: str | None = None
+        self._wue_uncertainty_pct: float | None = None
         self._tracking_disabled = False
         self._start_time: float | None = None
         self._event: InferenceEvent | None = None
@@ -356,11 +387,37 @@ class VetchContext:
             if validated is None:
                 logger.warning(
                     "Invalid energy_override provided, falling back to registry. "
-                    "Required: wh_per_1k_input (positive float), "
-                    "wh_per_1k_output (positive float)"
+                    "Need at least one positive coefficient "
+                    "(wh_per_1k_input, wh_per_1k_output, intercept_wh, or "
+                    "wh_per_image). Null means unidentified, never zero."
                 )
             else:
                 self._energy_override = validated
+
+        if wue_override is None and parent is not None:
+            wue_override = getattr(parent, "_wue_override", None)
+            wue_boundary = getattr(parent, "_wue_boundary", None)
+            water_accounting_kind = getattr(parent, "_water_accounting_kind", None)
+            wue_uncertainty_pct = getattr(parent, "_wue_uncertainty_pct", None)
+        if wue_override is not None:
+            try:
+                numeric_wue = (
+                    float("nan") if isinstance(wue_override, bool) else float(wue_override)
+                )
+            except (TypeError, ValueError):
+                numeric_wue = float("nan")
+            if not math.isfinite(numeric_wue) or numeric_wue < 0:
+                warning = (
+                    "Invalid wue_override; expected a finite non-negative "
+                    "liters-per-kWh value. Water will remain unattributed."
+                )
+                self._warnings.append(warning)
+                logger.warning(warning)
+            else:
+                self._wue_override = numeric_wue
+                self._wue_boundary = wue_boundary
+                self._water_accounting_kind = water_accounting_kind
+                self._wue_uncertainty_pct = wue_uncertainty_pct
 
     @property
     def event(self) -> InferenceEvent | None:
@@ -733,6 +790,13 @@ class VetchContext:
             content_type_hint=content_type_hint,
             n_images=n_images,
             cache_creation_1h_tokens=cache_creation_1h_tokens,
+            wue_override=self._wue_override,
+            wue_boundary=self._wue_boundary,
+            water_accounting_kind=self._water_accounting_kind,
+            wue_uncertainty_pct=self._wue_uncertainty_pct,
+            water_provider_hint=(
+                self._provider_hint or (None if self._manual else provider)
+            ),
         )
 
         # Propagate usage_estimated counter for monitoring dashboards
@@ -748,6 +812,7 @@ class VetchContext:
         energy_source = metrics.energy_source
         energy_basis = metrics.energy_basis
         energy_completeness = metrics.energy_completeness
+        energy_axes_unattributed = list(metrics.energy_axes_unattributed)
         calibration_match = metrics.calibration_match
         model_known = metrics.model_known
         model_match = metrics.model_match
@@ -756,6 +821,11 @@ class VetchContext:
         pue_tier = metrics.pue_tier
         pue_source = metrics.pue_source
         water_l = metrics.water_l
+        water_tier = metrics.water_tier
+        water_basis = metrics.water_basis
+        water_boundary = metrics.water_boundary
+        water_accounting_kind = metrics.water_accounting_kind
+        water_uncertainty_pct = metrics.water_uncertainty_pct
         embodied_carbon_g = metrics.embodied_carbon_g
         cost_usd = metrics.cost_usd
         cost_in_usd = metrics.cost_in_usd
@@ -828,14 +898,24 @@ class VetchContext:
         energy_p95_wh: float | None = None
         carbon_p5_g: float | None = None
         carbon_p95_g: float | None = None
+        # An unpriced modality and an unidentified coefficient axis are the same
+        # thing seen from two directions: some of this call's energy was never
+        # counted. Either way the figure is a floor, so it gets no upper bound.
+        energy_estimate_kind: Literal["point", "lower_bound"] = (
+            "lower_bound"
+            if (energy_completeness == "text_only" or energy_axes_unattributed)
+            else "point"
+        )
         if energy_wh is not None and energy_uncertainty_pct is not None:
             band = energy_wh * (energy_uncertainty_pct / 100.0)
             energy_p5_wh = max(energy_wh - band, 0.0)
-            energy_p95_wh = energy_wh + band
+            if energy_estimate_kind == "point":
+                energy_p95_wh = energy_wh + band
         if carbon_g is not None and energy_uncertainty_pct is not None:
             band = carbon_g * (energy_uncertainty_pct / 100.0)
             carbon_p5_g = max(carbon_g - band, 0.0)
-            carbon_p95_g = carbon_g + band
+            if energy_estimate_kind == "point":
+                carbon_p95_g = carbon_g + band
 
         if capabilities_invoked is None:
             from vetch.capabilities import derive_capabilities_invoked
@@ -894,6 +974,8 @@ class VetchContext:
             energy_basis=energy_basis,
             calibration_match=calibration_match,
             energy_completeness=energy_completeness,
+            energy_axes_unattributed=energy_axes_unattributed,
+            energy_estimate_kind=energy_estimate_kind,
             grid_intensity_gco2e_kwh=grid_val,
             grid_intensity_timestamp=grid_ts,
             grid_intensity_time_of_day=False,  # TODO: Implement hourly grid data
@@ -902,6 +984,11 @@ class VetchContext:
             pue=pue,
             pue_tier=pue_tier,
             pue_source=pue_source,
+            water_tier=water_tier,
+            water_basis=water_basis,
+            water_boundary=water_boundary,
+            water_accounting_kind=water_accounting_kind,
+            water_uncertainty_pct=water_uncertainty_pct,
             is_stream=is_stream,
             is_batch=is_batch,
             is_embedding=is_embedding if captured else False,
@@ -1060,6 +1147,10 @@ def wrap(
     price_multiplier: float = 1.0,
     emit: bool = True,
     provider_hint: str | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
 ) -> Generator[VetchContext, None, None]:
     """Context manager for tracking LLM inference.
 
@@ -1070,6 +1161,10 @@ def wrap(
         region: Grid region for carbon calculation.
         tags: Key-value pairs for cost attribution.
         energy_override: User-provided energy values.
+        wue_override: Facility WUE in liters per kWh.
+        wue_boundary: Boundary for ``wue_override``.
+        water_accounting_kind: Accounting definition for ``wue_override``.
+        wue_uncertainty_pct: Optional uncertainty for ``wue_override``.
         price_multiplier: Factor to adjust list pricing (e.g., 0.8 for 20% discount).
         provider_hint: Explicit provider override (e.g. "self-hosted").
         emit: If True (default), emit JSON to configured output.
@@ -1085,6 +1180,10 @@ def wrap(
         region=region,
         tags=tags,
         energy_override=energy_override,
+        wue_override=wue_override,
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
         price_multiplier=price_multiplier,
         emit=emit,
         provider_hint=provider_hint,
@@ -1101,6 +1200,10 @@ async def awrap(
     price_multiplier: float = 1.0,
     emit: bool = True,
     provider_hint: str | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
     _disabled: bool = False,
 ) -> AsyncGenerator[VetchContext, None]:
     """Async context manager for tracking LLM inference.
@@ -1112,6 +1215,10 @@ async def awrap(
         region: Grid region for carbon calculation.
         tags: Key-value pairs for cost attribution.
         energy_override: User-provided energy values.
+        wue_override: Facility WUE in liters per kWh.
+        wue_boundary: Boundary for ``wue_override``.
+        water_accounting_kind: Accounting definition for ``wue_override``.
+        wue_uncertainty_pct: Optional uncertainty for ``wue_override``.
         price_multiplier: Factor to adjust list pricing (e.g., 0.8 for 20% discount).
         emit: If True (default), emit JSON to configured output.
 
@@ -1128,6 +1235,10 @@ async def awrap(
         region=region,
         tags=tags,
         energy_override=energy_override,
+        wue_override=wue_override,
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
         price_multiplier=price_multiplier,
         emit=emit,
         provider_hint=provider_hint,
@@ -1146,6 +1257,10 @@ def record_usage(
     provider_hint: str | None = None,
     tags: dict[str, str] | None = None,
     energy_override: dict[str, object] | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
     price_multiplier: float = 1.0,
     reasoning_tokens: int | None = None,
     cache_read_tokens: int | None = None,
@@ -1181,6 +1296,10 @@ def record_usage(
             unrecognised value is used but flagged in ``vetch_warnings``.
         tags: Attribution tags for this event.
         energy_override: User-provided energy coefficients (see ``wrap``).
+        wue_override: Facility WUE in liters per kWh.
+        wue_boundary: Boundary for ``wue_override``.
+        water_accounting_kind: Accounting definition for ``wue_override``.
+        wue_uncertainty_pct: Optional uncertainty for ``wue_override``.
         price_multiplier: Factor applied to list pricing (e.g. 0.8 for a 20%
             discount). Ignored when cost is 0 (self-hosted) or unknown.
         reasoning_tokens: Reasoning/thinking tokens, surfaced separately and
@@ -1274,6 +1393,10 @@ def record_usage(
         region=region,
         tags=tags,
         energy_override=energy_override,
+        wue_override=wue_override,
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
         price_multiplier=price_multiplier,
         emit=emit,
         provider_hint=provider_hint,

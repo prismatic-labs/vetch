@@ -16,13 +16,32 @@ Design:
   inference the caller typically has ``(provider, model)``, so an unambiguous match
   keeps its measured tier, while an ambiguous or cross-provider match is
   tier-capped (fail-loud) rather than silently trusted. Optional
-  :class:`ResolveHints` (gpu / serving_engine / precision) let an instrumented
-  host claim ``exact`` when the serving stack is known.
-- Stdlib only at read time (json/pathlib/hashlib); NumPy is never needed here.
+  :class:`ResolveHints` (gpu / serving_engine / precision / power_cap_w) let an
+  instrumented host claim ``exact`` when the serving stack and cap are known.
+- Stdlib only at read time (json/pathlib/hashlib). Resolution validates every
+  schema-2 record before exposing its coefficients -- schema, self-consistency
+  and attestation hashes, all stdlib and microseconds. The NumPy refit that
+  additionally catches a forgery whose hashes were recomputed is opt-in via
+  ``VETCH_CALIB_REFIT_ON_RESOLVE``; see :func:`refit_on_resolve`.
 
-The record schema is versioned by ``CALIB_RECORD_SCHEMA``. A new *optional* field
-is additive within a major; a new identity dimension must be nullable and treated
-as a wildcard so older records still resolve.
+The record schema is versioned by ``CALIB_RECORD_SCHEMA`` (integer 2). Schema 1
+files remain resolvable at inference with their original clamp-to-zero
+semantics, behind a warning. Newly written records are schema 2; ``active: true``
+on a newly written record requires schema 2.
+
+Storage (measurement) key and resolve key are different. The resolve key is
+unchanged: ``self-hosted``, model, gpu, engine, precision, concurrency. The
+storage key adds ``host`` (infrastructure provider, site, tenancy, form factor,
+enforced power limit) plus a hash of ``serving_config``, so two providers or two
+power caps never overwrite each other. Multiple measurement files under one
+resolve key already tier-cap unless a hint selects one.
+
+``identity.provider`` is the event label, always ``self-hosted`` for local
+inference. Infrastructure owner belongs on ``host.infrastructure_provider``.
+
+A new *optional* field is additive within a major; a new resolve-identity
+dimension must be nullable and treated as a wildcard so older records still
+resolve.
 
 Identity JSON uses ``serving_engine`` (not ``backend``). Records written with the
 older ``backend`` key are still readable.
@@ -33,6 +52,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import stat
@@ -47,7 +67,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CALIB_RECORD_SCHEMA = 1
+CALIB_RECORD_SCHEMA = 2
+CALIB_RECORD_SCHEMA_V1 = 1
+_V1_CLAMP_WARNING = (
+    "Loaded a schema_version=1 calibration with clamp-to-zero coefficient "
+    "semantics. Migrate to v2; a null coefficient means unidentified, never zero."
+)
 
 # Provenance keys that change across otherwise-identical measurement *profiles*
 # (thermal idle drift, bootstrap noise, clock probes). Excluded from content_hash
@@ -227,9 +252,13 @@ class CalibrationIdentity:
     """The tuple that determines an energy coefficient.
 
     ``serving_engine`` is the stack that served the model (vllm / ollama / …),
-    not the HTTP API shape. ``instance_type``, ``visual_token_budget``, and
-    ``concurrency`` are nullable forward-compat slots: null means
-    "unknown / wildcard" so older records still resolve.
+    not the HTTP API shape. ``visual_token_budget`` and ``concurrency`` are
+    nullable forward-compat slots: null means "unknown / wildcard" so older
+    records still resolve.
+
+    ``instance_type`` is deprecated on identity (schema 2 moves it to
+    ``host.instance_type``). It is still parsed from v1 files so those records
+    resolve. Do not write both.
     """
 
     provider: str
@@ -237,7 +266,7 @@ class CalibrationIdentity:
     gpu: str | None = None
     serving_engine: str | None = None
     precision: str | None = None
-    instance_type: str | None = None
+    instance_type: str | None = None  # deprecated; host.instance_type in schema 2
     visual_token_budget: int | None = None
     concurrency: int | None = None  # serving concurrency (batch=1 legacy = None)
 
@@ -247,26 +276,31 @@ class ResolveHints:
     """Optional stack dims known at inference time.
 
     When provided, resolve prefers candidates matching all non-None fields and
-    may keep ``exact`` even if other identities exist for the same model.
+    may keep ``exact`` even if other identities exist for the same model. A
+    power-capped candidate is never exact without a matching ``power_cap_w``.
     """
 
     gpu: str | None = None
     serving_engine: str | None = None
     precision: str | None = None
     concurrency: int | None = None
+    power_cap_w: float | None = None
 
     def as_cache_key(self) -> tuple[Any, ...]:
-        return (self.gpu, self.serving_engine, self.precision, self.concurrency)
+        return (
+            self.gpu, self.serving_engine, self.precision, self.concurrency,
+            self.power_cap_w,
+        )
 
     def any_set(self) -> bool:
         return any(
             (v is not None and str(v).strip())
             for v in (self.gpu, self.serving_engine, self.precision)
-        ) or self.concurrency is not None
+        ) or self.concurrency is not None or self.power_cap_w is not None
 
 
 def hints_from_env() -> ResolveHints | None:
-    """Build hints from ``VETCH_CALIB_{GPU,SERVING_ENGINE,PRECISION,CONCURRENCY}``."""
+    """Build hints from ``VETCH_CALIB_*`` environment variables."""
     gpu = os.environ.get("VETCH_CALIB_GPU") or None
     engine = os.environ.get("VETCH_CALIB_SERVING_ENGINE") or None
     precision = os.environ.get("VETCH_CALIB_PRECISION") or None
@@ -279,8 +313,22 @@ def hints_from_env() -> ResolveHints | None:
             logger.warning(
                 "Ignoring invalid VETCH_CALIB_CONCURRENCY=%r (expected int).", conc_raw,
             )
+    cap_raw = os.environ.get("VETCH_CALIB_POWER_CAP_W")
+    power_cap_w: float | None = None
+    if cap_raw is not None and str(cap_raw).strip():
+        try:
+            power_cap_w = float(str(cap_raw).strip())
+            if not math.isfinite(power_cap_w) or power_cap_w <= 0:
+                raise ValueError
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid VETCH_CALIB_POWER_CAP_W=%r (expected positive number).",
+                cap_raw,
+            )
+            power_cap_w = None
     hints = ResolveHints(
-        gpu=gpu, serving_engine=engine, precision=precision, concurrency=concurrency,
+        gpu=gpu, serving_engine=engine, precision=precision,
+        concurrency=concurrency, power_cap_w=power_cap_w,
     )
     return hints if hints.any_set() else None
 
@@ -352,7 +400,306 @@ def _coerce_optional_int(value: Any) -> int | None:
         return None
 
 
+def _coerce_optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if n != n:  # NaN
+        return None
+    return n
+
+
+def infer_gpu_form_factor(gpu: str | None) -> str | None:
+    """sxm / pcie / soc from a canonical GPU key. None if it cannot be read off the name."""
+    if not gpu:
+        return None
+    g = gpu.casefold()
+    if "sxm" in g:
+        return "sxm"
+    if "pcie" in g or "pci-e" in g:
+        return "pcie"
+    if g.startswith("apple-") or "apple" in g:
+        return "soc"
+    return None
+
+
+def default_facility() -> dict[str, Any]:
+    return {
+        "pue": None,
+        "pue_source": None,
+        "pue_basis": None,
+        "wue_l_per_kwh": None,
+        "wue_source": None,
+        "water_boundary": None,
+        "water_accounting_kind": None,
+        "grid_intensity_gco2_per_kwh": None,
+        "grid_intensity_source": None,
+        "grid_accounting_convention": None,
+    }
+
+
+def default_host(
+    *,
+    infrastructure_provider: str | None = None,
+    provider_kind: str | None = None,
+    instance_type: str | None = None,
+    site: str | None = None,
+    region: str | None = None,
+    grid_zone: str | None = None,
+    country: str | None = None,
+    host_cpu: str | None = None,
+    host_cpu_cores: int | None = None,
+    gpu_form_factor: str | None = None,
+    gpu_count_in_host: int | None = None,
+    tenancy: str | None = "unknown",
+    facility: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    fac = dict(facility) if facility else default_facility()
+    return {
+        "infrastructure_provider": infrastructure_provider,
+        "provider_kind": provider_kind,
+        "instance_type": instance_type,
+        "site": site,
+        "region": region,
+        "grid_zone": grid_zone,
+        "country": country,
+        "host_cpu": host_cpu,
+        "host_cpu_cores": host_cpu_cores,
+        "gpu_form_factor": gpu_form_factor,
+        "gpu_count_in_host": gpu_count_in_host,
+        "tenancy": tenancy,
+        "facility": fac,
+    }
+
+
+def default_serving_config(
+    *,
+    engine: str | None = None,
+    engine_version: str | None = None,
+    prefix_caching: bool | None = None,
+    speculative_decoding: bool | None = None,
+    tensor_parallel_size: int | None = None,
+    flags_raw: str | None = None,
+    engine_specific: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "engine": engine,
+        "engine_version": engine_version,
+        "prefix_caching": prefix_caching,
+        "speculative_decoding": speculative_decoding,
+        "tensor_parallel_size": tensor_parallel_size,
+        "flags_raw": flags_raw,
+        "engine_specific": dict(engine_specific) if engine_specific else {},
+    }
+
+
+def default_measurement_conditions(
+    *,
+    enforced_power_limit_w: float | None = None,
+    sm_clock_locked: bool | None = None,
+    sm_clock_mhz: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "enforced_power_limit_w": enforced_power_limit_w,
+        "sm_clock_locked": sm_clock_locked,
+        "sm_clock_mhz": sm_clock_mhz,
+    }
+
+
+def default_node_power() -> dict[str, Any]:
+    return {
+        "available": False,
+        "source": None,
+        "board_wh": None,
+        "node_wh": None,
+        "node_to_board_ratio": None,
+        "sampling_hz": None,
+    }
+
+
+def default_energy_basis() -> dict[str, Any]:
+    return {
+        "marginal": {"wh_per_1k_output": None, "idle_subtracted": True},
+        "attributed": {
+            "attribution_rule": "idle_amortised_over_measured_tokens",
+            "levels": [
+                {"assumed_utilisation": 0.2, "wh_per_1k_output": None},
+                {"assumed_utilisation": 0.5, "wh_per_1k_output": None},
+                {"assumed_utilisation": 0.8, "wh_per_1k_output": None},
+            ],
+        },
+    }
+
+
+def _identity_for_storage(identity: CalibrationIdentity) -> CalibrationIdentity:
+    """Drop deprecated identity.instance_type so v2 does not carry both."""
+    if identity.instance_type is None:
+        return identity
+    return replace(identity, instance_type=None)
+
+
+def _measurement_key_payload(
+    identity: CalibrationIdentity,
+    host: Mapping[str, Any] | None,
+    conditions: Mapping[str, Any] | None,
+    serving_config: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    idn = _identity_for_storage(identity)
+    host = host or {}
+    conditions = conditions or {}
+    serving = serving_config or {}
+    return {
+        "identity": {
+            "provider": (idn.provider or "").casefold(),
+            "model": (idn.model or "").casefold(),
+            "gpu": (idn.gpu.casefold() if isinstance(idn.gpu, str) else idn.gpu),
+            "serving_engine": (
+                idn.serving_engine.casefold()
+                if isinstance(idn.serving_engine, str) else idn.serving_engine
+            ),
+            "precision": (
+                idn.precision.casefold() if isinstance(idn.precision, str) else idn.precision
+            ),
+            "visual_token_budget": idn.visual_token_budget,
+            "concurrency": idn.concurrency,
+        },
+        "host": {
+            "infrastructure_provider": host.get("infrastructure_provider"),
+            "site": host.get("site"),
+            "tenancy": host.get("tenancy"),
+            "gpu_form_factor": host.get("gpu_form_factor"),
+            "instance_type": host.get("instance_type"),
+        },
+        "enforced_power_limit_w": conditions.get("enforced_power_limit_w"),
+        "serving_config": serving,
+    }
+
+
+def measurement_fingerprint(
+    identity: CalibrationIdentity,
+    host: Mapping[str, Any] | None,
+    conditions: Mapping[str, Any] | None,
+    serving_config: Mapping[str, Any] | None,
+) -> tuple[Any, ...]:
+    """Dims that distinguish two measurements under one resolve key."""
+    host = host or {}
+    conditions = conditions or {}
+    serving_hash = _sha256_payload(serving_config or {})
+    return (
+        host.get("infrastructure_provider"),
+        host.get("site"),
+        host.get("tenancy"),
+        host.get("gpu_form_factor"),
+        host.get("instance_type"),
+        conditions.get("enforced_power_limit_w"),
+        serving_hash,
+    )
+
+
+def measurement_slug(
+    identity: CalibrationIdentity,
+    host: Mapping[str, Any] | None = None,
+    conditions: Mapping[str, Any] | None = None,
+    serving_config: Mapping[str, Any] | None = None,
+) -> str:
+    """Filename stem for a schema-2 record (measurement key, not resolve key)."""
+    idn = _identity_for_storage(identity)
+    host = host or {}
+    conditions = conditions or {}
+    parts: list[Any] = [
+        idn.provider, idn.model, idn.gpu, idn.serving_engine, idn.precision,
+    ]
+    if idn.visual_token_budget is not None:
+        parts.append(idn.visual_token_budget)
+    if idn.concurrency is not None:
+        parts.append(f"c{idn.concurrency}")
+    infra = host.get("infrastructure_provider")
+    if infra:
+        parts.append(infra)
+    site = host.get("site")
+    if site:
+        parts.append(site)
+    limit = conditions.get("enforced_power_limit_w")
+    if limit is not None:
+        parts.append(f"pl{limit}")
+    stem = "__".join(_slug_part(x) for x in parts)
+    h = hashlib.sha256(
+        json.dumps(
+            _measurement_key_payload(idn, host, conditions, serving_config),
+            sort_keys=True, separators=(",", ":"),
+        ).encode()
+    ).hexdigest()[:8]
+    stem = stem[:180].rstrip("-.")
+    return f"{stem}-{h}"
+
+
+def record_stem(record: Mapping[str, Any]) -> str | None:
+    """Expected filename stem for a stored record, or None if identity is missing."""
+    try:
+        idn = identity_from_dict(record["identity"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if record.get("schema_version") == CALIB_RECORD_SCHEMA_V1:
+        return identity_slug(idn)
+    return measurement_slug(
+        idn,
+        record.get("host"),
+        record.get("measurement_conditions"),
+        record.get("serving_config"),
+    )
+
+
 # --- Record build / parse ---------------------------------------------------
+
+
+_HASHED_COEFFICIENT_KEYS = (
+    "wh_per_1k_input", "wh_per_1k_output", "wh_per_image",
+    "visual_tokens_per_image", "intercept_wh",
+)
+
+
+def _requests_in_table(table: Sequence[Any]) -> int:
+    """Requests issued across a run table, counting each row's aggregation."""
+    total = 0
+    for row in table:
+        if not isinstance(row, Mapping):
+            total += 1
+            continue
+        try:
+            count = int(float(row.get("requests") or 1))
+        except (TypeError, ValueError):
+            count = 1
+        total += max(1, count)
+    return total
+
+
+def apply_attestation_hashes(
+    record: dict[str, Any], *, host_key: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Set ``profile_hash`` and ``content_hash`` in place, and return the record.
+
+    The only place these are computed. Duplicating the payload construction is
+    how a writer and a migration drift apart and silently stop agreeing about
+    what two records having "the same hash" means.
+    """
+    coefficients = record.get("coefficients") or {}
+    provenance = record.get("provenance") or {}
+    profile_body = {
+        "identity": record.get("identity"),
+        "host_key": dict(host_key),
+        "coefficients": {k: coefficients.get(k) for k in _HASHED_COEFFICIENT_KEYS},
+    }
+    record["profile_hash"] = _sha256_payload(profile_body)
+    stable_prov = {
+        k: v for k, v in provenance.items() if k not in _CONTENT_HASH_EXCLUDE
+    }
+    record["content_hash"] = _sha256_payload(
+        {**profile_body, "provenance": stable_prov}
+    )
+    return record
 
 
 def build_record(
@@ -360,38 +707,111 @@ def build_record(
     identity: CalibrationIdentity,
     provenance: dict[str, Any],
     timestamp: float,
+    *,
+    host: Mapping[str, Any] | None = None,
+    serving_config: Mapping[str, Any] | None = None,
+    measurement_conditions: Mapping[str, Any] | None = None,
+    energy_basis: Mapping[str, Any] | None = None,
+    node_power: Mapping[str, Any] | None = None,
+    coefficient_meta: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Assemble a versioned calibration record (dict ready for JSON)."""
-    coefficients = {
+    """Assemble a schema-2 calibration record (dict ready for JSON).
+
+    ``identity.instance_type`` is moved onto ``host`` when present so the two
+    fields are never both populated. Newly written records are schema 2;
+    ``active: true`` requires schema 2.
+    """
+    host_block = default_host()
+    if host:
+        host_block.update(dict(host))
+        if "facility" in host and host["facility"]:
+            fac = default_facility()
+            fac.update(dict(host["facility"]))
+            host_block["facility"] = fac
+    if identity.instance_type and not host_block.get("instance_type"):
+        host_block["instance_type"] = identity.instance_type
+    stored_identity = _identity_for_storage(identity)
+    conditions = default_measurement_conditions()
+    if measurement_conditions:
+        conditions.update(dict(measurement_conditions))
+    serving = default_serving_config()
+    if serving_config:
+        serving.update(dict(serving_config))
+        if serving_config.get("engine_specific"):
+            serving["engine_specific"] = dict(serving_config["engine_specific"])
+    node = default_node_power()
+    if node_power:
+        node.update(dict(node_power))
+        if node.get("available") and node.get("node_to_board_ratio") is not None:
+            if node.get("board_wh") is None or node.get("node_wh") is None:
+                # Never fill a ratio from the literature when no meter was present.
+                node["node_to_board_ratio"] = None
+    basis = dict(energy_basis) if energy_basis else default_energy_basis()
+
+    coefficients: dict[str, Any] = {
         "wh_per_1k_input": result.wh_per_1k_input,
         "wh_per_1k_output": result.wh_per_1k_output,
         "wh_per_image": result.wh_per_image,
         "visual_tokens_per_image": result.visual_tokens_per_image,
         "intercept_wh": result.intercept_wh,
     }
+    if coefficient_meta:
+        for key in ("status", "null_reasons", "published_rung"):
+            if key in coefficient_meta:
+                coefficients[key] = coefficient_meta[key]
+    if result.active and (
+        result.wh_per_1k_input is None
+        and result.wh_per_1k_output is None
+        and result.wh_per_image is None
+        and result.intercept_wh is None
+    ):
+        result = replace(result, active=False)
+
     prov = dict(provenance)
     prov.setdefault("tier", result.tier)
     prov.setdefault("samples", result.samples)
+    # Row aggregation made `samples` ambiguous a third time. A nested writer
+    # sets it to the row count, a batched writer to the request count, and once
+    # a row can hold several identical requests the two stop being the same
+    # number: batch 2 is 32 rows over 398 requests. Record the request count
+    # explicitly rather than leave a reader to guess which one `samples` meant.
+    table = prov.get("raw_run_table")
+    if isinstance(table, list) and table:
+        prov.setdefault("requests_measured", _requests_in_table(table))
     prov.setdefault("timestamp", timestamp)
+    prov.setdefault("pue_applied", False)
+    prov.setdefault("grid_applied", False)
+    identity_dict = asdict(stored_identity)
     record: dict[str, Any] = {
         "schema_version": CALIB_RECORD_SCHEMA,
-        "identity": asdict(identity),
+        "identity": identity_dict,
+        "host": host_block,
+        "measurement_conditions": conditions,
+        "serving_config": serving,
+        "energy_basis": basis,
+        "node_power": node,
         "gpu_raw": result.gpu_name,
         "coefficients": coefficients,
         "provenance": prov,
-        "active": result.active,
+        "active": bool(result.active),
         "rejection_reasons": result.rejection_reasons,
         "timestamp": timestamp,
     }
-    record["profile_hash"] = _sha256_payload(
-        {"identity": record["identity"], "coefficients": coefficients}
+    return apply_attestation_hashes(
+        record,
+        host_key=_measurement_key_payload(
+            stored_identity, host_block, conditions, serving
+        ),
     )
-    stable_prov = {k: v for k, v in prov.items() if k not in _CONTENT_HASH_EXCLUDE}
-    record["content_hash"] = _sha256_payload(
-        {"identity": record["identity"], "coefficients": coefficients,
-         "provenance": stable_prov}
-    )
-    return record
+
+
+def _gate_parameters() -> dict[str, Any] | None:
+    """Identifiability gate constants, or None when the extra is unavailable."""
+    try:
+        from vetch.calibrate_v2 import gate_parameters
+    except (ImportError, RuntimeError):
+        return None
+    return gate_parameters()
 
 
 def measurement_provenance_core(
@@ -448,10 +868,20 @@ def measurement_provenance_core(
                 round(fit.condition_number, 2)
                 if fit.condition_number != float("inf") else None
             ),
-            "input_ci95": list(fit.input_ci95),
-            "output_ci95": list(fit.output_ci95),
-            "image_ci95": list(fit.image_ci95),
+            "input_ci95": list(fit.input_ci95) if fit.input_ci95 is not None else None,
+            "output_ci95": list(fit.output_ci95) if fit.output_ci95 is not None else None,
+            "image_ci95": list(fit.image_ci95) if fit.image_ci95 is not None else None,
+            "intercept_ci95": (
+                list(_intercept_ci)
+                if (_intercept_ci := getattr(fit, "intercept_ci95", None)) is not None
+                else None
+            ),
             "residuals_structured": fit.residuals_structured,
+            "published_rung": getattr(fit, "published_rung", None),
+            # The thresholds this verdict was reached under, so "identified"
+            # still means the same thing when the record is read back after the
+            # gate has moved.
+            "gate": _gate_parameters(),
         },
         "fit_engine": fit_engine,
         "ci_method": ci_method,
@@ -459,6 +889,10 @@ def measurement_provenance_core(
             {
                 "n_images": r["n_images"], "text_tokens": r["text_tokens"],
                 "output_tokens": r["output_tokens"],
+                # Requests aggregated into this row's timing window. Without it
+                # a consumer cannot recover the per-request design point, and
+                # the fit silently treats an aggregate as a single request.
+                "requests": r.get("requests", 1),
                 "energy_wh": r["energy_wh"], "raw_energy_wh": r["raw_energy_wh"],
                 "duration_ms": r["duration_ms"], "replicate": r["replicate"],
             }
@@ -490,10 +924,24 @@ def commit_calibration(
     provenance: dict[str, Any],
     *,
     timestamp: float | None = None,
+    host: Mapping[str, Any] | None = None,
+    serving_config: Mapping[str, Any] | None = None,
+    measurement_conditions: Mapping[str, Any] | None = None,
+    energy_basis: Mapping[str, Any] | None = None,
+    node_power: Mapping[str, Any] | None = None,
+    coefficient_meta: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Build and atomically write a v1 record; return the active path."""
+    """Build and atomically write a schema-2 record; return the active path."""
     ts = time.time() if timestamp is None else timestamp
-    return write_record(build_record(result, identity, provenance, timestamp=ts))
+    return write_record(build_record(
+        result, identity, provenance, timestamp=ts,
+        host=host,
+        serving_config=serving_config,
+        measurement_conditions=measurement_conditions,
+        energy_basis=energy_basis,
+        node_power=node_power,
+        coefficient_meta=coefficient_meta,
+    ))
 
 
 # In-process index of top-level v1 records. Fingerprint includes per-file
@@ -550,15 +998,15 @@ def _v1_index() -> list[tuple[Path, dict[str, Any]]]:
         rec = _read_json(path)
         if not rec or "identity" not in rec:
             continue
-        # Exact schema major only — future versions must not silently parse.
-        if rec.get("schema_version") != CALIB_RECORD_SCHEMA:
+        schema = rec.get("schema_version")
+        if schema not in (CALIB_RECORD_SCHEMA, CALIB_RECORD_SCHEMA_V1):
             continue
         try:
-            idn = identity_from_dict(rec["identity"])
+            identity_from_dict(rec["identity"])
         except (KeyError, TypeError, ValueError):
             continue
-        expected = identity_slug(idn)
-        if path.stem != expected:
+        expected = record_stem(rec)
+        if expected is None or path.stem != expected:
             logger.warning(
                 "Calibration file %s stem does not match identity slug %s; skipping.",
                 path.name, expected,
@@ -571,12 +1019,23 @@ def _v1_index() -> list[tuple[Path, dict[str, Any]]]:
 
 
 def write_record(record: dict[str, Any]) -> Path:
-    """Write a v1 record to ``~/.vetch/calibrations/<slug>.json``.
+    """Write a calibration record to ``~/.vetch/calibrations/<slug>.json``.
 
     If a file already exists for this identity, it is moved to
     ``archive/<slug>.<UTC-timestamp>.<pid>.json`` before the new record is written.
     """
     from vetch.calibrate import CALIBRATION_DIR
+    from vetch.calibration_invariants import errors_only, record_invariants
+
+    # A record that contradicts itself must not reach disk. Catching this at
+    # write time is the difference between one bad run and a bad record shipped
+    # in every file a campaign produces.
+    incoherent = errors_only(record_invariants(record))
+    if incoherent:
+        raise ValueError(
+            "refusing to write a self-contradictory calibration record:\n  "
+            + "\n  ".join(str(v) for v in incoherent)
+        )
 
     CALIBRATION_DIR.mkdir(parents=True, exist_ok=True)
     try:
@@ -586,8 +1045,20 @@ def write_record(record: dict[str, Any]) -> Path:
 
     identity = identity_from_dict(record["identity"])
     record = dict(record)
-    record["identity"] = asdict(identity)
-    path = CALIBRATION_DIR / f"{identity_slug(identity)}.json"
+    schema = record.get("schema_version", CALIB_RECORD_SCHEMA)
+    if schema == CALIB_RECORD_SCHEMA_V1:
+        record["identity"] = asdict(identity)
+        path = CALIBRATION_DIR / f"{identity_slug(identity)}.json"
+    else:
+        stored = _identity_for_storage(identity)
+        record["identity"] = asdict(stored)
+        stem = measurement_slug(
+            stored,
+            record.get("host"),
+            record.get("measurement_conditions"),
+            record.get("serving_config"),
+        )
+        path = CALIBRATION_DIR / f"{stem}.json"
 
     if path.exists():
         archive_dir = CALIBRATION_DIR / "archive"
@@ -605,6 +1076,13 @@ def write_record(record: dict[str, Any]) -> Path:
             )
         try:
             os.replace(path, archived)
+            # The archive is the history of a calibration campaign -- the only
+            # way to compare runs after one overwrites another. Under sudo it
+            # is created root-owned 0700, which locks the operator out of their
+            # own previous records and makes the directory look empty rather
+            # than forbidden.
+            _chown_to_invoking_user(archived)
+            _chown_to_invoking_user(archive_dir)
         except OSError as e:
             logger.warning("Could not archive previous calibration %s: %s", path, e)
 
@@ -629,6 +1107,11 @@ def write_record(record: dict[str, Any]) -> Path:
         os.chmod(path, 0o600)
     except OSError:
         pass
+    # 0600 plus root ownership would leave this unreadable by the user whose
+    # directory it is. Do the directory too: it is created 0700 on first run,
+    # and a root-owned directory locks out every future record as well.
+    _chown_to_invoking_user(path)
+    _chown_to_invoking_user(CALIBRATION_DIR)
 
     _clear_store_index()
     try:
@@ -640,27 +1123,38 @@ def write_record(record: dict[str, Any]) -> Path:
 
 
 def record_to_result(record: dict[str, Any]) -> CalibrationResult | None:
-    """Rehydrate a CalibrationResult from a v1 record, or None if malformed."""
+    """Rehydrate a CalibrationResult from a v1 or v2 record, or None if malformed."""
     from vetch.calibrate import CalibrationResult
 
     try:
-        if record.get("schema_version") != CALIB_RECORD_SCHEMA:
+        schema = record.get("schema_version")
+        if schema not in (CALIB_RECORD_SCHEMA, CALIB_RECORD_SCHEMA_V1):
             return None
         idn = identity_from_dict(record["identity"])
         coef = record["coefficients"]
         prov = record.get("provenance", {})
         active = _as_bool(record.get("active"), default=True)
+        if schema == CALIB_RECORD_SCHEMA_V1:
+            logger.warning(_V1_CLAMP_WARNING)
+            wh_in: float | None = float(coef["wh_per_1k_input"])
+            wh_out: float | None = float(coef["wh_per_1k_output"])
+        else:
+            # v2: 0.0 is the clamp lie. Treat as unidentified (null).
+            wh_in = _v2_coeff(coef.get("wh_per_1k_input"))
+            wh_out = _v2_coeff(coef.get("wh_per_1k_output"))
         return CalibrationResult(
             model=idn.model,
             provider=idn.provider,
-            wh_per_1k_input=float(coef["wh_per_1k_input"]),
-            wh_per_1k_output=float(coef["wh_per_1k_output"]),
+            wh_per_1k_input=wh_in,
+            wh_per_1k_output=wh_out,
             tier=int(prov.get("tier", 0)),
             samples=int(prov.get("samples", 0)),
             gpu_name=record.get("gpu_raw"),
-            wh_per_image=coef.get("wh_per_image"),
+            wh_per_image=_v2_coeff(coef.get("wh_per_image")) if schema != CALIB_RECORD_SCHEMA_V1
+            else coef.get("wh_per_image"),
             visual_tokens_per_image=coef.get("visual_tokens_per_image"),
-            intercept_wh=coef.get("intercept_wh"),
+            intercept_wh=_v2_coeff(coef.get("intercept_wh")) if schema != CALIB_RECORD_SCHEMA_V1
+            else coef.get("intercept_wh"),
             active=active,
             rejection_reasons=record.get("rejection_reasons"),
             serving_engine=idn.serving_engine,
@@ -669,6 +1163,19 @@ def record_to_result(record: dict[str, Any]) -> CalibrationResult | None:
         )
     except (KeyError, ValueError, TypeError):
         return None
+
+
+def _v2_coeff(value: Any) -> float | None:
+    """Parse a v2 coefficient. null and non-positive mean unidentified, never zero."""
+    if value is None:
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if n != n or n <= 0.0:
+        return None
+    return n
 
 
 # --- Resolution -------------------------------------------------------------
@@ -689,13 +1196,17 @@ class _Candidate:
     timestamp: float
     origin: str  # "local" | "community" | "legacy"
     gpu_known: bool = True
+    measurement_fingerprint: tuple[Any, ...] | None = None
+    power_cap_w: float | None = None
 
     def identity_tuple(self) -> tuple[Any, ...]:
         """Dims that distinguish an energy coefficient (for ambiguity checks).
 
         Includes the stored model string, concurrency, and forward-compat identity
         slots so ``moondream`` vs ``moondream:latest`` (or C=1 vs C=32) never
-        collapse into a false ``exact`` Tier 0.
+        collapse into a false ``exact`` Tier 0. Schema-2 measurement fingerprint
+        (host + power cap + serving_config) distinguishes two files under one
+        resolve key so they tier-cap rather than silently picking one host.
         """
         return (
             self.model.casefold(),
@@ -705,6 +1216,7 @@ class _Candidate:
             self.instance_type,
             self.visual_token_budget,
             self.concurrency,
+            self.measurement_fingerprint,
         )
 
     def matches_hints(self, hints: ResolveHints) -> bool:
@@ -727,7 +1239,37 @@ class _Candidate:
             effective = self.concurrency if self.concurrency is not None else 1
             if effective != hints.concurrency:
                 return False
+        if hints.power_cap_w is not None:
+            if self.power_cap_w is None or not math.isclose(
+                self.power_cap_w, hints.power_cap_w, rel_tol=1e-6, abs_tol=0.01
+            ):
+                return False
         return True
+
+
+def _chown_to_invoking_user(path: Path) -> None:
+    """Hand a root-written file back to the user who invoked sudo.
+
+    Apple Silicon calibration needs root for powermetrics, and records are
+    written 0600 by design. Under sudo that combination produces a root-owned,
+    owner-only file sitting in the invoking user's own calibration directory:
+    written to exactly the right place, and unreadable by the account that will
+    later try to resolve it. `_read_json` then swallows the PermissionError and
+    the calibration is silently absent.
+
+    Best effort. Failing to chown is not a reason to lose the record.
+    """
+    uid, gid = os.environ.get("SUDO_UID"), os.environ.get("SUDO_GID")
+    if not uid:
+        return
+    try:
+        os.chown(path, int(uid), int(gid) if gid else -1)
+    except (OSError, ValueError) as e:  # noqa: BLE001 -- never lose the record
+        logger.warning(
+            "Wrote %s as root but could not hand it back to uid %s (%s). "
+            "Run: sudo chown %s %s",
+            path, uid, e, uid, path,
+        )
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -736,8 +1278,89 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         if not stat.S_ISREG(st.st_mode):
             return None
         return json.loads(path.read_text())  # type: ignore[no-any-return]
+    except PermissionError:
+        # Distinct from "absent". A record we can see but cannot read is almost
+        # always a root-written file from `sudo vetch calibrate-apple-silicon`,
+        # and silence here is what makes that look like the calibration simply
+        # never attached.
+        logger.warning(
+            "Calibration record %s exists but is not readable by this user "
+            "(owner mismatch). If it was written under sudo, run: "
+            "sudo chown $(id -u) %s", path, path,
+        )
+        return None
     except (OSError, json.JSONDecodeError):
         return None
+
+
+_REFIT_ON_RESOLVE_ENV = "VETCH_CALIB_REFIT_ON_RESOLVE"
+
+
+def refit_on_resolve() -> bool:
+    """Whether resolution re-derives coefficients from each record's run table.
+
+    Off by default, and the default is a considered trade rather than a
+    shortcut. Resolution runs on the inference path. The refit is the full
+    nested fit -- eight rungs by 500 bootstrap resamples -- which measures at
+    roughly 35 ms per record and lands on the first call of every process,
+    scaling with the number of local calibrations. That is a cold-start cost
+    on a path budgeted at 5 ms, paid on every serverless invocation.
+
+    What stays on unconditionally is the cheap half, and it is the half that
+    catches the realistic failure: schema, self-consistency and the attestation
+    hashes, all microseconds. A record edited by hand, truncated, or left over
+    from an older schema is rejected by those alone.
+
+    The refit adds exactly one thing -- catching an editor who changed a
+    coefficient *and* recomputed the hashes but left the run table intact. That
+    is a real attack on a shared calibration directory, so the check exists and
+    is one env var away; it is simply not worth a cold start to every user who
+    owns the directory their own calibrations sit in. ``vetch
+    validate-calibration`` always runs the full check.
+    """
+    value = os.environ.get(_REFIT_ON_RESOLVE_ENV, "").strip().casefold()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _runtime_record_valid(record: Mapping[str, Any]) -> bool:
+    """Fail closed on invalid schema-2 records before exposing coefficients.
+
+    Always: schema, invariants and attestation hashes (stdlib, microseconds).
+    Only under ``VETCH_CALIB_REFIT_ON_RESOLVE``: the NumPy refit. See
+    :func:`refit_on_resolve` for why the expensive half is opt-in.
+    """
+    if record.get("schema_version") != CALIB_RECORD_SCHEMA:
+        return True
+    provenance = record.get("provenance")
+    table = provenance.get("raw_run_table") if isinstance(provenance, Mapping) else None
+    full = isinstance(table, list) and bool(table) and refit_on_resolve()
+    try:
+        if full:
+            try:
+                import numpy  # noqa: F401
+            except ImportError:
+                logger.warning(
+                    "%s is set but NumPy is not installed; falling back to "
+                    "schema, invariant and hash checks.", _REFIT_ON_RESOLVE_ENV,
+                )
+                full = False
+        from vetch.calibrate_validate import validate_calibration_record
+
+        report = validate_calibration_record(record, identifiability=full)
+    except Exception as exc:  # noqa: BLE001 -- never make inference traceback
+        logger.warning("Skipping calibration record that could not be validated: %s", exc)
+        return False
+    if not report.get("ok"):
+        problems: list[str] = []
+        for key in ("schema_errors", "invariant_errors", "restatements"):
+            problems.extend(str(item) for item in (report.get(key) or []))
+        logger.warning(
+            "Skipping invalid calibration record for %s: %s",
+            (record.get("identity") or {}).get("model", "unknown"),
+            "; ".join(problems) or "validation failed",
+        )
+        return False
+    return True
 
 
 def _gather_candidates(model: str) -> list[_Candidate]:
@@ -765,12 +1388,22 @@ def _gather_candidates(model: str) -> list[_Candidate]:
         if idn.model.casefold() not in variant_cf:
             continue
         seen_paths.add(path)
+        if not _runtime_record_valid(rec):
+            continue
         res = record_to_result(rec)
         if res is None or not res.active:
             continue
         prov = rec.get("provenance") or {}
         # Missing gpu_known ⇒ unknown (fail closed). Only explicit true is trusted.
         gpu_known = _as_bool(prov.get("gpu_known"), default=False)
+        fp = None
+        if rec.get("schema_version") == CALIB_RECORD_SCHEMA:
+            fp = measurement_fingerprint(
+                idn,
+                rec.get("host"),
+                rec.get("measurement_conditions"),
+                rec.get("serving_config"),
+            )
         v1_cands.append(_Candidate(
             result=res,
             provider=idn.provider,
@@ -785,6 +1418,13 @@ def _gather_candidates(model: str) -> list[_Candidate]:
             timestamp=float(rec.get("timestamp", 0.0)),
             origin="local",
             gpu_known=gpu_known,
+            measurement_fingerprint=fp,
+            power_cap_w=(
+                _coerce_optional_float(
+                    (rec.get("measurement_conditions") or {}).get("enforced_power_limit_w")
+                )
+                if rec.get("schema_version") == CALIB_RECORD_SCHEMA else None
+            ),
         ))
 
     # Legacy flats: include unless a same-provider v1 record already covers this
@@ -889,6 +1529,14 @@ def _pick_scored(
     working.sort(key=lambda c: (c.tier, -c.timestamp))
     best = working[0]
     distinct = {c.identity_tuple() for c in working}
+    # A power-capped measurement is not an exact match unless the runtime
+    # supplied the same cap. The cap is part of the measurement key, but the
+    # event usually cannot know it; silently calling the sole capped record
+    # exact would attach a potentially different operating point.
+    cap_unmatched = best.power_cap_w is not None and not (
+        hints is not None and hints.power_cap_w is not None
+        and math.isclose(best.power_cap_w, hints.power_cap_w, rel_tol=1e-6, abs_tol=0.01)
+    )
 
     if same_provider:
         if len(distinct) <= 1:
@@ -899,6 +1547,8 @@ def _pick_scored(
             # A cloud event provider never stays exact (even if the calibration is
             # self-hosted but keyed under a cloud label like openai/anthropic).
             if is_cloud_provider(event_provider):
+                return _apply_score(best.result, best, "curated", tier_floor=1)
+            if cap_unmatched:
                 return _apply_score(best.result, best, "curated", tier_floor=1)
             return _apply_score(best.result, best, "exact", tier_floor=0)
         logger.debug(

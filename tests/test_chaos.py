@@ -116,12 +116,14 @@ class TestChaosWrapper:
             set_test_emitter(None)
 
     def test_invalid_energy_override_fail_open(self) -> None:
-        """Verify fallback when user provides invalid energy_override."""
-        # wh_per_1k_input is required, omitting it
-        invalid_override = {"wh_per_1k_output": 1.5}
+        """A partial override still attaches; both axes unidentified falls back."""
+        partial = {"wh_per_1k_output": 1.5}
+        with VetchContext(energy_override=partial) as ctx:
+            assert ctx._energy_override is not None
+            assert ctx._energy_override["wh_per_1k_output"] == 1.5
+            assert ctx._energy_override["wh_per_1k_input"] is None
 
-        with VetchContext(energy_override=invalid_override) as ctx:
-            # Should fall back to registry
+        with VetchContext(energy_override={}) as ctx:
             assert ctx._energy_override is None
 
     def test_exception_not_suppressed(self) -> None:

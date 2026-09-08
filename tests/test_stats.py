@@ -264,10 +264,10 @@ class TestSessionStats:
         assert summary["recent_avg_output_tokens"] == 100
         assert summary["recent_output_token_cv"] == pytest.approx(0.0316)
 
-    def test_water_ml_initialized_to_zero(self) -> None:
-        """Verify initial water is zero."""
+    def test_water_ml_initialized_to_none(self) -> None:
+        """No attributed water has no scalar total."""
         stats = SessionStats()
-        assert stats.total_water_ml == 0.0
+        assert stats.total_water_ml is None
 
     def test_water_ml_accumulated_from_ml(self) -> None:
         """Verify water accumulation from estimated_water_ml (MCP-style events)."""
@@ -276,11 +276,15 @@ class TestSessionStats:
             "model": "gpt-4o",
             "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
             "estimated_water_ml": 1.5,
+            "water_boundary": "onsite",
+            "water_accounting_kind": "consumption",
         })
         stats.update({
             "model": "gpt-4o",
             "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
             "estimated_water_ml": 2.5,
+            "water_boundary": "onsite",
+            "water_accounting_kind": "consumption",
         })
         assert stats.total_water_ml == pytest.approx(4.0)
 
@@ -291,6 +295,8 @@ class TestSessionStats:
             "model": "gpt-4o",
             "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
             "estimated_water_l": 0.003,
+            "water_boundary": "onsite",
+            "water_accounting_kind": "consumption",
         })
         assert stats.total_water_ml == pytest.approx(3.0)
 
@@ -301,9 +307,85 @@ class TestSessionStats:
             "model": "gpt-4o",
             "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
             "estimated_water_ml": 5.0,
+            "water_boundary": "onsite",
+            "water_accounting_kind": "consumption",
         })
         summary = stats.summary()
         assert summary["total_water_ml"] == pytest.approx(5.0)
+        assert summary["water_attributed_calls"] == 1
+        assert summary["water_unattributed_calls"] == 0
+
+    def test_unattributed_water_is_not_zero(self) -> None:
+        """Summary total_water_ml is None when no call had a water figure."""
+        stats = SessionStats()
+        stats.update({
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+        })
+        summary = stats.summary()
+        assert summary["total_water_ml"] is None
+        assert summary["water_attributed_calls"] == 0
+        assert summary["water_unattributed_calls"] == 1
+
+    def test_zero_water_is_distinct_from_missing(self) -> None:
+        """An attributed 0 mL total is not collapsed into 'no data'."""
+        stats = SessionStats()
+        stats.update({
+            "model": "gpt-4o",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+            "estimated_water_l": 0.0,
+            "water_boundary": "onsite",
+            "water_accounting_kind": "consumption",
+        })
+        summary = stats.summary()
+        assert summary["total_water_ml"] == pytest.approx(0.0)
+        assert summary["water_attributed_calls"] == 1
+        assert summary["water_unattributed_calls"] == 0
+
+    def test_incompatible_water_definitions_are_not_summed(self) -> None:
+        stats = SessionStats()
+        for accounting in ("withdrawal", "consumption"):
+            stats.update({
+                "model": "example",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+                "estimated_water_ml": 2.0,
+                "water_boundary": "onsite",
+                "water_accounting_kind": accounting,
+            })
+
+        summary = stats.summary()
+        assert summary["total_water_ml"] is None
+        assert stats.total_water_ml is None
+        assert summary["water_totals_ml_by_definition"] == {
+            "onsite:withdrawal": 2.0,
+            "onsite:consumption": 2.0,
+        }
+
+    def test_boundary_is_part_of_water_definition(self) -> None:
+        stats = SessionStats()
+        for boundary in ("onsite", "source"):
+            stats.update({
+                "model": "example",
+                "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+                "estimated_water_ml": 2.0,
+                "water_boundary": boundary,
+                "water_accounting_kind": "consumption",
+            })
+
+        assert stats.total_water_ml is None
+        assert len(stats.water_totals_ml_by_definition) == 2
+
+    def test_unclassified_water_never_gets_scalar_total(self) -> None:
+        stats = SessionStats()
+        stats.update({
+            "model": "example",
+            "usage": {"text": {"input_tokens": 100, "output_tokens": 50}},
+            "estimated_water_ml": 2.0,
+        })
+
+        summary = stats.summary()
+        assert stats.total_water_ml is None
+        assert summary["water_unclassified_calls"] == 1
 
     def test_tool_use_finish_reason_excluded_from_empty_count(self) -> None:
         """tool_use finish_reason must not count as empty visible output (EMPTY-001 guard)."""
@@ -443,3 +525,51 @@ class TestAdvisoryHooks:
         assert fired
         codes = {advisory.code for batch in fired for advisory in batch}
         assert "STALL-001" in codes
+
+
+class TestLowerBoundRollup:
+    """`energy_completeness` sees one cause of an incomplete figure (unpriced
+    modality). An unidentified coefficient axis is the other, and it leaves
+    `energy_completeness == "complete"`, so it never reached the counters."""
+
+    def test_unidentified_axis_rolls_into_lower_bound_not_text_only(self) -> None:
+        from vetch.stats import SessionStats
+
+        stats = SessionStats()
+        stats.update({
+            "estimated_energy_wh": 2.0, "estimated_cost_usd": 0.0,
+            "estimated_carbon_g": 0.0, "model": "m", "provider": "p",
+            "energy_completeness": "complete",
+            "energy_axes_unattributed": ["wh_per_1k_input"],
+            "energy_estimate_kind": "lower_bound",
+        })
+        assert stats.energy_lower_bound_count == 1
+        assert stats.energy_lower_bound_wh == 2.0
+        # Not a modality partial, so the older counter must stay clear.
+        assert stats.energy_text_only_count == 0
+
+    def test_point_estimate_is_not_counted(self) -> None:
+        from vetch.stats import SessionStats
+
+        stats = SessionStats()
+        stats.update({
+            "estimated_energy_wh": 2.0, "estimated_cost_usd": 0.0,
+            "estimated_carbon_g": 0.0, "model": "m", "provider": "p",
+            "energy_completeness": "complete",
+            "energy_axes_unattributed": [],
+            "energy_estimate_kind": "point",
+        })
+        assert stats.energy_lower_bound_count == 0
+
+    def test_text_only_counts_in_both(self) -> None:
+        from vetch.stats import SessionStats
+
+        stats = SessionStats()
+        stats.update({
+            "estimated_energy_wh": 1.0, "estimated_cost_usd": 0.0,
+            "estimated_carbon_g": 0.0, "model": "m", "provider": "p",
+            "energy_completeness": "text_only",
+            "energy_estimate_kind": "lower_bound",
+        })
+        assert stats.energy_text_only_count == 1
+        assert stats.energy_lower_bound_count == 1

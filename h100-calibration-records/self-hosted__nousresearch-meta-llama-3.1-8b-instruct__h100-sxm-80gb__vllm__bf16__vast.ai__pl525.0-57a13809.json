@@ -1,21 +1,34 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "identity": {
     "provider": "self-hosted",
     "model": "NousResearch/Meta-Llama-3.1-8B-Instruct",
     "gpu": "h100-sxm-80gb",
     "serving_engine": "vllm",
     "precision": "bf16",
-    "instance_type": null,
-    "visual_token_budget": null
+    "visual_token_budget": null,
+    "concurrency": null,
+    "instance_type": null
   },
   "gpu_raw": "NVIDIA H100 80GB HBM3",
   "coefficients": {
-    "wh_per_1k_input": 0.0,
-    "wh_per_1k_output": 0.5382334545971682,
+    "wh_per_1k_input": null,
+    "wh_per_1k_output": 0.5173179673213375,
     "wh_per_image": null,
     "visual_tokens_per_image": null,
-    "intercept_wh": 0.0
+    "intercept_wh": null,
+    "status": {
+      "wh_per_1k_output": "identified",
+      "intercept_wh": "not_identified",
+      "wh_per_1k_input": "not_identified",
+      "wh_per_image": "not_identified"
+    },
+    "null_reasons": {
+      "intercept_wh": "interval includes zero",
+      "wh_per_1k_input": "design lacked prefill isolation arm (max input 404 < 1024 or span 369 < 1024)",
+      "wh_per_image": "no image feature in the design"
+    },
+    "published_rung": "output_only"
   },
   "provenance": {
     "tier": 0,
@@ -47,21 +60,55 @@
     "concurrency": 1,
     "batch_size": 1,
     "fit": {
-      "r2": 0.992,
+      "r2": 0.9890696589056334,
       "condition_number": 5.14,
       "input_ci95": [
-        -0.008198936030988174,
-        0.007179068083511625
+        -0.013377231023018275,
+        0.006824553736123243
       ],
       "output_ci95": [
-        0.49211652497030745,
-        0.5721844659801656
+        0.492408081957726,
+        0.5371393471476155
       ],
       "image_ci95": [
         0.0,
         0.0
       ],
-      "residuals_structured": false
+      "residuals_structured": true,
+      "v1": {
+        "input_ci95": [
+          -0.008198936030988174,
+          0.007179068083511625
+        ],
+        "output_ci95": [
+          0.49211652497030745,
+          0.5721844659801656
+        ],
+        "image_ci95": [
+          0.0,
+          0.0
+        ]
+      },
+      "published_rung": "output_only",
+      "intercept_ci95": [
+        -0.0031906359893494143,
+        0.0018295601886350933
+      ],
+      "gate": {
+        "protocol_version": "2.0",
+        "max_relative_ci_half_width": 0.1,
+        "max_condition_number": 30.0,
+        "min_r2": 0.85,
+        "design_leverage_multiple": 10.0,
+        "design_idle_integration_uncertainty": 0.02,
+        "prefill_arm_min_input_tokens": 1024,
+        "prefill_arm_max_output_tokens": 8,
+        "prefill_arm_min_rows": 2,
+        "prefill_arm_min_span_tokens": 1024,
+        "image_arm_min_rows_each": 2,
+        "bootstrap_resamples": 500,
+        "bootstrap_seed": 42
+      }
     },
     "fit_engine": "numpy",
     "ci_method": "bootstrap_500",
@@ -177,7 +224,7 @@
     "visual_tokens_assumed": 729,
     "visual_tokens_assumed_source": "assumed_default",
     "vetch_version": "0.10.5",
-    "methodology_version": "1.3",
+    "methodology_version": "2.0",
     "measured_at": "2026-08-10T01:01:53Z",
     "measured_by": null,
     "samples_per_modality": {
@@ -221,14 +268,127 @@
     "gpu_shared_warning": false,
     "api_backend": "openai",
     "model_revision": null,
-    "timestamp": 1786323713.393809
+    "timestamp": 1786323713.393809,
+    "schema_migration": [
+      "Host block reconstructed after the fact rather than captured at measurement time; weaker evidence than a contemporaneous record."
+    ],
+    "identifiability": {
+      "published_rung": "output_only",
+      "status": {
+        "wh_per_1k_output": "identified",
+        "intercept_wh": "not_identified",
+        "wh_per_1k_input": "not_identified",
+        "wh_per_image": "not_identified"
+      },
+      "null_reasons": {
+        "intercept_wh": "interval includes zero",
+        "wh_per_1k_input": "design lacked prefill isolation arm (max input 404 < 1024 or span 369 < 1024)",
+        "wh_per_image": "no image feature in the design"
+      },
+      "residuals_structured": true,
+      "design_leverage": {
+        "leverage_multiple": 10.0,
+        "idle_integration_uncertainty": 0.02,
+        "sigma_idle_wh": 0.0004482923773842014,
+        "output": {
+          "leverage": 147.7087346510496,
+          "span_k": 0.128
+        },
+        "input": {
+          "design_leverage": false,
+          "reason": "design lacked prefill isolation arm (max input 404 < 1024 or span 369 < 1024)",
+          "fitted_leverage": 1.7448621654079424,
+          "span_k": 0.369,
+          "prefill_arm_rows": 0
+        },
+        "intercept": {
+          "leverage": null,
+          "n": 10
+        },
+        "image": {
+          "design_leverage": false,
+          "reason": "design lacked image arm (0 with-image rows, 10 without; need 2 each)",
+          "fitted_leverage": null
+        }
+      },
+      "admitted_rows": 10,
+      "dropped_zero_raw": 1
+    }
   },
-  "active": false,
-  "rejection_reasons": [
-    "intercept_wh=-0.00162526 is negative (regression artifact; clamped to 0)",
-    "wh_per_1k_input=-0.001070 is negative"
-  ],
+  "active": true,
+  "rejection_reasons": null,
   "timestamp": 1786323713.393809,
-  "profile_hash": "sha256:ba1cfb34b92aadf38bcbf0b4cea4b1c1c770f2e32fa5bae53bec700a0b7ac14b",
-  "content_hash": "sha256:669d088ecc5207ae181da0da3c2f428d89639dfed4796f21245c2140978d450a"
+  "profile_hash": "sha256:31d7afd78ca2851b56a482cd49d2931d786d1a2c7220ccdef23119a9cb35a839",
+  "content_hash": "sha256:22c81843d99830e572bb27b59d6c1239b1c696d74cc59992defb1e850993e8bb",
+  "host": {
+    "infrastructure_provider": "vast.ai",
+    "provider_kind": "marketplace",
+    "instance_type": null,
+    "site": null,
+    "region": null,
+    "grid_zone": null,
+    "country": null,
+    "host_cpu": null,
+    "host_cpu_cores": null,
+    "gpu_form_factor": "sxm",
+    "gpu_count_in_host": null,
+    "tenancy": "unknown",
+    "facility": {
+      "pue": null,
+      "pue_source": null,
+      "pue_basis": null,
+      "wue_l_per_kwh": null,
+      "wue_source": null,
+      "water_boundary": null,
+      "water_accounting_kind": null,
+      "grid_intensity_gco2_per_kwh": null,
+      "grid_intensity_source": null,
+      "grid_accounting_convention": null
+    }
+  },
+  "measurement_conditions": {
+    "enforced_power_limit_w": 525.0,
+    "sm_clock_locked": null,
+    "sm_clock_mhz": 1980
+  },
+  "serving_config": {
+    "engine": null,
+    "engine_version": null,
+    "prefix_caching": null,
+    "speculative_decoding": null,
+    "tensor_parallel_size": null,
+    "flags_raw": null,
+    "engine_specific": {}
+  },
+  "energy_basis": {
+    "marginal": {
+      "wh_per_1k_output": 0.5173179673213375,
+      "idle_subtracted": true
+    },
+    "attributed": {
+      "attribution_rule": "idle_amortised_over_measured_tokens",
+      "levels": [
+        {
+          "assumed_utilisation": 0.2,
+          "wh_per_1k_output": 2.4298281097454044
+        },
+        {
+          "assumed_utilisation": 0.5,
+          "wh_per_1k_output": 1.2823220242909645
+        },
+        {
+          "assumed_utilisation": 0.8,
+          "wh_per_1k_output": 0.9954455029273543
+        }
+      ]
+    }
+  },
+  "node_power": {
+    "available": false,
+    "source": null,
+    "board_wh": null,
+    "node_wh": null,
+    "node_to_board_ratio": null,
+    "sampling_hz": null
+  }
 }

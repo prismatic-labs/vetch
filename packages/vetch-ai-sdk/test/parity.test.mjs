@@ -97,6 +97,26 @@ describe("schema v2 calculation parity", () => {
     expect(VETCH_VERSION).toBe(pkg.version);
   });
 
+  it("marks visual calls without a visual coefficient as text-only lower bounds", async () => {
+    const event = await createVetchEvent({
+      operation: "generate",
+      model: { provider: "openai", modelId: "gpt-4.1-mini" },
+      params: {
+        messages: [{
+          role: "user",
+          content: [{ type: "text", text: "Describe this" }, { type: "image", image: "x" }],
+        }],
+      },
+      result: generateResult(),
+      startTimeMs: Date.now(),
+      options: {},
+    });
+
+    expect(event.energy_completeness).toBe("text_only");
+    expect(event.energy_estimate_kind).toBe("lower_bound");
+    expect(event.energy_p95_wh).toBeNull();
+  });
+
   it("matches the Python prepare_inference_metrics fixture for cache, reasoning, cost, carbon, and water", async () => {
     const fixture = await readFixture("python-gpt-41-mini-cache.json");
     const event = await createVetchEvent({

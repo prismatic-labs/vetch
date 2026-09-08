@@ -522,7 +522,7 @@ def calibrate(args: argparse.Namespace) -> None:
         print(f"Reason: {get_gpu_error()}")
         print("\nTo enable GPU calibration:")
         print("  1. Ensure you have an NVIDIA GPU")
-        print("  2. Install pynvml: pip install nvidia-ml-py3")
+        print("  2. Install pynvml: pip install nvidia-ml-py")
         print("  3. Run calibration again")
         print()
         print("Without a GPU, you can still adjust estimates:")
@@ -667,6 +667,8 @@ def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
             verbose=verbose,
             precision=precision,
             serving_engine=serving_engine,
+            quick=getattr(args, "quick", False),
+            allow_degraded_power=getattr(args, "allow_degraded_power", False),
         )
     except SystemExit:
         raise
@@ -781,7 +783,7 @@ def calibrate_cuda_cmd(args: argparse.Namespace) -> None:
                         if r.wh_per_image is not None else ""
                     )
                     print(
-                        f"  C={c}: wh_per_1k_output={r.wh_per_1k_output:.6f}{img} "
+                        f"  C={c}: wh_per_1k_output={r.wh_per_1k_output}{img} "
                         f"active={r.active}"
                     )
             if any(not r.active for r in results):
@@ -799,6 +801,15 @@ def calibrate_cuda_cmd(args: argparse.Namespace) -> None:
             precision=args.precision,
             serving_engine=args.serving_engine,
             modality=getattr(args, "modality", "image") or "image",
+            grid=getattr(args, "grid", "v1") or "v1",
+            idle_seconds=getattr(args, "idle_seconds", None),
+            pin_serving_path=getattr(args, "pin_serving_path", True),
+            infrastructure_provider=getattr(args, "infrastructure_provider", None),
+            provider_kind=getattr(args, "provider_kind", None),
+            tenancy=getattr(args, "tenancy", None) or "unknown",
+            site=getattr(args, "site", None),
+            region=getattr(args, "operator_region", None),
+            grid_zone=getattr(args, "grid_zone", None),
         )
     except SystemExit:
         raise
@@ -814,8 +825,8 @@ def calibrate_cuda_cmd(args: argparse.Namespace) -> None:
         print(f"\nModel:        {result.model}")
         print(f"GPU:          {result.gpu_name}")
         print(f"Tier:         {result.tier} (hardware-measured)")
-        print(f"wh_per_1k_in: {result.wh_per_1k_input:.5f}")
-        print(f"wh_per_1k_out:{result.wh_per_1k_output:.5f}")
+        print(f"wh_per_1k_in: {result.wh_per_1k_input}")
+        print(f"wh_per_1k_out:{result.wh_per_1k_output}")
         if result.wh_per_image is not None:
             print(f"wh_per_image: {result.wh_per_image:.5f}")
             print(f"visual_tok/img:{result.visual_tokens_per_image}")
@@ -829,6 +840,32 @@ def calibrate_cuda_cmd(args: argparse.Namespace) -> None:
             print("Active calibration NOT installed:", file=sys.stderr)
             for reason in result.rejection_reasons:
                 print(f"  - {reason}", file=sys.stderr)
+        sys.exit(1)
+
+
+def validate_calibration_cmd(args: argparse.Namespace) -> None:
+    """Validate a calibration JSON file. No GPU required."""
+    from vetch.calibrate_validate import format_report, validate_calibration_file
+
+    try:
+        report = validate_calibration_file(
+            args.file, identifiability=not args.schema_only,
+        )
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(2)
+    except FileNotFoundError:
+        print(f"ERROR: file not found: {args.file}", file=sys.stderr)
+        sys.exit(2)
+    except json.JSONDecodeError as e:
+        print(f"ERROR: invalid JSON: {e}", file=sys.stderr)
+        sys.exit(2)
+
+    if args.format == "json":
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(format_report(report), end="")
+    if not report.get("ok"):
         sys.exit(1)
 
 
@@ -1471,7 +1508,19 @@ def main() -> None:
     )
     cal_as_parser.add_argument(
         "--iterations", type=int, default=1,
-        help="Grid iteration multiplier (default: 1, ~22 runs)",
+        help="Grid iteration multiplier (default: 1, ~22 timing windows)",
+    )
+    cal_as_parser.add_argument(
+        "--quick", action="store_true",
+        help="Reduced grid, for smoke-testing a run end to end on new "
+             "hardware. Fewer design points means wider intervals, so axes "
+             "will correctly come back not_identified; do not publish a "
+             "coefficient from a --quick run.",
+    )
+    cal_as_parser.add_argument(
+        "--allow-degraded-power", dest="allow_degraded_power", action="store_true",
+        help="Run even on battery or in Low Power Mode. The record is written "
+             "and flagged but never installed as the active calibration.",
     )
     cal_as_parser.add_argument("--verbose", action="store_true", help="Print per-run details")
     cal_as_parser.add_argument(
@@ -1561,6 +1610,53 @@ def main() -> None:
     cal_cuda_parser.add_argument("--verbose", action="store_true", help="Print per-run details")
     cal_cuda_parser.add_argument(
         "--format", choices=["text", "json"], default="text", help="Output format"
+    )
+    cal_cuda_parser.add_argument(
+        "--grid", choices=["v1", "v2"], default="v1",
+        help="Workload design. v1 is the shipped symmetric grid. v2 is the "
+             "unbalanced prefill/decode/verification design (protocol v2).",
+    )
+    cal_cuda_parser.add_argument(
+        "--idle-seconds", dest="idle_seconds", type=float, default=None,
+        help="Idle baseline window in seconds (protocol v2 default: 60).",
+    )
+    cal_cuda_parser.add_argument(
+        "--no-pin-serving-path", dest="pin_serving_path", action="store_false",
+        help="Do not request prefix-cache/speculative-decoding off (recorded anyway).",
+    )
+    cal_cuda_parser.add_argument(
+        "--infrastructure-provider", dest="infrastructure_provider", default=None,
+        help="Infrastructure owner (e.g. vast.ai, ovhcloud). Not identity.provider.",
+    )
+    cal_cuda_parser.add_argument(
+        "--provider-kind", dest="provider_kind", default=None,
+        choices=["marketplace", "hyperscaler", "sovereign_cloud", "on_premise", "academic_hpc"],
+    )
+    cal_cuda_parser.add_argument(
+        "--tenancy", default="unknown",
+        choices=["dedicated_host", "shared_host", "unknown"],
+    )
+    cal_cuda_parser.add_argument("--site", default=None, help="Facility site label")
+    cal_cuda_parser.add_argument(
+        "--operator-region", dest="operator_region", default=None,
+        help="Operator region label (e.g. gra11), not an Electricity Maps zone",
+    )
+    cal_cuda_parser.add_argument(
+        "--grid-zone", dest="grid_zone", default=None,
+        help="Electricity Maps zone identifier (e.g. FR)",
+    )
+
+    val_cal_parser = subparsers.add_parser(
+        "validate-calibration",
+        help="Validate a calibration record (no GPU required)",
+    )
+    val_cal_parser.add_argument("file", help="Path to a calibration JSON record")
+    val_cal_parser.add_argument(
+        "--schema-only", action="store_true",
+        help="Check types/required fields only (no NumPy identifiability)",
+    )
+    val_cal_parser.add_argument(
+        "--format", choices=["text", "json"], default="text",
     )
 
     # Report
@@ -1670,6 +1766,8 @@ def main() -> None:
         calibrate_apple_silicon_cmd(args)
     elif args.command == "calibrate-cuda":
         calibrate_cuda_cmd(args)
+    elif args.command == "validate-calibration":
+        validate_calibration_cmd(args)
     elif args.command == "report":
         report(args)
     elif args.command == "savings":

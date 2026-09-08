@@ -9,6 +9,7 @@ the injected ground truth. Runs on both the NumPy and pure-Python fit paths.
 
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -141,13 +142,28 @@ def test_net_energy_clamped_nonnegative():
 
 
 def _good_fit():
-    from vetch.calibrate_metal import FitResult
+    """A clean fit in the shared shape.
 
-    return FitResult(
-        intercept_wh=0.0005, wh_per_image=0.0008, wh_per_1k_input=0.0003,
-        wh_per_1k_output=0.0018, r2=0.99, condition_number=5.0,
-        input_ci95=(0.0002, 0.0004), output_ci95=(0.0016, 0.002),
-        image_ci95=(0.0007, 0.0009), valid=True, invalid_reasons=[],
+    This previously imported FitResult from calibrate_metal: the CUDA tests were
+    borrowing the Apple Silicon path's result type, which is the coupling that
+    let two fitting implementations drift apart in the first place.
+    """
+    from vetch.calibrate_v2 import NestedFitResult
+
+    return NestedFitResult(
+        published_rung="output_intercept_input_image",
+        intercept_wh=0.0005, wh_per_1k_input=0.0003,
+        wh_per_1k_output=0.0018, wh_per_image=0.0008,
+        status={
+            "wh_per_1k_output": "identified", "intercept_wh": "identified",
+            "wh_per_1k_input": "identified", "wh_per_image": "identified",
+        },
+        null_reasons={}, r2=0.99, condition_number=5.0,
+        intercept_ci95=(0.0004, 0.0006), input_ci95=(0.0002, 0.0004),
+        output_ci95=(0.0016, 0.002), image_ci95=(0.0007, 0.0009),
+        residuals_structured=False, active=True, rejection_reasons=[],
+        axes={}, design_leverage={}, energy_basis={},
+        admitted_rows=22, dropped_zero_raw=0,
     )
 
 
@@ -251,7 +267,11 @@ def test_provider_fallback_prefers_active(monkeypatch, tmp_path):
 def test_calibrate_cuda_recovers_coefficients(monkeypatch, tmp_path):
     # Ground-truth active-energy model (Wh) plus a constant idle draw that the
     # code must subtract via the pre/post average.
-    B0, BIMG, BIN, BOUT = 0.0006, 0.0009, 0.00031, 0.00175
+    # Physically plausible magnitudes for a 31B model on an H100. The old
+    # constants put decode at ~1.75 uWh/token, ~300x below the measured
+    # 0.486 Wh/1k for a 7B, which left the decode axis with 4x leverage
+    # against the 80 W idle baseline and no business being called identified.
+    B0, BIMG, BIN, BOUT = 0.006, 0.09, 0.031, 2.2
     IDLE_W = 80.0
     PROBE_DELTA = 260  # model "includes" this many image tokens per image
     clock = {"s": 0.0}
@@ -335,11 +355,19 @@ def test_calibrate_cuda_recovers_coefficients(monkeypatch, tmp_path):
     assert result.tier == 0
     assert result.samples >= 8
     assert result.gpu_name == "NVIDIA H100 80GB HBM3"
-    # Idle subtraction worked: coefficients recovered despite the 80 W idle draw.
-    assert result.wh_per_image is not None
-    assert abs(result.wh_per_image - BIMG) < BIMG * 0.15
-    assert abs(result.wh_per_1k_input - BIN) < BIN * 0.15
-    assert abs(result.wh_per_1k_output - BOUT) < BOUT * 0.15
+    # Nested v2 fit: the v1 grid has no prefill isolation arm, so input is
+    # unidentified even when the mock is linear. Decode must still attach.
+    # Published rung is output_only (intercept CI includes 0 on this design),
+    # so the slope is not the three-parameter BOUT — through-origin absorbs
+    # the intercept. Idle subtraction still has to have happened or the
+    # coefficient would be tens of mWh/token from the 80 W baseline.
+    assert result.wh_per_1k_input is None
+    assert result.wh_per_1k_output is not None
+    assert result.wh_per_1k_output > 0
+    # Idle subtraction must have happened: an unsubtracted 80 W baseline would
+    # put this orders of magnitude above the ground-truth decode term.
+    assert result.wh_per_1k_output < 4.0
+    assert result.active is True
     # #3: the saved visual-token count is the MEASURED probe delta, not 729.
     assert result.visual_tokens_per_image == PROBE_DELTA
     # A single data-rich v1 record was written and round-trips with identity+provenance.
@@ -347,10 +375,23 @@ def test_calibrate_cuda_recovers_coefficients(monkeypatch, tmp_path):
     recs = list(tmp_path.glob("*.json"))
     assert len(recs) == 1
     rec = json.loads(recs[0].read_text())
-    assert rec["schema_version"] == 1
+    assert rec["schema_version"] == 2
     assert rec["identity"]["gpu"] == "h100-sxm-80gb"
     assert rec["identity"]["precision"] == "bf16"
     assert rec["identity"]["serving_engine"] == "vllm"
+    assert rec["identity"]["instance_type"] is None
+    assert rec["host"]["gpu_form_factor"] == "sxm"
+    assert rec["host"]["tenancy"] == "unknown"
+    assert rec["node_power"]["available"] is False
+    assert rec["energy_basis"]["marginal"]["idle_subtracted"] is True
+    assert rec["coefficients"]["published_rung"] in (
+        "output_only", "output_intercept", "output_image",
+        "output_intercept_image",
+    )
+    assert rec["coefficients"]["wh_per_1k_input"] is None
+    assert rec["coefficients"]["status"]["wh_per_1k_output"] == "identified"
+    assert rec["coefficients"]["status"]["wh_per_1k_input"] == "not_identified"
+    assert rec["measurement_conditions"]["enforced_power_limit_w"] == 700.0
     assert rec["provenance"]["energy_domain"] == "gpu_board"
     assert rec["provenance"]["batch_size"] == 1
     assert rec["provenance"]["enforced_power_limit_w"] == 700.0
@@ -516,6 +557,52 @@ def test_openai_compat_generate_parses_usage(monkeypatch):
     assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert captured["body"]["max_tokens"] == 7
     assert captured["body"]["temperature"] == 0.0
+    assert "extra_body" not in captured["body"]
+
+
+def test_pin_serving_path_sends_no_inert_per_request_knobs(monkeypatch):
+    """Pinning is an engine-start concern, so nothing goes in the request.
+
+    vetch used to send enable_prefix_caching / disable_chunked_prefill /
+    speculative_config in extra_body. vLLM applies all three only at launch, so
+    they were silently ignored while the record said pin_serving_path=true --
+    which is how a coefficient came to price chunked prefill while the write-up
+    claimed the path was pinned. Sending nothing is the honest behaviour; the
+    requirement is printed for the caller and recorded as unverified.
+    """
+    import json
+    import urllib.request
+
+    captured: dict = {}
+
+    class FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"usage": {"prompt_tokens": 1, "completion_tokens": 1}}).encode()
+
+    def fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data)
+        return FakeResp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    cc._openai_compat_generate(
+        "http://x/v1", "m", "hello", pin_serving_path=True,
+    )
+    assert "extra_body" not in captured["body"], (
+        "per-request pinning knobs are inert in vLLM and imply control vetch "
+        "does not have"
+    )
+    from vetch.calibrate_cuda import PINNED_SERVING_FLAGS, serving_path_guidance
+
+    guidance = serving_path_guidance(True)
+    for flag in PINNED_SERVING_FLAGS:
+        assert flag in guidance, "the caller must be told the exact engine flags"
+    assert "cannot verify" in guidance
 
 
 def test_calibrate_cuda_openai_backend_dispatch(monkeypatch, tmp_path):
@@ -559,6 +646,19 @@ def test_calibrate_cuda_openai_backend_dispatch(monkeypatch, tmp_path):
     assert used["health"] == 1 and used["gen"] > 0
     assert result.tier == 0
     assert result.gpu_name == "NVIDIA H100 80GB HBM3"
+    written = [p for p in tmp_path.glob("*.json") if p.is_file()]
+    assert written, "expected a committed calibration record"
+    rec = json.loads(written[0].read_text())
+    sc = rec.get("serving_config") or {}
+    assert sc.get("prefix_caching") is None
+    assert sc.get("speculative_decoding") is None
+    # A requirement on the caller, never an observation vetch made.
+    requires = (sc.get("engine_specific") or {}).get("baseline_requires") or {}
+    assert requires.get("chunked_prefill") is False
+    assert requires.get("prefix_caching") is False
+    assert requires.get("set_via") == "engine_start_flags"
+    assert requires.get("verified_by_vetch") is False
+    assert "unverified" in str(sc.get("flags_raw") or "")
 
 
 def test_calibrate_cuda_requires_precision(monkeypatch, tmp_path):

@@ -16,7 +16,7 @@ from vetch.calculation import (
     calculate_carbon,
     calculate_cost,
     calculate_energy,
-    calculate_water,
+    calculate_water_with_provenance,
 )
 from vetch.health import get_health_status
 from vetch.sensing.grid import get_carbon_intensity, get_cleanest_region
@@ -43,6 +43,11 @@ def vetch_estimate(
     input_tokens: int,
     output_tokens: int,
     region: str | None = None,
+    provider_hint: str | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
 ) -> dict[str, Any]:
     """Estimate energy, carbon, water, and cost for a single LLM inference call."""
     region = region or os.environ.get("VETCH_REGION")
@@ -66,16 +71,23 @@ def vetch_estimate(
         energy_wh=energy_wh,
         grid_intensity_gco2e_kwh=grid.intensity_gco2e_kwh,
         model=model,
+        provider_hint=provider_hint,
     )
 
     # Water. The core calculator returns liters; MCP exposes milliliters for
     # readable per-call values while retaining liters for unit clarity.
-    water_l = calculate_water(
+    water = calculate_water_with_provenance(
         energy_wh=energy_wh,
         model=model,
+        provider_hint=provider_hint,
         region=region,
+        wue_override=wue_override,
+        wue_boundary=wue_boundary,
+        water_accounting_kind=water_accounting_kind,
+        wue_uncertainty_pct=wue_uncertainty_pct,
     )
-    water_ml = water_l * 1000
+    water_l = water.water_l
+    water_ml = None if water_l is None else water_l * 1000
 
     # Cost
     total_cost, input_cost, output_cost, cache_write, cache_read, billing_tier = (
@@ -95,8 +107,14 @@ def vetch_estimate(
         "output_tokens": output_tokens,
         "energy_wh": round(energy_wh, 6),
         "carbon_g": round(carbon_g, 6),
-        "water_l": round(water_l, 8),
-        "water_ml": round(water_ml, 4),
+        "water_l": None if water_l is None else round(water_l, 8),
+        "water_ml": None if water_ml is None else round(water_ml, 4),
+        "water_tier": water.tier,
+        "water_basis": water.basis,
+        "water_boundary": water.boundary,
+        "water_accounting_kind": water.accounting,
+        "water_uncertainty_pct": water.uncertainty_pct,
+        "water_warnings": list(water.warnings),
         "cost_usd": round(total_cost, 6),
         "cost_breakdown": {
             "input_usd": round(input_cost, 6),
@@ -111,6 +129,7 @@ def vetch_estimate(
         "signal_quality": grid.signal_quality,
         "pue": pue,
         "region": region,
+        "provider_hint": provider_hint,
         "training_context": training_context,
     }
 
@@ -122,6 +141,11 @@ def vetch_compare(
     output_tokens: int,
     region: str | None = None,
     sort_by: str = "cost_usd",
+    provider_hints: dict[str, str] | None = None,
+    wue_override: float | None = None,
+    wue_boundary: str | None = None,
+    water_accounting_kind: str | None = None,
+    wue_uncertainty_pct: float | None = None,
 ) -> dict[str, Any]:
     """Compare energy, carbon, water, and cost across multiple models."""
     results = []
@@ -131,6 +155,11 @@ def vetch_compare(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             region=region,
+            provider_hint=(provider_hints or {}).get(m),
+            wue_override=wue_override,
+            wue_boundary=wue_boundary,
+            water_accounting_kind=water_accounting_kind,
+            wue_uncertainty_pct=wue_uncertainty_pct,
         )
         results.append(est)
 
@@ -138,8 +167,43 @@ def vetch_compare(
     valid = [r for r in results if "error" not in r]
     errors = [r for r in results if "error" in r]
 
+    water_definitions = {
+        (
+            str(r["water_boundary"]),
+            str(r["water_accounting_kind"]),
+        )
+        for r in valid
+        if r.get("water_l") is not None
+        and r.get("water_boundary") is not None
+        and r.get("water_accounting_kind") is not None
+    }
+    water_unclassified = any(
+        r.get("water_l") is not None
+        and (
+            r.get("water_boundary") is None
+            or r.get("water_accounting_kind") is None
+        )
+        for r in valid
+    )
+    water_comparable = not water_unclassified and len(water_definitions) <= 1
+    comparison_warning = None
+    if not water_comparable:
+        comparison_warning = (
+            "Water values use incompatible accounting definitions and were not ranked."
+        )
+
+    effective_sort_by: str | None = sort_by
+    if sort_by in {"water_l", "water_ml"} and not water_comparable:
+        effective_sort_by = None
     if valid:
-        valid.sort(key=lambda r: r.get(sort_by, float("inf")))
+        if effective_sort_by is not None:
+            valid.sort(
+                key=lambda r: (
+                    float("inf")
+                    if r.get(effective_sort_by) is None
+                    else r.get(effective_sort_by, float("inf"))
+                )
+            )
 
         cheapest = min(valid, key=lambda r: r.get("cost_usd", float("inf")))
         greenest = min(valid, key=lambda r: r.get("carbon_g", float("inf")))
@@ -151,7 +215,14 @@ def vetch_compare(
     return {
         "comparisons": valid,
         "errors": errors,
-        "sort_by": sort_by,
+        "sort_by": effective_sort_by,
+        "requested_sort_by": sort_by,
+        "water_comparable": water_comparable,
+        "water_definitions": [
+            {"boundary": boundary, "accounting_kind": accounting}
+            for boundary, accounting in sorted(water_definitions)
+        ],
+        "comparison_warning": comparison_warning,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
     }
@@ -171,7 +242,9 @@ def vetch_session_stats() -> dict[str, Any]:
         **summary,
         "total_energy_wh": stats.total_energy_wh,
         "total_carbon_g": stats.total_carbon_g,
-        "total_water_ml": stats.total_water_ml,
+        "total_water_ml": summary.get("total_water_ml"),
+        "water_attributed_calls": summary.get("water_attributed_calls"),
+        "water_unattributed_calls": summary.get("water_unattributed_calls"),
         "total_cost_usd": stats.total_cost_usd,
         "models_used": sorted(stats.models_used),
         "advisories": [

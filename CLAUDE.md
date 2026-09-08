@@ -212,8 +212,11 @@ Example: feat(vetch): add OpenAI provider wrapper
 | `VETCH_CALIB_SERVING_ENGINE` | Disambiguate by serving stack (vllm/…) | (unset) |
 | `VETCH_CALIB_PRECISION` | Disambiguate by precision (bf16/…) | (unset) |
 | `VETCH_CALIB_CONCURRENCY` | Disambiguate by serving concurrency | (unset) |
+| `VETCH_CALIB_POWER_CAP_W` | Disambiguate by enforced power limit; a capped record is `curated`, never `exact`, without it | (unset) |
 | `VETCH_CALIB_HINTS_TRUSTED` | Allow env hints to restore `exact` Tier 0 | unset (hints → curated) |
+| `VETCH_CALIB_REFIT_ON_RESOLVE` | Re-derive coefficients from each record's run table at resolve. Catches a forgery that also rewrote the hashes; costs ~35 ms per record on first call. Schema, invariant and hash checks run either way. | unset (off) |
 | `VETCH_SELF_HOSTED_PROVIDERS` | Extra labels in self-hosted equivalence class | (bundled set; cloud blocked) |
+| `VETCH_METAL_MAX_CONTEXT` | Ceiling on context requested during Apple Silicon calibration (KV cache shares unified memory) | `8192` |
 
 ---
 

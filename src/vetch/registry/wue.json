@@ -1,41 +1,251 @@
 {
   "_description": "Water Usage Effectiveness (WUE) coefficients by datacenter location",
   "_units": "Liters per kWh",
-  "_uncertainty": "±200% (varies significantly by cooling system and climate)",
-  "_updated": "2026-03-03",
-
-  "google-us-east1": 0.8,
-  "google-us-east4": 0.9,
-  "google-us-west1": 2.5,
-  "google-us-west2": 2.8,
-  "google-us-west3": 2.6,
-  "google-us-central1": 1.2,
-  "google-europe-west1": 1.5,
-  "google-europe-west2": 1.3,
-  "google-europe-west4": 1.4,
-  "google-asia-northeast1": 1.8,
-  "google-asia-southeast1": 2.1,
-
-  "aws-us-east-1": 0.8,
-  "aws-us-east-2": 1.3,
-  "aws-us-west-1": 2.9,
-  "aws-us-west-2": 2.8,
-  "aws-eu-west-1": 1.4,
-  "aws-eu-central-1": 1.5,
-  "aws-ap-northeast-1": 1.9,
-  "aws-ap-southeast-1": 2.3,
-
-  "azure-eastus": 0.9,
-  "azure-eastus2": 0.85,
-  "azure-westus": 3.2,
-  "azure-westus2": 3.0,
-  "azure-centralus": 1.4,
-  "azure-northeurope": 1.2,
-  "azure-westeurope": 1.4,
-  "azure-japaneast": 1.7,
-  "azure-southeastasia": 2.4,
-
-  "vertexai": 1.1,
-  "openai": 1.7,
-  "anthropic": 2.2
+  "_updated": "2026-08-18",
+  "_boundary_note": "Values are not comparable across differing boundaries or across withdrawal vs consumption; see boundary field and basis. All entries here are onsite. AWS reports withdrawal; Google reports ISO WUE Category 2 consumption; Microsoft reports site water used for humidification and cooling.",
+  "google": {
+    "value": 1.15,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "consumption",
+    "basis": "Google, Measuring the environmental impact of delivering AI at Google Scale, 2025, ISO WUE Category 2 (consumptive) for data centers supporting LLM models; 1.15 L/kWh in both 2023 and 2024. https://arxiv.org/abs/2508.15734. Published directly. Fleet average of LLM-serving facilities, not a per-region figure."
+  },
+  "vertexai": {
+    "value": 1.15,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "consumption",
+    "basis": "Vertex AI runs on Google Cloud. Google, Measuring the environmental impact of delivering AI at Google Scale, 2025, ISO WUE Category 2 (consumptive) for data centers supporting LLM models; 1.15 L/kWh in both 2023 and 2024. https://arxiv.org/abs/2508.15734. Published directly. Fleet average of LLM-serving facilities, not a per-region figure."
+  },
+  "aws": {
+    "value": 0.12,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE tables), 2025 calendar year. Global data center WUE 0.12 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly as a fleet average."
+  },
+  "bedrock": {
+    "value": 0.12,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Bedrock runs on AWS data centers. Amazon Web Services, AWS Cloud sustainability (PUE and WUE tables), 2025 calendar year. Global data center WUE 0.12 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly as a fleet average."
+  },
+  "aws-us-east-1": {
+    "value": 0.06,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. U.S. East (Northern Virginia) WUE 0.06 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-us-east-2": {
+    "value": 0.06,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. U.S. East (Ohio) WUE 0.06 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-us-west-1": {
+    "value": 0.39,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. U.S. West (Northern California) WUE 0.39 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-us-west-2": {
+    "value": 0.12,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. U.S. West (Oregon) WUE 0.12 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-ca-central-1": {
+    "value": 0.06,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Canada (Central) WUE 0.06 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-ca-west-1": {
+    "value": 0.04,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Canada (West) WUE 0.04 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-sa-east-1": {
+    "value": 0.09,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. South America (Sao Paulo) WUE 0.09 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-eu-central-1": {
+    "value": 0.17,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Europe (Frankfurt) WUE 0.17 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-eu-west-1": {
+    "value": 0.02,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Europe (Ireland) WUE 0.02 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-eu-west-2": {
+    "value": 0.14,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Europe (London) WUE 0.14 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-eu-south-2": {
+    "value": 0.12,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Europe (Spain) WUE 0.12 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-eu-north-1": {
+    "value": 0.02,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Europe (Stockholm) WUE 0.02 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-ap-southeast-1": {
+    "value": 1.57,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Asia-Pacific (Singapore) WUE 1.57 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-ap-southeast-2": {
+    "value": 0.1,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Asia-Pacific (Sydney) WUE 0.1 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-ap-southeast-3": {
+    "value": 2.85,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Asia-Pacific (Jakarta) WUE 2.85 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-ap-southeast-4": {
+    "value": 0.06,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Asia-Pacific (Melbourne) WUE 0.06 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-ap-northeast-1": {
+    "value": 1.22,
+    "tier": 1,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability (PUE and WUE by region), 2025 calendar year. Asia-Pacific (Tokyo) WUE 1.22 L/kWh withdrawn per kWh of IT load. https://sustainability.aboutamazon.com/products-services/aws-cloud. Published directly."
+  },
+  "aws-eu-west-3": {
+    "value": 0.05,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability, 2025. Europe geography WUE 0.05 L/kWh withdrawn, applied to Europe (Paris) / eu-west-3 which has no published per-region WUE. https://sustainability.aboutamazon.com/products-services/aws-cloud. Derived as published Europe geography WUE applied to the region; arithmetic: value = 0.05."
+  },
+  "aws-ap-south-1": {
+    "value": 1.1,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability, 2025. Asia Pacific (excl. China) geography WUE 1.1 L/kWh withdrawn, applied to Asia-Pacific (Mumbai) / ap-south-1 which has no published per-region WUE. https://sustainability.aboutamazon.com/products-services/aws-cloud. Derived as published Asia Pacific (excl. China) geography WUE applied to the region; arithmetic: value = 1.1."
+  },
+  "aws-ap-south-2": {
+    "value": 1.1,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability, 2025. Asia Pacific (excl. China) geography WUE 1.1 L/kWh withdrawn, applied to Asia-Pacific (Hyderabad) / ap-south-2 which has no published per-region WUE. https://sustainability.aboutamazon.com/products-services/aws-cloud. Derived as published Asia Pacific (excl. China) geography WUE applied to the region; arithmetic: value = 1.1."
+  },
+  "aws-ap-northeast-3": {
+    "value": 1.1,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "withdrawal",
+    "basis": "Amazon Web Services, AWS Cloud sustainability, 2025. Asia Pacific (excl. China) geography WUE 1.1 L/kWh withdrawn, applied to Asia-Pacific (Osaka) / ap-northeast-3 which has no published per-region WUE. https://sustainability.aboutamazon.com/products-services/aws-cloud. Derived as published Asia Pacific (excl. China) geography WUE applied to the region; arithmetic: value = 1.1."
+  },
+  "azure": {
+    "value": 0.27,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Global WUE 0.27 L/kWh = annual liters used for humidification and cooling / IT kWh. https://datacenters.microsoft.com/sustainability/efficiency/. Published directly as a fleet average. Owned-and-operated datacenters operational for 12 months; leased facilities excluded."
+  },
+  "azure-eastus": {
+    "value": 0.34,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Americas WUE 0.34 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure eastus. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.34."
+  },
+  "azure-eastus2": {
+    "value": 0.34,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Americas WUE 0.34 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure eastus2. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.34."
+  },
+  "azure-westus": {
+    "value": 0.34,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Americas WUE 0.34 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure westus. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.34."
+  },
+  "azure-westus2": {
+    "value": 0.34,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Americas WUE 0.34 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure westus2. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.34."
+  },
+  "azure-centralus": {
+    "value": 0.34,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Americas WUE 0.34 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure centralus. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.34."
+  },
+  "azure-northeurope": {
+    "value": 0.03,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Europe, Middle East & Africa WUE 0.03 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure northeurope. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.03."
+  },
+  "azure-westeurope": {
+    "value": 0.03,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Europe, Middle East & Africa WUE 0.03 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure westeurope. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.03."
+  },
+  "azure-japaneast": {
+    "value": 0.25,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Asia Pacific WUE 0.25 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure japaneast. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.25."
+  },
+  "azure-southeastasia": {
+    "value": 0.25,
+    "tier": 3,
+    "boundary": "onsite",
+    "accounting": "cooling_and_humidification_water",
+    "basis": "Microsoft, Measuring energy and water efficiency for Microsoft datacenters, FY25 (1 Jul 2024\u201330 Jun 2025). Asia Pacific WUE 0.25 L/kWh (annual liters used for humidification and cooling / IT kWh), applied to Azure southeastasia. https://datacenters.microsoft.com/sustainability/efficiency/. Published as a continental average applied to a region; arithmetic: value = 0.25."
+  }
 }

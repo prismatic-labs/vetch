@@ -30,14 +30,23 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib import request as urllib_request
 from urllib.error import URLError
 
+from vetch.calibrate_v2 import (
+    IDLE_DRIFT_FLAG_PCT,
+    IDLE_DRIFT_WARN_PCT,
+    MAX_IDLE_UNCERTAINTY_ROW_SHARE_PCT,
+    idle_uncertainty_row_share_pct,
+)
+
 if TYPE_CHECKING:
     from vetch.calibrate import CalibrationResult
+    from vetch.calibrate_v2 import NestedFitResult
 
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 
@@ -280,11 +289,41 @@ def assert_root() -> None:
             "that expose per-subsystem power (CPU, GPU, ANE). Access is gated on\n"
             "root on all recent macOS versions.\n"
             "\n"
-            "Re-run with sudo:\n"
-            "  sudo vetch calibrate-apple-silicon --model moondream --provider ollama",
+            "Re-run with sudo, preserving HOME so the record is written to\n"
+            "your own calibration directory rather than root's:\n"
+            "  sudo HOME=\"$HOME\" vetch calibrate-apple-silicon \\\n"
+            "      --model llama3.2:3b --precision gguf:q4_k_m",
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def warn_if_home_is_root() -> None:
+    """Say where the record will land before spending the run, not after.
+
+    ``sudo`` resets HOME to /var/root under the default macOS sudoers policy,
+    and the calibration directory is derived from ``Path.home()``. Without this
+    the run succeeds, writes a root-owned record somewhere the SDK will never
+    look, and the operator finds out by the coefficient never attaching.
+    """
+    if os.geteuid() != 0:
+        return
+    sudo_user = os.environ.get("SUDO_USER")
+    if not sudo_user:
+        return
+    from vetch.calibrate import CALIBRATION_DIR
+
+    if sudo_user in CALIBRATION_DIR.parts:
+        return
+    print(
+        f"WARNING: running under sudo as {sudo_user!r}, but HOME resolves to "
+        f"{Path.home()}.\n"
+        f"         The record will be written to {CALIBRATION_DIR}, which is\n"
+        f"         root-owned and is NOT where inference looks for it.\n"
+        f"         Cancel now and re-run as:\n"
+        f'           sudo HOME="$HOME" vetch calibrate-apple-silicon ...',
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -333,23 +372,172 @@ def get_hardware_info() -> HardwareInfo:
 # Power state checks
 # ---------------------------------------------------------------------------
 
+def assert_power_state_usable(
+    power_state: Mapping[str, Any], *, allow_degraded: bool = False
+) -> None:
+    """Refuse a run whose record could never be installed. Checked up front.
+
+    Being on battery or in Low Power Mode already makes the finished record
+    non-installable via `_active_calibration_rejection_reasons`, and Low Power
+    Mode additionally throttles the very silicon being measured. Detecting that
+    at the end, after the full grid has run, spends the GPU time to produce a
+    record nothing will use -- and the same conditions drive the idle drift that
+    then flags the run anyway.
+
+    ``on_ac_power`` of None means pmset could not be read. That is unknown, not
+    bad, so it is allowed through: the check fails open.
+    """
+    blockers: list[str] = []
+    if power_state.get("on_ac_power") is False:
+        blockers.append("running on battery (plug in AC power)")
+    if power_state.get("low_power_mode"):
+        blockers.append("Low Power Mode is active (disable it in System Settings)")
+    if not blockers:
+        return
+    if allow_degraded:
+        print(
+            "  Proceeding under --allow-degraded-power: "
+            + "; ".join(blockers)
+            + ".\n  The record will be written and flagged, but will NOT be "
+            "installed as the active calibration.",
+            file=sys.stderr,
+        )
+        return
+    print(
+        "ERROR: refusing to start; this run could not produce an installable "
+        "calibration.\n\n  "
+        + "\n  ".join(blockers)
+        + "\n\nBoth conditions make the finished record non-installable, and "
+        "Low Power Mode\nthrottles the silicon being measured. Fix them and "
+        "re-run, or pass\n--allow-degraded-power to measure anyway and keep "
+        "the result flagged.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+# Sustained GPU load on an Apple Silicon laptop can exceed what a small adapter
+# supplies, and the machine then draws the difference from the battery while
+# `pmset -g ps` still reports "AC Power". That is a different power and thermal
+# regime from a fully-supplied run, it shifts as the battery drains, and it is a
+# plausible source of idle drift between the start and end of a grid. Apple
+# ships 70 W and larger adapters with the machines this path targets, so
+# anything under that is worth disclosing on the record.
+ADAPTER_WATTS_ADVISORY = 70
+
+# Idle baselines are taken identically at both ends of a run: settle, then
+# sample. Asymmetry between them shows up as "drift" that is really a protocol
+# artifact, and it biases the mean that every row's idle subtraction uses.
+IDLE_SETTLE_S = 2.0
+IDLE_WINDOW_S = 3.0
+
+
+def classify_idle_drift(
+    idle_watts_before: float,
+    idle_watts_after: float,
+) -> tuple[float, str]:
+    """Return the drift percentage and its non-fatal measurement signal."""
+    drift_pct = (
+        abs(idle_watts_after - idle_watts_before)
+        / max(idle_watts_before, 0.01)
+        * 100
+    )
+    if drift_pct > IDLE_DRIFT_FLAG_PCT:
+        return drift_pct, "flag"
+    if drift_pct > IDLE_DRIFT_WARN_PCT:
+        return drift_pct, "warn"
+    return drift_pct, "ok"
+
+
+def fit_record_blocks(fit: Any) -> dict[str, Any]:
+    """The record blocks that come from the fit rather than from the sampler.
+
+    Keep fit-derived metadata together so the writer cannot omit the status,
+    rung, or energy basis when it persists a calibration.
+    """
+    from vetch.calibrate_v2 import nested_fit_to_dict
+
+    return {
+        "coefficient_meta": nested_fit_to_dict(fit),
+        "energy_basis": fit.energy_basis,
+    }
+
+
+def measure_idle_window(
+    label: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[float, float]:
+    """Settle, then record one idle sampling window. Returns (start_ms, end_ms).
+
+    Both baselines go through here so they cannot drift apart. They did: the
+    "after" window once had no settle at all, so a figure taken off a workload
+    tail was compared against one taken after a pause. `idle_drift_pct` and the
+    mean that every row's idle subtraction uses both inherited that asymmetry,
+    and across four runs idle_after came in below idle_before three times --
+    not the direction thermal drift predicts.
+
+    `sleep` and `clock` are injectable so the symmetry is testable without a
+    powermetrics session.
+    """
+    if label:
+        print(f"Measuring idle baseline ({label})...")
+    sleep(IDLE_SETTLE_S)
+    start = clock() * 1000
+    sleep(IDLE_WINDOW_S)
+    return start, clock() * 1000
+
+
 def check_power_state() -> dict[str, Any]:
     result: dict[str, Any] = {
         "on_ac_power": None,
         "low_power_mode": False,
         "high_power_mode": False,
+        "adapter_watts": None,
+        "battery_percent": None,
+        "battery_charging": None,
     }
     try:
         batt = subprocess.check_output(
             ["pmset", "-g", "ps"], text=True, stderr=subprocess.DEVNULL
         )
         result["on_ac_power"] = "AC Power" in batt
+        pct = re.search(r"(\d+)%", batt)
+        if pct:
+            result["battery_percent"] = int(pct.group(1))
+        lowered = batt.lower()
+        if "discharging" in lowered:
+            result["battery_charging"] = "discharging"
+        elif "not charging" in lowered:
+            result["battery_charging"] = "not_charging"
+        elif "charging" in lowered:
+            result["battery_charging"] = "charging"
         if not result["on_ac_power"]:
             print(
                 "WARNING: Running on battery. Energy measurements will be less accurate\n"
                 "and may vary. Plug in AC power for best results.",
                 file=sys.stderr,
             )
+    except Exception:
+        pass
+    try:
+        adapter = subprocess.check_output(
+            ["pmset", "-g", "adapter"], text=True, stderr=subprocess.DEVNULL
+        )
+        watts = re.search(r"Wattage\s*=\s*(\d+)", adapter)
+        if watts:
+            result["adapter_watts"] = int(watts.group(1))
+            if result["adapter_watts"] < ADAPTER_WATTS_ADVISORY:
+                print(
+                    f"NOTE: {result['adapter_watts']} W power adapter. Sustained GPU load "
+                    f"can exceed this,\n      in which case the machine supplements from "
+                    f"the battery while still\n      reporting AC power. That is a "
+                    f"different power regime and can show up\n      as idle drift between "
+                    f"the start and end of the run. Recorded on the\n      calibration "
+                    f"record; a {ADAPTER_WATTS_ADVISORY} W or larger adapter is preferable.",
+                    file=sys.stderr,
+                )
     except Exception:
         pass
     try:
@@ -624,13 +812,32 @@ def _ollama_generate(
     prompt: str,
     image_b64: str | None = None,
     max_tokens: int = 32,
+    num_ctx: int | None = None,
 ) -> tuple[int, int]:
-    """Run one Ollama generate call. Returns (prompt_eval_count, eval_count)."""
+    """Run one Ollama generate call. Returns (prompt_eval_count, eval_count).
+
+    ``num_ctx`` must be pinned for calibration. Ollama's default is 4096 and it
+    truncates a longer prompt rather than refusing it, so an unpinned run would
+    quietly measure a 4k prefill point while the design believed it asked for
+    32k. Pass ONE value for the whole grid: changing ``num_ctx`` between calls
+    makes Ollama evict and reload the model, which on unified memory costs
+    several GB of churn per change and would land inside a timing window.
+    """
+    # repeat_penalty=1.0 is load-bearing, not a style choice. The default
+    # penalty makes each further item of a long enumerated list less likely and
+    # drives the model to EOS: measured on llama3.2, the same prompt at the same
+    # cap of 2048 realised 416 tokens under the default sampler and 2048 with
+    # the penalty neutralised. Sampling parameters do not change the energy of a
+    # forward pass, so this holds output length without distorting what is being
+    # measured. Recorded in provenance.extra["sampling"].
+    options: dict[str, Any] = {"num_predict": max_tokens, "repeat_penalty": 1.0}
+    if num_ctx is not None:
+        options["num_ctx"] = int(num_ctx)
     payload: dict[str, Any] = {
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {"num_predict": max_tokens},
+        "options": options,
     }
     if image_b64 is not None:
         payload["images"] = [image_b64]
@@ -683,8 +890,16 @@ def _get_visual_tokens_per_image(model: str) -> tuple[int, str]:
 # Unique prompts and images
 # ---------------------------------------------------------------------------
 
-def _unique_prompt(approx_tokens: int, seed: int) -> str:
-    """Generate a unique prompt of approximately the right token count."""
+def _unique_prompt(approx_tokens: int, seed: int, token_scale: float = 1.0) -> str:
+    """Generate a unique prompt of approximately the right token count.
+
+    ``token_scale`` corrects the words-per-token heuristic below against the
+    model's real tokenizer. Measured on llama3.2 the heuristic under-delivers by
+    about 22% -- a point asking for 1024 tokens realises 803 -- which is enough
+    to drop the smallest prefill point under PREFILL_ARM_MIN_INPUT_TOKENS and
+    silently shrink the arm. Pass the ratio from :func:`probe_prefill` so a
+    design point means the token count it claims.
+    """
     rng = random.Random(seed)
     nonce = f"[ref:{rng.randint(100000, 999999)}]"
     filler_words = [
@@ -696,9 +911,23 @@ def _unique_prompt(approx_tokens: int, seed: int) -> str:
         "sun", "moon", "star", "cloud", "rain", "wind", "fire", "stone", "tree",
     ]
     # Rough: 1 token ≈ 0.75 words
-    target_words = max(4, int(approx_tokens * 0.75))
+    scale = token_scale if token_scale and token_scale > 0 else 1.0
+    target_words = max(4, int(approx_tokens * 0.75 * scale))
     words = [rng.choice(filler_words) for _ in range(target_words - 4)]
-    prompt = f"{nonce} Describe in detail: {' '.join(words)}. Respond briefly."
+    # The instruction has to hold output length, not just input length.
+    # `num_predict` is a CAP, not a target: the model stops at EOS and the
+    # decode arm collapses. Measured on llama3.2, "Describe in detail ...
+    # Respond briefly." realised 118-183 tokens against caps of 512/2048/4096 --
+    # a ~65-token span on the axis that identifies wh_per_1k_output. An
+    # enumeration with no natural end reaches 512/2048 exactly and 2982 of 4096.
+    # (Ollama accepts `ignore_eos` and silently ignores it, so the prompt is the
+    # only lever; vLLM's min_tokens/ignore_eos do work, which is why the CUDA
+    # path never needed this.)
+    prompt = (
+        f"{nonce} Using these terms: {' '.join(words)}. "
+        "Write a numbered list of 2000 distinct short factual statements about "
+        "them. Do not stop early, do not summarise, do not conclude."
+    )
     return prompt
 
 
@@ -826,38 +1055,248 @@ class WorkloadSpec:
     approx_text_tokens: int
     max_tokens: int
     replicate: bool = False  # True = anchor cell, run multiple times
+    # Identical requests aggregated into ONE timing window. Prefill-isolation
+    # points are short by construction (output pinned at 8 tokens) and a single
+    # one can fall under the power-sampling duration floor. Repeating the point
+    # lengthens the window without moving the design point; the row then records
+    # summed tokens and summed energy. The fit normalises those totals back to
+    # one request before building its design matrix, including the constant
+    # intercept column.
+    requests: int = 1
 
 
-def _grid_design() -> list[WorkloadSpec]:
-    """The deterministic (unshuffled) grid design.
+# Ceiling on the context Apple Silicon calibration will ask Ollama to allocate.
+# The KV cache for a long context lives in the same unified memory as the model
+# weights, so an unbounded ceiling turns a calibration run into an OOM on the
+# 16 GB machines this path targets. 8192 keeps the prefill arm's span at 8x
+# (1024 -> 8192, well past PREFILL_ARM_MIN_SPAN_TOKENS) at a KV cost measured in
+# hundreds of MB rather than GB. Raise it deliberately, with headroom to spare.
+METAL_MAX_CONTEXT_TOKENS = 8192
+_METAL_CONTEXT_ENV = "VETCH_METAL_MAX_CONTEXT"
 
-    Design principles:
-    - n_images=2 excluded: two sequential API calls add a second per-request
-      overhead that leaks into wh_per_image, inflating it.
-    - Text-only and single-image runs share the same (text, output) design
-      points, making the n_images dimension orthogonal to in_k and out_k.
-      This minimises the condition number after feature standardisation.
-    - Replicates at a mid-range point give a noise estimate.
+
+def metal_context_ceiling() -> int:
+    """Operator ceiling on requested context, from the environment or default."""
+    raw = os.environ.get(_METAL_CONTEXT_ENV, "").strip()
+    if not raw:
+        return METAL_MAX_CONTEXT_TOKENS
+    try:
+        value = int(raw)
+    except ValueError:
+        print(f"  Ignoring invalid {_METAL_CONTEXT_ENV}={raw!r} (expected an integer).",
+              file=sys.stderr)
+        return METAL_MAX_CONTEXT_TOKENS
+    if value <= 0:
+        print(f"  Ignoring non-positive {_METAL_CONTEXT_ENV}={raw!r}.", file=sys.stderr)
+        return METAL_MAX_CONTEXT_TOKENS
+    return value
+
+
+def _ollama_context_length(base_url: str, model: str) -> int | None:
+    """Architecture context length from ``/api/show``, or None when unknown.
+
+    This is the *model's* limit, not Ollama's effective one. Ollama serves with
+    ``num_ctx`` (default 4096) regardless of what the architecture supports, and
+    silently truncates a longer prompt instead of refusing it -- so this figure is
+    an upper bound for sizing, and the run must still pin ``num_ctx`` itself.
+    """
+    body = json.dumps({"model": model}).encode()
+    req = urllib_request.Request(
+        f"{base_url}/api/show",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except (URLError, OSError, ValueError) as e:
+        # Fail open: an unknown limit means "use our ceiling", never "abort".
+        print(f"  Could not read model context length ({e}); using ceiling.",
+              file=sys.stderr)
+        return None
+    info = data.get("model_info")
+    if not isinstance(info, dict):
+        return None
+    # Key is architecture-scoped, e.g. "llama.context_length", "gemma3.context_length".
+    for key, value in info.items():
+        if str(key).endswith(".context_length"):
+            try:
+                length = int(value)
+            except (TypeError, ValueError):
+                continue
+            if length > 0:
+                return length
+    return None
+
+
+# Overshoot when correcting a requested token count. The arm tests are ">=",
+# and the tokenizer varies run to run, so aiming exactly at the threshold fails
+# it about as often as it clears it.
+TOKEN_TARGET_HEADROOM = 1.06
+
+
+class PrefillProbe(NamedTuple):
+    """What one timed prefill request tells us about this machine and model."""
+
+    tokens_per_ms: float | None
+    #: realised prompt_eval_count / requested tokens. <1 means the prompt
+    #: generator under-delivers against this tokenizer.
+    token_ratio: float | None
+
+    @property
+    def token_scale(self) -> float:
+        """Multiplier that makes a requested token count come out right.
+
+        Carries deliberate headroom. The arm thresholds are ``>=`` tests, and
+        correcting to exactly the nominal count lands within tokenizer noise of
+        them -- measured on llama3.2, an exactly-corrected 1024-token point
+        realises 1014 and still fails ``>= 1024``. Overshooting slightly costs
+        nothing: the row records the tokens actually processed, so the design
+        point is whatever came back, and the context budget has far more than
+        this much slack.
+        """
+        if not self.token_ratio or self.token_ratio <= 0:
+            return 1.0
+        return (1.0 / self.token_ratio) * TOKEN_TARGET_HEADROOM
+
+
+def probe_prefill(
+    base_url: str, model: str, num_ctx: int | None = None
+) -> PrefillProbe:
+    """Measure this machine's prefill throughput in tokens/ms, or None.
+
+    The shared grid sizes its prefill repeats from a throughput prior, and the
+    bundled prior is an H100 figure (30 tok/ms). Apple Silicon is one to two
+    orders of magnitude slower, so inheriting it asks for 64 repeats of a point
+    that already fills the timing window alone. One timed request costs a couple
+    of seconds and replaces the guess with this machine's own number.
+
+    The same request also reports how many tokens the prompt generator actually
+    produced, which the design needs: a point that asks for 1024 tokens and
+    realises 803 falls under the prefill arm threshold and quietly stops being
+    an arm row.
+
+    Runs outside every timing window. Fails open: None means "use the prior".
+    """
+    from vetch.calibrate_v2 import PREFILL_ARM_MIN_INPUT_TOKENS
+
+    # Load the model FIRST and time the second request. The probe is otherwise
+    # the first call of the process and pays model load plus KV allocation --
+    # which grows with num_ctx, so a larger context budget makes the machine
+    # look slower. Measured: this reported <=0.25 tok/ms against a true 0.86,
+    # which sized every prefill point at requests=1, left those windows under
+    # the 2 s power-sampling floor, and had `admit_rows` drop them.
+    try:
+        _ollama_generate(
+            base_url, model, _unique_prompt(approx_tokens=64, seed=6),
+            max_tokens=1, num_ctx=num_ctx,
+        )
+    except RuntimeError:
+        pass  # a failed warm-up is not fatal; the timed call reports for itself
+
+    prompt = _unique_prompt(approx_tokens=PREFILL_ARM_MIN_INPUT_TOKENS, seed=7)
+    start = time.monotonic() * 1000
+    try:
+        measured, _ = _ollama_generate(
+            base_url, model, prompt, max_tokens=8, num_ctx=num_ctx,
+        )
+    except RuntimeError as e:
+        print(f"  Prefill rate probe failed ({e}); using the bundled prior.",
+              file=sys.stderr)
+        return PrefillProbe(None, None)
+    elapsed_ms = (time.monotonic() * 1000) - start
+    if elapsed_ms <= 0 or measured <= 0:
+        return PrefillProbe(None, None)
+    return PrefillProbe(
+        tokens_per_ms=measured / elapsed_ms,
+        token_ratio=measured / float(PREFILL_ARM_MIN_INPUT_TOKENS),
+    )
+
+
+def resolve_metal_context_limit(base_url: str, model: str) -> int:
+    """Context budget for this run: the model's own limit, under our ceiling."""
+    ceiling = metal_context_ceiling()
+    architecture = _ollama_context_length(base_url, model)
+    if architecture is None:
+        return ceiling
+    return min(architecture, ceiling)
+
+
+def _grid_design(
+    context_limit: int | None = None,
+    quick: bool = False,
+    prefill_tokens_per_ms: float | None = None,
+) -> list[WorkloadSpec]:
+    """Return the shared protocol-v2 workload design for Apple Silicon.
+
+    Metal uses powermetrics sampling, so the shared v2 design's prefill arm is
+    especially important: its ``requests`` value aggregates short calls into a
+    measurable timing window while preserving the per-request design point.
+
+    ``context_limit`` drops prefill points the server cannot actually process,
+    exactly as the CUDA path does with the vLLM server's ``max_model_len``. The
+    the servers handle over-length requests differently: vLLM rejects them,
+    while Ollama truncates to ``num_ctx`` and answers normally. Without a limit
+    here the four longest prefill points all
+    collapse toward the same realised length and the arm loses the span it
+    exists to create -- after paying the runtime to send them.
+    """
+    from vetch.calibrate_v2 import v2_grid_design
+
+    return [
+        WorkloadSpec(
+            n_images=int(spec.get("n_images", 0)),
+            approx_text_tokens=int(spec["approx_text_tokens"]),
+            max_tokens=int(spec["max_tokens"]),
+            replicate=bool(spec.get("replicate", False)),
+            requests=max(1, int(spec.get("requests", 1))),
+        )
+        for spec in v2_grid_design(
+            vision=True, quick=quick, context_limit=context_limit,
+            prefill_tokens_per_ms=prefill_tokens_per_ms,
+        )
+    ]
+
+
+def _legacy_grid_design() -> list[WorkloadSpec]:
+    """The pre-v2 Metal/CUDA compatibility grid.
+
+    Kept only for explicit ``grid='v1'`` CUDA callers. New Apple Silicon
+    calibration always uses :func:`_grid_design`, which is the shared v2 grid.
     """
     grid: list[WorkloadSpec] = []
-
-    # Text-only (n_images=0) — 3×3 grid anchors β_in and β_out
     for approx_in in [20, 128, 512]:
         for max_out in [5, 64, 256]:
-            grid.append(WorkloadSpec(n_images=0, approx_text_tokens=approx_in, max_tokens=max_out))
-
-    # Single image — identical (text, output) grid, orthogonalises β_img
+            grid.append(WorkloadSpec(0, approx_in, max_out))
     for approx_in in [20, 128, 512]:
         for max_out in [5, 64, 256]:
-            grid.append(WorkloadSpec(n_images=1, approx_text_tokens=approx_in, max_tokens=max_out))
-
-    # Anchor replicates (×2 extra) for noise estimation
+            grid.append(WorkloadSpec(1, approx_in, max_out))
     grid.extend([
-        WorkloadSpec(n_images=0, approx_text_tokens=128, max_tokens=32, replicate=True),
-        WorkloadSpec(n_images=0, approx_text_tokens=128, max_tokens=32, replicate=True),
-        WorkloadSpec(n_images=1, approx_text_tokens=128, max_tokens=32, replicate=True),
-        WorkloadSpec(n_images=1, approx_text_tokens=128, max_tokens=32, replicate=True),
+        WorkloadSpec(0, 128, 32, replicate=True),
+        WorkloadSpec(0, 128, 32, replicate=True),
+        WorkloadSpec(1, 128, 32, replicate=True),
+        WorkloadSpec(1, 128, 32, replicate=True),
     ])
+    return grid
+
+
+def legacy_grid_design_id() -> str:
+    """Stable id for the retained pre-v2 compatibility grid."""
+    import hashlib
+
+    specs = sorted(
+        (s.n_images, s.approx_text_tokens, s.max_tokens, s.replicate)
+        for s in _legacy_grid_design()
+    )
+    digest = hashlib.sha256(json.dumps(specs).encode()).hexdigest()[:8]
+    return f"sym-{digest}"
+
+
+def _build_legacy_grid(seed: int | None = None) -> list[WorkloadSpec]:
+    """Build the retained pre-v2 compatibility grid."""
+    grid = _legacy_grid_design()
+    (random.Random(seed) if seed is not None else random).shuffle(grid)
     return grid
 
 
@@ -867,292 +1306,51 @@ def grid_design_id() -> str:
     Two calibrations sharing this id used the same workload shape and are
     comparable; it changes automatically if the design points change.
     """
-    import hashlib
-
-    specs = sorted(
-        (s.n_images, s.approx_text_tokens, s.max_tokens, s.replicate)
-        for s in _grid_design()
-    )
-    digest = hashlib.sha256(json.dumps(specs).encode()).hexdigest()[:8]
-    return f"sym-{digest}"
+    # Keep the same identifier as calibrate-cuda so records disclose a shared
+    # experiment rather than merely a shared estimator.
+    return "v2-unbalanced"
 
 
-def _build_grid(seed: int | None = None) -> list[WorkloadSpec]:
+def _build_grid(
+    seed: int | None = None,
+    context_limit: int | None = None,
+    quick: bool = False,
+    prefill_tokens_per_ms: float | None = None,
+) -> list[WorkloadSpec]:
     """Return the grid, shuffled. A ``seed`` makes the run order reproducible
     (thermal ordering is then comparable across runs); None keeps the legacy
     non-deterministic shuffle for the Apple Silicon path.
     """
-    grid = _grid_design()
+    grid = _grid_design(
+        context_limit=context_limit, quick=quick,
+        prefill_tokens_per_ms=prefill_tokens_per_ms,
+    )
     (random.Random(seed) if seed is not None else random).shuffle(grid)
     return grid
 
 
 # ---------------------------------------------------------------------------
-# Least-squares fit
+# Active-calibration gating
+#
+# The fit itself lives in vetch.calibrate_v2 and is shared with the CUDA path.
+# Identifiability is a property of the experimental design, not of the silicon,
+# so a second implementation here would only let the two drift apart.
 # ---------------------------------------------------------------------------
-
-@dataclass
-class FitResult:
-    intercept_wh: float
-    wh_per_image: float
-    wh_per_1k_input: float
-    wh_per_1k_output: float
-    r2: float
-    condition_number: float
-    input_ci95: tuple[float, float]
-    output_ci95: tuple[float, float]
-    image_ci95: tuple[float, float]
-    valid: bool
-    invalid_reasons: list[str]
-    residuals_structured: bool = False
-
-
-def _detect_residuals_structured(
-    runs: list[dict[str, Any]],
-    residuals: list[float],
-) -> bool:
-    """True when residual means differ in sign across workload groups."""
-    if len(runs) < 8 or len(residuals) != len(runs):
-        return False
-
-    def _group_key(run: dict[str, Any], factor: str) -> Any:
-        if factor == "n_images":
-            return run["n_images"]
-        return 0 if run["output_tokens"] < 50 else 1
-
-    for factor in ("n_images", "output_bucket"):
-        groups: dict[Any, list[float]] = {}
-        for run, residual in zip(runs, residuals):
-            groups.setdefault(_group_key(run, factor), []).append(residual)
-        if len(groups) < 2:
-            continue
-        means = [sum(vals) / len(vals) for vals in groups.values() if vals]
-        if len(means) < 2 or max(means) - min(means) <= 0.0005:
-            continue
-        signs = {1 if m > 0 else -1 if m < 0 else 0 for m in means}
-        if 0 in signs or len(signs) < 2:
-            continue
-        return True
-    return False
-
-
-def _fit(runs: list[dict[str, Any]], visual_tokens_per_image: int = 0) -> FitResult:
-    """Least-squares fit of E = β0 + β_img*n_img + β_in*(text_only/1k) + β_out*(out/1k).
-
-    visual_tokens_per_image: if Ollama includes visual tokens in prompt_eval_count
-    (as moondream does), pass the per-image token count so the design matrix uses
-    text-only tokens rather than the correlated total. This decouples the n_images
-    column from in_k and keeps the condition number low.
-    """
-    try:
-        import numpy as np
-        _numpy_available = True
-    except ImportError:
-        _numpy_available = False
-
-    def _text_only_k(r: dict[str, Any]) -> float:
-        return float(max(0.0, r["text_tokens"] - r["n_images"] * visual_tokens_per_image)) / 1000.0
-
-    has_image_feature = any(r["n_images"] > 0 for r in runs)
-    feature_names = ["intercept"]
-    if has_image_feature:
-        feature_names.append("image")
-    feature_names.extend(["input", "output"])
-
-    def _row(r: dict[str, Any]) -> list[float]:
-        values = {
-            "intercept": 1.0,
-            "image": float(r["n_images"]),
-            "input": _text_only_k(r),
-            "output": r["output_tokens"] / 1000.0,
-        }
-        return [values[name] for name in feature_names]
-
-    n = len(runs)
-    if _numpy_available:
-        import numpy as np  # type: ignore[import]
-
-        X = np.array([_row(r) for r in runs])
-        y = np.array([r["energy_wh"] for r in runs])
-
-        coeffs, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-
-        # Condition number on standardised X (not raw X).
-        # Raw cond is inflated by unit differences between intercept (1.0) and
-        # feature columns (values 0.001–0.5). Standardising non-intercept columns
-        # makes the threshold of 30 meaningful and hardware-independent.
-        col_stds = X[:, 1:].std(axis=0)
-        col_stds[col_stds < 1e-10] = 1.0  # avoid division by zero for degenerate columns
-        X_scaled = X.copy()
-        X_scaled[:, 1:] /= col_stds
-        cond = float(np.linalg.cond(X_scaled))
-
-        coeff_by_name = {
-            name: float(value)
-            for name, value in zip(feature_names, coeffs)
-        }
-        b0 = coeff_by_name["intercept"]
-        b_img = coeff_by_name.get("image", 0.0)
-        b_in = coeff_by_name["input"]
-        b_out = coeff_by_name["output"]
-
-        y_pred = X @ coeffs
-        ss_res = float(np.sum((y - y_pred) ** 2))
-        ss_tot = float(np.sum((y - np.mean(y)) ** 2))
-        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-
-        # Bootstrap CIs (500 resamples)
-        rng = np.random.default_rng(42)
-        boot_in, boot_out, boot_img = [], [], []
-        for _ in range(500):
-            idx = rng.integers(0, n, size=n)
-            Xb, yb = X[idx], y[idx]
-            try:
-                cb, *_ = np.linalg.lstsq(Xb, yb, rcond=None)
-                boot_coeffs = {
-                    name: float(value)
-                    for name, value in zip(feature_names, cb)
-                }
-                if has_image_feature:
-                    boot_img.append(boot_coeffs["image"])
-                boot_in.append(boot_coeffs["input"])
-                boot_out.append(boot_coeffs["output"])
-            except Exception:
-                pass
-
-        def _ci95(vals: list[float]) -> tuple[float, float]:
-            if not vals:
-                return (0.0, 0.0)
-            s = sorted(vals)
-            lo = s[int(len(s) * 0.025)]
-            hi = s[int(len(s) * 0.975)]
-            return (lo, hi)
-
-        input_ci = _ci95(boot_in)
-        output_ci = _ci95(boot_out)
-        image_ci = _ci95(boot_img) if has_image_feature else (0.0, 0.0)
-
-    else:
-        # Pure-Python normal equations.
-        rows = [_row(r) for r in runs]
-        y_vals = [r["energy_wh"] for r in runs]
-
-        # XtX and Xty
-        k = len(feature_names)
-        XtX = [[0.0] * k for _ in range(k)]
-        Xty = [0.0] * k
-        for row, yi in zip(rows, y_vals):
-            for i in range(k):
-                Xty[i] += row[i] * yi
-                for j in range(k):
-                    XtX[i][j] += row[i] * row[j]
-
-        # Solve via Gaussian elimination
-        aug = [XtX[i][:] + [Xty[i]] for i in range(k)]
-        for col in range(k):
-            pivot = max(range(col, k), key=lambda r: abs(aug[r][col]))
-            aug[col], aug[pivot] = aug[pivot], aug[col]
-            if abs(aug[col][col]) < 1e-12:
-                continue
-            for row_i in range(k):
-                if row_i != col:
-                    factor = aug[row_i][col] / aug[col][col]
-                    for j in range(k + 1):
-                        aug[row_i][j] -= factor * aug[col][j]
-        coeffs_list = [aug[i][k] / aug[i][i] if abs(aug[i][i]) > 1e-12 else 0.0 for i in range(k)]
-        coeff_by_name = dict(zip(feature_names, coeffs_list))
-        b0 = coeff_by_name["intercept"]
-        b_img = coeff_by_name.get("image", 0.0)
-        b_in = coeff_by_name["input"]
-        b_out = coeff_by_name["output"]
-
-        y_pred = [sum(r[j] * coeffs_list[j] for j in range(k)) for r in rows]
-        y_mean = sum(y_vals) / len(y_vals)
-        ss_res = sum((yi - ypi) ** 2 for yi, ypi in zip(y_vals, y_pred))
-        ss_tot = sum((yi - y_mean) ** 2 for yi in y_vals)
-        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-        cond = float("inf")  # can't compute without numpy; condition check skipped
-        input_ci = (b_in * 0.8, b_in * 1.2)
-        output_ci = (b_out * 0.8, b_out * 1.2)
-        image_ci = (b_img * 0.8, b_img * 1.2) if has_image_feature else (0.0, 0.0)
-
-    # Validation
-    reasons = []
-    if r2 < 0.85:
-        reasons.append(f"r2={r2:.3f} < 0.85")
-    if math.isfinite(cond) and cond > 30:
-        reasons.append(f"condition_number={cond:.1f} > 30 (workload shapes not distinct enough)")
-    # Intercept: a small negative is a benign regression artifact (clamped to 0);
-    # only a clearly-negative intercept signals a bad fit.
-    if b0 < -1e-3:
-        reasons.append(f"intercept_wh={b0:.8f} is negative (regression artifact)")
-    # Output must be clearly positive — decode energy is the dominant, well-posed
-    # term, so a negative here is a real anomaly.
-    if b_out < 0:
-        reasons.append(f"wh_per_1k_output={b_out:.6f} is negative")
-    # Small terms (input/image) are handled by the CI-aware floor below, not by a
-    # bare sign check, so a coefficient at the measurement floor is reported as 0
-    # rather than rejecting the whole fit.
-
-    residuals = [float(r["energy_wh"]) - float(p) for r, p in zip(runs, y_pred)]
-    residuals_structured = _detect_residuals_structured(runs, residuals)
-    if residuals_structured:
-        reasons.append("residuals_structured=true — structured residual pattern detected")
-
-    # Floor a small coefficient to 0 when its bootstrap 95% CI includes zero:
-    # it is not distinguishable from the measurement floor, so reporting the point
-    # estimate would be false precision. The CI stays in provenance as the loud
-    # signal. A coefficient whose entire CI sits below zero is a real anomaly.
-    def _floor_small(value: float, ci: tuple[float, float], name: str) -> float:
-        lo, hi = ci
-        if lo <= 0.0 <= hi:
-            return 0.0
-        if hi < 0.0:
-            reasons.append(
-                f"{name}={value:.6f} is negative (95% CI entirely below zero "
-                f"[{lo:.6f}, {hi:.6f}]; regression artifact)"
-            )
-            return 0.0
-        return max(0.0, value)
-
-    return FitResult(
-        intercept_wh=max(0.0, b0),
-        wh_per_image=(
-            _floor_small(b_img, image_ci, "wh_per_image")
-            if has_image_feature
-            else 0.0
-        ),
-        wh_per_1k_input=_floor_small(b_in, input_ci, "wh_per_1k_input"),
-        wh_per_1k_output=max(0.0, b_out),
-        r2=r2,
-        condition_number=cond,
-        input_ci95=input_ci,
-        output_ci95=output_ci,
-        image_ci95=image_ci,
-        valid=len(reasons) == 0,
-        invalid_reasons=reasons,
-        residuals_structured=residuals_structured,
-    )
-
 
 def _require_numpy_for_calibration() -> None:
     """Apple Silicon calibration needs NumPy for conditioning and bootstrap CIs."""
-    try:
-        import numpy  # noqa: F401
-    except ImportError as e:
-        raise RuntimeError(
-            "Apple Silicon calibration requires NumPy for a reliable least-squares fit. "
-            "Install the optional extra before running calibration: "
-            "pip install 'vetch[apple-silicon]'"
-        ) from e
+    from vetch.calibrate_v2 import require_numpy
+
+    require_numpy("apple-silicon")
 
 
 def _active_calibration_rejection_reasons(
-    fit: FitResult,
+    fit: NestedFitResult,
     power_state: dict[str, Any],
     gpu_power_captured: bool,
     idle_drift_pct: float,
     samples: int,
+    idle_share_pct: float | None = None,
 ) -> list[str]:
     """Reasons a detail run should not become the active local calibration."""
     reasons = list(fit.invalid_reasons)
@@ -1172,8 +1370,20 @@ def _active_calibration_rejection_reasons(
         reasons.append("low_power_mode=true during calibration")
     if not gpu_power_captured:
         reasons.append("gpu_power_captured=false — GPU energy not measured")
-    if idle_drift_pct > 15:
-        reasons.append(f"idle_drift_pct={idle_drift_pct:.1f} > 15%")
+    # Gate on the contribution to measured energy. The raw percentage rejected
+    # three of four runs whose coefficients agree with each other to 0.5%.
+    if idle_share_pct is not None:
+        if idle_share_pct > MAX_IDLE_UNCERTAINTY_ROW_SHARE_PCT:
+            reasons.append(
+                f"idle drift contributes {idle_share_pct:.1f}% of a typical "
+                f"row's energy > {MAX_IDLE_UNCERTAINTY_ROW_SHARE_PCT:.0f}% "
+                f"(idle_drift_pct={idle_drift_pct:.1f})"
+            )
+    elif idle_drift_pct > IDLE_DRIFT_FLAG_PCT:
+        reasons.append(
+            f"idle_drift_pct={idle_drift_pct:.1f} > {IDLE_DRIFT_FLAG_PCT:.0f}% "
+            "(no run table to weigh it against)"
+        )
 
     deduped: list[str] = []
     for reason in reasons:
@@ -1194,6 +1404,8 @@ def calibrate_apple_silicon(
     verbose: bool = False,
     precision: str = "apple-native",
     serving_engine: str = "ollama",
+    quick: bool = False,
+    allow_degraded_power: bool = False,
 ) -> tuple[CalibrationResult, Path]:
     """Measure Apple Silicon energy coefficients for an Ollama model.
 
@@ -1207,9 +1419,14 @@ def calibrate_apple_silicon(
         precision: Identity dimension (default ``"apple-native"``; use a GGUF
             tag like ``gguf:q4_k_m`` when calibrating a quantized Ollama build).
         serving_engine: Serving stack label (default ``"ollama"``).
+        quick: Use the reduced v2 grid. For smoke-testing the run end to end on
+            new hardware, not for producing a coefficient: fewer design points
+            means wider intervals, and axes will correctly come back
+            ``not_identified``.
 
     Returns:
-        ``(CalibrationResult, record_path)`` — coefficients plus the v1 JSON path.
+        ``(CalibrationResult, record_path)`` -- coefficients plus the schema-2
+        calibration record path.
     """
     from vetch.calibrate import CalibrationResult
     from vetch.calibration_store import (
@@ -1226,6 +1443,7 @@ def calibrate_apple_silicon(
     assert_apple_silicon()
     _require_numpy_for_calibration()
     assert_root()
+    warn_if_home_is_root()
     if is_cloud_provider(provider):
         raise ValueError(
             f"provider={provider!r} is a cloud/API vendor and is refused for Tier-0 "
@@ -1236,6 +1454,7 @@ def calibrate_apple_silicon(
 
     hw = get_hardware_info()
     power_state = check_power_state()
+    assert_power_state_usable(power_state, allow_degraded=allow_degraded_power)
     ollama_version = _check_ollama(base_url)
 
     print("Vetch Apple Silicon Calibration")
@@ -1263,16 +1482,54 @@ def calibrate_apple_silicon(
     # runs and returns nearly zero energy, biasing wh_per_image downward.
     # Image generation happens here (outside all timing windows) so it never
     # contaminates measurements.
-    grid = _build_grid() * max(1, iterations)
-    total_runs = len(grid)
+    # Ask what this model can actually process, then hold it under the Metal
+    # memory ceiling. Design points above the budget are dropped rather than
+    # sent and silently truncated -- Ollama answers a too-long prompt normally,
+    # so an unfiltered grid loses the prefill span without reporting anything.
+    from vetch.calibrate_v2 import PREFILL_ARM_MIN_INPUT_TOKENS
 
-    print(f"Pre-generating {sum(s.n_images for s in grid)} unique calibration image(s) "
-          f"for {total_runs} runs (busts Ollama KV cache)...")
-    run_images: list[list[str]] = []
+    context_limit = resolve_metal_context_limit(base_url, model)
+    # ONE num_ctx for probe, warm-up and every measured request. Changing it
+    # makes Ollama evict and reload the model -- several GB of unified-memory
+    # churn -- so pin the budget itself rather than a per-grid minimum, and pay
+    # the single load before any timing window opens.
+    grid_num_ctx = context_limit
+    print(f"  Context:  budget {context_limit} tokens "
+          f"(ceiling {metal_context_ceiling()}); num_ctx pinned at {grid_num_ctx}")
+    probe = probe_prefill(base_url, model, num_ctx=grid_num_ctx)
+    token_scale = probe.token_scale
+    if probe.tokens_per_ms:
+        print(f"  Prefill:  measured {probe.tokens_per_ms:.2f} tokens/ms; "
+              f"tokenizer realises {probe.token_ratio:.2f} of requested tokens "
+              f"(prompts scaled x{token_scale:.2f})")
+    grid = _build_grid(
+        context_limit=context_limit, quick=quick,
+        prefill_tokens_per_ms=probe.tokens_per_ms,
+    ) * max(1, iterations)
+    total_runs = len(grid)
+    total_requests = sum(spec.requests for spec in grid)
+    longest = max((s.approx_text_tokens for s in grid), default=0)
+    if longest < PREFILL_ARM_MIN_INPUT_TOKENS:
+        print(
+            f"  WARNING: longest prefill point is {longest} tokens, below the "
+            f"{PREFILL_ARM_MIN_INPUT_TOKENS}-token arm threshold; "
+            "wh_per_1k_input will not be identifiable from this run.",
+            file=sys.stderr,
+        )
+
+    print(f"Pre-generating {sum(s.n_images * s.requests for s in grid)} unique calibration "
+          f"image(s) for {total_runs} timing windows / {total_requests} requests "
+          "(busts Ollama KV cache)...")
+    run_images: list[list[list[str]]] = []
     for i, spec in enumerate(grid):
-        run_seed = i + 100
-        imgs = [_unique_image_b64(seed=run_seed + j * 1000) for j in range(spec.n_images)]
-        run_images.append(imgs)
+        request_images: list[list[str]] = []
+        for request_index in range(spec.requests):
+            run_seed = i * 1000 + request_index + 100
+            request_images.append([
+                _unique_image_b64(seed=run_seed + j * 1000)
+                for j in range(spec.n_images)
+            ])
+        run_images.append(request_images)
     print()
 
     # --- Probe image-token accounting (outside monitor, uses pool image) -----
@@ -1308,7 +1565,9 @@ def calibrate_apple_silicon(
     # Filter grid to text-only runs when the model doesn't support images
     if not model_is_vlm:
         grid = [spec for spec in grid if spec.n_images == 0]
-        run_images = [[] for _ in grid]
+        run_images = [[[] for _ in range(spec.requests)] for spec in grid]
+        total_runs = len(grid)
+        total_requests = sum(spec.requests for spec in grid)
 
     # --- powermetrics monitor ------------------------------------------------
     # Declare time-window variables before the with block so they are accessible
@@ -1328,49 +1587,62 @@ def calibrate_apple_silicon(
         print(f"Warming up ({warmup_mode})...")
         warmup_prompt = _unique_prompt(approx_tokens=20, seed=0)
         warmup_img = _warmup_image_b64(model_is_vlm, image_pool)
-        _ollama_generate(base_url, model, warmup_prompt, warmup_img, max_tokens=10)
-        time.sleep(2.0)
-
+        # Same num_ctx as the grid, so the warm-up loads the model at the size
+        # the measured runs will use and no run pays a reload.
+        _ollama_generate(base_url, model, warmup_prompt, warmup_img, max_tokens=10,
+                         num_ctx=grid_num_ctx)
         # Idle baseline (after warm-up) — record window; energy computed post-exit
-        print("Measuring idle baseline (post-warmup)...")
-        idle_start = time.monotonic() * 1000
-        time.sleep(3.0)
-        idle_end = time.monotonic() * 1000
+        idle_start, idle_end = measure_idle_window("post-warmup")
 
         # Run the workload grid — record windows only, no energy yet.
         # The batch-based monitor returns samples only when each subprocess.run()
         # completes (~4 s per batch), so integrate() would return 0.0 if called
         # inline. All energies are computed after __exit__ joins the thread.
-        print(f"Running calibration grid ({total_runs} runs)...")
+        print(f"Running calibration grid ({total_runs} timing windows / "
+              f"{sum(spec.requests for spec in grid)} requests)...")
         print()
 
         raw_records: list[dict[str, Any]] = []
         grid_failures = 0
-        for i, (spec, images) in enumerate(zip(grid, run_images)):
-            run_seed = i + 100
-            prompt = _unique_prompt(approx_tokens=spec.approx_text_tokens, seed=run_seed)
-
+        for i, (spec, request_images) in enumerate(zip(grid, run_images)):
+            text_tokens_total = 0
+            output_tokens_total = 0
             t_start = time.monotonic() * 1000
-            try:
-                text_tokens, output_tokens = _ollama_generate(
-                    base_url, model, prompt,
-                    image_b64=images[0] if images else None,
-                    max_tokens=spec.max_tokens,
+            failed = False
+            for request_index, images in enumerate(request_images):
+                prompt = _unique_prompt(
+                    approx_tokens=spec.approx_text_tokens,
+                    seed=i * 1000 + request_index + 100,
+                    token_scale=token_scale,
                 )
-            except RuntimeError as e:
-                print(f"  Run {i+1}/{total_runs} FAILED: {e}", file=sys.stderr)
-                grid_failures += 1
-                continue
+                try:
+                    text_tokens, output_tokens = _ollama_generate(
+                        base_url, model, prompt,
+                        image_b64=images[0] if images else None,
+                        max_tokens=spec.max_tokens,
+                        num_ctx=grid_num_ctx,
+                    )
+                except RuntimeError as e:
+                    print(
+                        f"  Run {i+1}/{total_runs} request {request_index + 1}/"
+                        f"{spec.requests} FAILED: {e}",
+                        file=sys.stderr,
+                    )
+                    failed = True
+                    break
+                text_tokens_total += text_tokens
+                output_tokens_total += output_tokens
             t_end = time.monotonic() * 1000
 
-            if text_tokens == 0:
+            if failed or text_tokens_total == 0:
                 grid_failures += 1
                 continue
 
             raw_records.append({
                 "n_images": spec.n_images,
-                "text_tokens": text_tokens,
-                "output_tokens": output_tokens,
+                "text_tokens": text_tokens_total,
+                "output_tokens": output_tokens_total,
+                "requests": spec.requests,
                 "t_start": t_start,
                 "t_end": t_end,
                 "replicate": spec.replicate,
@@ -1379,7 +1651,8 @@ def calibrate_apple_silicon(
             if verbose:
                 print(
                     f"  [{i+1:2d}/{total_runs}] n_img={spec.n_images} "
-                    f"in={text_tokens:4d} out={output_tokens:3d} "
+                    f"in/request={text_tokens_total / spec.requests:4.0f} "
+                    f"out/request={output_tokens_total / spec.requests:3.0f} "
                     f"({(t_end-t_start)/1000:.1f}s)  [energy pending]"
                 )
             else:
@@ -1402,10 +1675,9 @@ def calibrate_apple_silicon(
                 file=sys.stderr,
             )
 
-        # Idle baseline (after)
-        idle_start2 = time.monotonic() * 1000
-        time.sleep(3.0)
-        idle_end2 = time.monotonic() * 1000
+        # Idle baseline (after the grid), through the same helper so it cannot
+        # diverge from the "before" window.
+        idle_start2, idle_end2 = measure_idle_window("post-run")
 
     # __exit__ joined the background thread — all batches have now completed
     # and monitor._samples contains the full session's power data.
@@ -1447,6 +1719,7 @@ def calibrate_apple_silicon(
             "n_images": raw["n_images"],
             "text_tokens": raw["text_tokens"],
             "output_tokens": raw["output_tokens"],
+            "requests": raw["requests"],
             "energy_wh": net_energy_wh,
             "raw_energy_wh": energy_wh,  # pre-clamping, used for gap detection
             "duration_ms": duration_ms,
@@ -1478,17 +1751,33 @@ def calibrate_apple_silicon(
         run_records = [r for r in run_records if r not in gap_fallen]
 
     # --- Drift check ---------------------------------------------------------
-    idle_drift_pct = abs(idle_watts_after - idle_watts_before) / max(idle_watts_before, 0.01) * 100
-    if idle_drift_pct > 15:
+    # Flag, never abort. Protocol v2 is explicit that idle drift is a
+    # measurement-validity signal rather than an identifiability one, and that
+    # "a drifting record stays usable and stays visibly weak" -- the same
+    # precedent as residuals_structured. Raising here destroyed the entire run
+    # AFTER every measurement had been taken, discarding the GPU time and
+    # writing nothing, while `_active_calibration_rejection_reasons` was already
+    # set up to record the drift and withhold the active install. That graceful
+    # path was unreachable for this one condition.
+    idle_drift_pct, idle_drift_level = classify_idle_drift(
+        idle_watts_before, idle_watts_after
+    )
+    if idle_drift_level == "flag":
         print(
             f"WARNING: Idle power drifted {idle_drift_pct:.1f}% between start and end.\n"
             f"         Start: {idle_watts_before:.2f} W  End: {idle_watts_after:.2f} W\n"
-            f"         Thermal state changed. Results may be unreliable.",
+            f"         Thermal state changed; the idle subtraction every\n"
+            f"         coefficient rests on is unreliable. The record will be\n"
+            f"         written and marked, but not installed as the active\n"
+            f"         calibration. Let the machine cool, check Low Power Mode\n"
+            f"         is off and that you are on AC power, then re-run.",
             file=sys.stderr,
         )
-        raise RuntimeError(
-            f"Idle power drift {idle_drift_pct:.1f}% exceeds 15% limit. "
-            "Let the machine cool, disable Low Power Mode, and retry on AC power."
+    elif idle_drift_level == "warn":
+        print(
+            f"NOTE: idle power drifted {idle_drift_pct:.1f}% "
+            f"({idle_watts_before:.2f} W -> {idle_watts_after:.2f} W).",
+            file=sys.stderr,
         )
 
     # --- Fit -----------------------------------------------------------------
@@ -1499,13 +1788,39 @@ def calibrate_apple_silicon(
         )
 
     print(f"Fitting energy model ({len(run_records)} runs)...")
-    fit = _fit(run_records, visual_tokens_per_image=fit_visual_tokens)
+    # One fitting path for every accelerator. Identifiability is a property of
+    # the design, not the silicon. The shared implementation keeps coefficient
+    # semantics consistent across accelerators and preserves uncertain axes as
+    # unidentified rather than flooring them to zero.
+    from vetch.calibrate_v2 import fit_nested_models, idle_relative_uncertainty
+
+    idle_watts = (idle_watts_before + idle_watts_after) / 2.0
+    fit = fit_nested_models(
+        run_records,
+        idle_watts=idle_watts if idle_watts > 0 else None,
+        energy_source="powermetrics",
+        visual_tokens_per_image=fit_visual_tokens,
+        idle_relative=idle_relative_uncertainty({
+            "idle_watts_before": idle_watts_before,
+            "idle_watts_after": idle_watts_after,
+        }),
+    )
+    # How much the idle-window disagreement contributes to a typical row's
+    # energy. This, not the raw drift percentage, is what decides whether an
+    # unstable baseline threatens the coefficients.
+    idle_share_pct = idle_uncertainty_row_share_pct(
+        run_records, idle_watts_before, idle_watts_after
+    )
+    if idle_share_pct is not None:
+        print(f"  Idle drift contributes {idle_share_pct:.1f}% of a typical "
+              f"row's energy (limit {MAX_IDLE_UNCERTAINTY_ROW_SHARE_PCT:.0f}%)")
     rejection_reasons = _active_calibration_rejection_reasons(
         fit=fit,
         power_state=power_state,
         gpu_power_captured=monitor.info.gpu_power_captured,
         idle_drift_pct=idle_drift_pct,
         samples=len(run_records),
+        idle_share_pct=idle_share_pct,
     )
     calibration_valid = not rejection_reasons
 
@@ -1586,6 +1901,7 @@ def calibrate_apple_silicon(
         extra={
             "sampler_cadence_ms": monitor.info.sample_interval_ms,
             "integration_method": "trapezoidal",
+            "idle_uncertainty_row_share_pct": idle_share_pct,
             "chip_family": hw.chip_family,
             "chip_tier": hw.chip_tier,
             "memory_gb": hw.memory_gb,
@@ -1593,9 +1909,28 @@ def calibrate_apple_silicon(
             "api_backend": "ollama",
             "gpu_power_captured": monitor.info.gpu_power_captured,
             "power_state": power_state,
+            # Sampler settings that shape the measured workload. Ollama honours
+            # neither ignore_eos nor a minimum length, so output length is held
+            # by the prompt shape plus a neutralised repetition penalty. Both
+            # change WHAT was measured, so both belong in the record.
+            "sampling": {
+                "repeat_penalty": 1.0,
+                "repeat_penalty_reason": (
+                    "the default penalty drives a long enumeration to EOS; "
+                    "measured 416 of 2048 requested tokens with it, 2048 without"
+                ),
+                "output_length_held_by": "prompt_shape",
+                "ignore_eos_supported": False,
+                "num_ctx": grid_num_ctx,
+                "prompt_token_scale": token_scale,
+            },
         },
     )
-    record_path = commit_calibration(result, identity, provenance)
+    # Carry the nested fit's verdict and energy basis onto the record, as the
+    # CUDA writer does.
+    record_path = commit_calibration(
+        result, identity, provenance, **fit_record_blocks(fit)
+    )
     print(f"\nCalibration record written to {record_path}")
     if not calibration_valid:
         print("  (active=false: recorded for audit, will not auto-load)")
@@ -1609,6 +1944,8 @@ def format_calibration_result_apple(result: CalibrationResult, detail_path: Path
         if result.active
         else "  Status:             NOT ACTIVE (quality gates failed — recorded for audit only)"
     )
+    wh_in = "null" if result.wh_per_1k_input is None else f"{result.wh_per_1k_input:.6f}"
+    wh_out = "null" if result.wh_per_1k_output is None else f"{result.wh_per_1k_output:.6f}"
     lines = [
         "",
         "━" * 50,
@@ -1620,8 +1957,8 @@ def format_calibration_result_apple(result: CalibrationResult, detail_path: Path
         "  Tier:               0 (hardware-measured)",
         f"  Samples:            {result.samples}",
         "",
-        f"  wh_per_1k_input:    {result.wh_per_1k_input:.6f}  Wh / 1k text tokens",
-        f"  wh_per_1k_output:   {result.wh_per_1k_output:.6f}  Wh / 1k output tokens",
+        f"  wh_per_1k_input:    {wh_in}  Wh / 1k text tokens",
+        f"  wh_per_1k_output:   {wh_out}  Wh / 1k output tokens",
     ]
     if result.wh_per_image is not None:
         lines.append(f"  wh_per_image:       {result.wh_per_image:.6f}  Wh / image")
@@ -1632,7 +1969,7 @@ def format_calibration_result_apple(result: CalibrationResult, detail_path: Path
         "  intercept_wh is fixed energy per inference request (from the LS fit),",
         "  not amortized across tokens — expect higher Wh on tiny prompts.",
         "",
-        "  Saved to: ~/.vetch/calibrations/  (v1 identity-keyed record)",
+        "  Saved to: ~/.vetch/calibrations/  (schema-2 measurement-keyed record)",
         f"  Record:   {detail_path}",
         "",
         "  Measurement images: unique seeded synthetic per run (KV-cache busting)",

@@ -63,11 +63,10 @@ class TestValidateRecord:
         reasons = validate_record(record)
         assert any("image_resolution_px" in r for r in reasons)
 
-    def test_rejects_residuals_structured(self) -> None:
+    def test_residuals_structured_is_not_a_reject(self) -> None:
         record = _valid_record()
         record["residuals_structured"] = True
-        reasons = validate_record(record)
-        assert any("residuals_structured" in r for r in reasons)
+        assert validate_record(record) == []
 
     def test_rejects_missing_gpu_power(self) -> None:
         record = _valid_record()

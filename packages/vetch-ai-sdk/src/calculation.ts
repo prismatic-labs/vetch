@@ -8,7 +8,7 @@ import { canUseNodeCalibration } from "./node-capability.js";
 import type { VetchEvent, VetchModelMatch, VetchSignalQuality, VetchUsage } from "./types.js";
 import type { LocalEnergyOverride } from "./local-calibration.js";
 
-const METHODOLOGY_VERSION = "1.3";
+const METHODOLOGY_VERSION = "1.5";
 const CACHE_READ_ENERGY_FACTOR = 0.15;
 const PROMPT_LENGTH_SHORT_THRESHOLD = 1000;
 const PROMPT_LENGTH_MEDIUM_THRESHOLD = 5000;
@@ -31,37 +31,62 @@ const UNKNOWN_PRICE_PROVIDERS = new Set(["openai-compatible"]);
 // 2.0 — do not set >= 2.0 (old value 2.5 made the flag unreachable).
 const TRACKING_DEGRADED_THRESHOLD = 1.0;
 
+// A coefficient may carry a default only when the published spread is narrow
+// enough that a wrong pick stays inside the metric's stated uncertainty.
+// Published PUE spans 1.09-1.27 (~15% worst case, inside the +/-50% claimed for
+// carbon), so a default is an approximation. Published WUE spans 0.02-2.85, so
+// there is no DEFAULT_WUE — see calculateWater. Keep in sync with the Python
+// DEFAULT_PUE rationale in src/vetch/calculation.py.
 const DEFAULT_PUE = 1.2;
+
+// Mirrors PROVIDER_PUE in src/vetch/calculation.py. Values must match Python.
 const PROVIDER_PUE: Record<string, number> = {
-  google: 1.10,
-  vertexai: 1.10,
+  google: 1.09,
+  vertexai: 1.09,
   azure: 1.12,
   openai: 1.12,
-  aws: 1.15,
-  anthropic: 1.15,
-  bedrock: 1.15,
+  aws: 1.14,
+  anthropic: 1.14,
+  bedrock: 1.14,
+  deepseek: 1.27,
+};
+
+// Provenance of each attribution, not of the figure. 1 = the operator publishes
+// this PUE for infrastructure it also operates. 2 = an operator-published PUE
+// applied through an undisclosed-hosting assumption. Missing key defaults to 2:
+// an unclassified attribution is never treated as disclosed.
+const PROVIDER_PUE_TIER: Record<string, number> = {
+  google: 1,
+  vertexai: 1,
+  azure: 1,
+  openai: 2,
+  aws: 1,
+  anthropic: 2,
+  bedrock: 1,
+  deepseek: 1,
 };
 
 const PROVIDER_PUE_SOURCES: Record<string, string> = {
-  google: "Google Data Centers Efficiency Report 2023",
-  vertexai: "Google Data Centers Efficiency Report 2023",
-  azure: "Microsoft Datacenters Sustainability 2024",
-  openai: "Microsoft Datacenters Sustainability 2024 (Azure-backed)",
-  aws: "AWS Sustainability Report 2024",
-  anthropic: "AWS Sustainability Report 2024 (AWS-backed)",
-  bedrock: "AWS Sustainability Report 2024",
+  google: "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
+  vertexai: "Google 2026 Environmental Report (FY2025 fleet-wide PUE)",
+  azure: "Microsoft 2025 Environmental Sustainability Report (newest-gen PUE)",
+  openai:
+    "Microsoft 2025 Environmental Sustainability Report (newest-gen PUE); "
+    + "applied on the assumption that OpenAI serves from Azure, which OpenAI "
+    + "does not disclose",
+  aws: "AWS 2025 Sustainability Report (global average PUE)",
+  anthropic:
+    "AWS 2025 Sustainability Report (global average PUE); applied on the "
+    + "assumption that Anthropic serves from AWS, which Anthropic does not "
+    + "disclose",
+  bedrock: "AWS 2025 Sustainability Report",
+  deepseek: "Jegham et al. (2025) DeepSeek datacenter PUE",
 };
 
-const DEFAULT_WUE = 1.8;
-const PROVIDER_WUE: Record<string, number> = {
-  google: 1.1,
-  vertexai: 1.1,
-  azure: 1.7,
-  openai: 1.7,
-  aws: 2.2,
-  anthropic: 2.2,
-  bedrock: 2.2,
-};
+// Model families whose names identify a model, not an operator. Open-weight
+// checkpoints can be served anywhere, so resolving a host from the name is an
+// assumption even when the resolved operator publishes its PUE.
+const OPEN_WEIGHT_MODEL_PREFIXES = ["llama-", "mixtral-", "gemma-"];
 
 type EnergyEntry = {
   tier?: number;
@@ -87,18 +112,49 @@ type PricingEntry = {
   cache_creation_premium?: number;
 };
 
+type WueEntry = {
+  value: number;
+  tier: number;
+  boundary: string;
+  accounting: string;
+  basis: string;
+};
+
 type EnergyRegistry = Record<string, EnergyEntry>;
 type PricingRegistry = Record<string, PricingEntry>;
 type AliasRegistry = Record<string, string>;
-type NumberRegistry = Record<string, number>;
+type WueRegistry = Record<string, WueEntry>;
 
 const ENERGY = energyJson as EnergyRegistry;
 const PRICING = pricingJson as PricingRegistry;
 const ALIASES = aliasesJson as AliasRegistry;
+const WUE_REGISTRY_WARNINGS: string[] = [];
 const WUE = Object.fromEntries(
   Object.entries(wueJson as Record<string, unknown>)
-    .filter(([key, value]) => !key.startsWith("_") && typeof value === "number"),
-) as NumberRegistry;
+    .filter(([key, value]) => {
+      if (key.startsWith("_") || value === null || typeof value !== "object") {
+        return false;
+      }
+      const entry = value as Partial<WueEntry>;
+      const valid = (
+        typeof entry.value === "number"
+        && typeof entry.tier === "number"
+        && typeof entry.boundary === "string"
+        && typeof entry.accounting === "string"
+        && typeof entry.basis === "string"
+        && Number.isFinite(entry.value)
+        && entry.value >= 0
+        && [1, 2, 3].includes(entry.tier)
+        && ["onsite", "source"].includes(entry.boundary)
+        && entry.accounting.length > 0
+        && entry.basis.length > 0
+      );
+      if (!valid) {
+        WUE_REGISTRY_WARNINGS.push(`WUE registry entry '${key}' is malformed and was ignored.`);
+      }
+      return valid;
+    }),
+) as WueRegistry;
 const GLOBAL_AVERAGES = globalAveragesJson as {
   global?: number;
   regions?: Record<string, number>;
@@ -121,6 +177,15 @@ interface CarbonResult {
   pueSource: string;
 }
 
+interface WaterResult {
+  waterL: number | null;
+  wueTier: number | null;
+  wueBasis: string | null;
+  boundary: string | null;
+  accounting: string | null;
+  uncertaintyPct: number | null;
+}
+
 interface CostResult {
   totalCost: number;
   inputCost: number;
@@ -137,14 +202,14 @@ interface GridIntensity {
 }
 
 export interface EnergyOverride {
-  wh_per_1k_input: number;
-  wh_per_1k_output: number;
+  wh_per_1k_input?: number | null;
+  wh_per_1k_output?: number | null;
   tier?: number;
   source?: string;
   basis?: string;
-  wh_per_image?: number;
+  wh_per_image?: number | null;
   visual_tokens_per_image?: number;
-  intercept_wh?: number;
+  intercept_wh?: number | null;
 }
 
 interface EnrichOptions {
@@ -152,6 +217,10 @@ interface EnrichOptions {
   region?: string | null;
   priceMultiplier?: number;
   energyOverride?: EnergyOverride | null;
+  wueOverride?: number | null;
+  wueBoundary?: string | null;
+  waterAccountingKind?: string | null;
+  wueUncertaintyPct?: number | null;
 }
 
 async function resolveEnergyOverride(
@@ -233,6 +302,55 @@ export async function enrichVetchEvent(event: VetchEvent, options: EnrichOptions
   event.energy_uncertainty_pct = energy.uncertaintyPct;
   event.energy_source = energy.source;
   event.energy_basis = energy.basis;
+  if (energyOverride) {
+    // A warning string is not machine-readable. Record the unpriced axes as a
+    // field too, so a consumer can detect an incomplete figure without parsing
+    // prose. A null coefficient never means zero cost.
+    const markUnattributed = (axis: string, warning: string): void => {
+      if (!event.energy_axes_unattributed.includes(axis)) {
+        event.energy_axes_unattributed.push(axis);
+      }
+      if (!event.vetch_warnings.includes(warning)) {
+        event.vetch_warnings.push(warning);
+      }
+    };
+    if (energyOverride.wh_per_1k_input === null || energyOverride.wh_per_1k_input === undefined) {
+      markUnattributed(
+        "wh_per_1k_input",
+        "energy_override.wh_per_1k_input is null; not attributing prefill energy",
+      );
+    }
+    if (energyOverride.wh_per_1k_output === null || energyOverride.wh_per_1k_output === undefined) {
+      markUnattributed(
+        "wh_per_1k_output",
+        "energy_override.wh_per_1k_output is null; not attributing decode energy",
+      );
+    }
+  }
+  const hasVisualInput = nImages > 0 || imageInputTokens > 0;
+  const visualCoefficient = energyOverride?.wh_per_image;
+  const hasVisualCoefficient = (
+    visualCoefficient !== null
+    && visualCoefficient !== undefined
+    && Number.isFinite(visualCoefficient)
+    && visualCoefficient > 0
+  );
+  if (hasVisualInput && !hasVisualCoefficient) {
+    event.energy_completeness = "text_only";
+    const warning =
+      `Non-text media input present but no visual energy coefficient for model '${event.model}'; `
+      + "estimated_energy_wh covers the text portion only "
+      + "(energy_completeness='text_only'). Add a VLM calibration for a complete figure.";
+    if (!event.vetch_warnings.includes(warning)) {
+      event.vetch_warnings.push(warning);
+    }
+  }
+  // Unpriced axes make the figure a lower bound, so it carries no upper bound.
+  if (event.energy_completeness === "text_only" || event.energy_axes_unattributed.length > 0) {
+    event.energy_estimate_kind = "lower_bound";
+    event.energy_p95_wh = null;
+    event.carbon_p95_g = null;
+  }
   if (event.usage_estimated && event.energy_uncertainty_pct !== null && event.estimated_energy_wh > 0) {
     event.energy_uncertainty_pct = Math.max(event.energy_uncertainty_pct, 50);
   }
@@ -261,12 +379,80 @@ export async function enrichVetchEvent(event: VetchEvent, options: EnrichOptions
   event.pue = carbon.pue;
   event.pue_tier = carbon.pueTier;
   event.pue_source = carbon.pueSource;
-  event.estimated_water_l = calculateWater(
+  const water = calculateWater(
     energy.energyWh,
     event.model,
     options.provider,
     options.region ?? event.region,
+    options.wueOverride,
+    options.wueBoundary,
+    options.waterAccountingKind,
+    options.wueUncertaintyPct,
   );
+  if (
+    options.wueOverride !== undefined
+    && options.wueOverride !== null
+    && (!Number.isFinite(options.wueOverride) || options.wueOverride < 0)
+  ) {
+    const warning = "Invalid wueOverride; expected a finite non-negative liters-per-kWh value.";
+    if (!event.vetch_warnings.includes(warning)) {
+      event.vetch_warnings.push(warning);
+    }
+  }
+  if (
+    options.wueBoundary !== undefined
+    && options.wueBoundary !== null
+    && !["onsite", "source"].includes(options.wueBoundary.trim().toLowerCase())
+  ) {
+    const warning = "Invalid wueBoundary; expected 'onsite' or 'source'.";
+    if (!event.vetch_warnings.includes(warning)) {
+      event.vetch_warnings.push(warning);
+    }
+  }
+  if (
+    options.wueUncertaintyPct !== undefined
+    && options.wueUncertaintyPct !== null
+    && (
+      !Number.isFinite(options.wueUncertaintyPct)
+      || options.wueUncertaintyPct < 0
+    )
+  ) {
+    const warning = "Invalid wueUncertaintyPct; expected a finite non-negative value.";
+    if (!event.vetch_warnings.includes(warning)) {
+      event.vetch_warnings.push(warning);
+    }
+  }
+  if (
+    options.wueOverride !== undefined
+    && options.wueOverride !== null
+    && Number.isFinite(options.wueOverride)
+    && options.wueOverride >= 0
+    && (
+      !options.wueBoundary?.trim()
+      || !options.waterAccountingKind?.trim()
+    )
+  ) {
+    const warning = (
+      "WUE override accounting definition is incomplete; provide wueBoundary "
+      + "and waterAccountingKind to enable aggregation and comparison."
+    );
+    if (!event.vetch_warnings.includes(warning)) {
+      event.vetch_warnings.push(warning);
+    }
+  }
+  event.estimated_water_l = water.waterL;
+  event.water_tier = water.wueTier;
+  event.water_basis = water.wueBasis;
+  event.water_boundary = water.boundary;
+  event.water_accounting_kind = water.accounting;
+  event.water_uncertainty_pct = water.uncertaintyPct;
+  if (options.wueOverride === undefined || options.wueOverride === null) {
+    for (const warning of WUE_REGISTRY_WARNINGS) {
+      if (!event.vetch_warnings.includes(warning)) {
+        event.vetch_warnings.push(warning);
+      }
+    }
+  }
   event.embodied_carbon_g = calculateEmbodiedCarbon(inputTokens, energyOutputTokens, event.model);
 
   if (baselineEnergy !== null && event.estimated_carbon_g !== null) {
@@ -331,6 +517,14 @@ export async function enrichVetchEvent(event: VetchEvent, options: EnrichOptions
   const carbonBounds = confidenceBounds(event.estimated_carbon_g, event.energy_uncertainty_pct);
   event.carbon_p5_g = carbonBounds.p5;
   event.carbon_p95_g = carbonBounds.p95;
+  // Bounds are populated after the estimate is calculated, so apply the
+  // lower-bound contract here as the final write. An incomplete visual figure
+  // must never acquire a symmetric upper bound later in this function.
+  if (event.energy_completeness === "text_only" || event.energy_axes_unattributed.length > 0) {
+    event.energy_estimate_kind = "lower_bound";
+    event.energy_p95_wh = null;
+    event.carbon_p95_g = null;
+  }
 
   event.tracking_degraded = isTrackingDegraded({
     modelKnown: energy.modelKnown,
@@ -504,8 +698,10 @@ function calculateEnergy(
   let source: string;
 
   if (energyOverride !== null) {
-    whIn = energyOverride.wh_per_1k_input;
-    whOut = energyOverride.wh_per_1k_output;
+    const whInRaw = energyOverride.wh_per_1k_input;
+    const whOutRaw = energyOverride.wh_per_1k_output;
+    const whIn = (whInRaw === null || whInRaw === undefined) ? 0 : whInRaw;
+    const whOut = (whOutRaw === null || whOutRaw === undefined) ? 0 : whOutRaw;
     tier = energyOverride.tier ?? 1;
     source = energyOverride.source ?? "override";
     basis = energyOverride.basis ?? "User-provided override";
@@ -527,7 +723,7 @@ function calculateEnergy(
       outTokens * whOut
     ) / 1000;
     const whPerImage = energyOverride.wh_per_image;
-    if (whPerImage !== undefined && whPerImage > 0) {
+    if (whPerImage != null && whPerImage > 0) {
       let imageUnits = Math.max(0, nImages);
       if (vtok !== null && imageInputTokens > 0) {
         imageUnits = Math.max(imageUnits, imageInputTokens / vtok);
@@ -537,7 +733,7 @@ function calculateEnergy(
       }
     }
     const interceptWh = energyOverride.intercept_wh;
-    if (interceptWh !== undefined && interceptWh > 0) {
+    if (interceptWh != null && interceptWh > 0) {
       energyWh += interceptWh;
     }
     return {
@@ -706,19 +902,91 @@ function calculateWater(
   model: string,
   providerHint: string,
   region: string | null | undefined,
-): number {
-  let wue: number;
-  const provider = providerHint.toLowerCase();
-  if (region && provider) {
-    const regionKey = `${provider}-${region.toLowerCase()}`;
-    wue = WUE[regionKey] ?? WUE[provider] ?? PROVIDER_WUE[provider] ?? DEFAULT_WUE;
-  } else if (provider) {
-    wue = WUE[provider] ?? PROVIDER_WUE[provider] ?? DEFAULT_WUE;
-  } else {
-    const inferred = inferProviderFromModel(model);
-    wue = inferred ? WUE[inferred] ?? PROVIDER_WUE[inferred] ?? DEFAULT_WUE : DEFAULT_WUE;
+  wueOverride: number | null | undefined,
+  wueBoundary: string | null | undefined,
+  waterAccountingKind: string | null | undefined,
+  wueUncertaintyPct: number | null | undefined,
+): WaterResult {
+  if (wueOverride !== undefined && wueOverride !== null) {
+    if (Number.isFinite(wueOverride) && wueOverride >= 0) {
+      const boundary = wueBoundary?.trim().toLowerCase();
+      const accounting = waterAccountingKind?.trim().toLowerCase();
+      const uncertaintyPct = (
+        wueUncertaintyPct !== undefined
+        && wueUncertaintyPct !== null
+        && Number.isFinite(wueUncertaintyPct)
+        && wueUncertaintyPct >= 0
+      ) ? wueUncertaintyPct : null;
+      return {
+        waterL: energyWh / 1000 * wueOverride,
+        wueTier: 1,
+        wueBasis: "explicit override",
+        boundary: boundary === "onsite" || boundary === "source" ? boundary : null,
+        accounting: accounting || null,
+        uncertaintyPct,
+      };
+    }
+    return {
+      waterL: null,
+      wueTier: null,
+      wueBasis: null,
+      boundary: null,
+      accounting: null,
+      uncertaintyPct: null,
+    };
   }
-  return energyWh / 1000 * wue;
+  const inferred = inferWueProviderFromModel(model);
+  const rawProvider = (providerHint || inferred || "").toLowerCase();
+  const provider = normalizeWueProvider(rawProvider);
+  let entry: WueEntry | undefined;
+  if (provider && region) {
+    const regionKey = `${provider}-${region.toLowerCase()}`;
+    entry = WUE[regionKey] ?? WUE[provider];
+  } else if (provider) {
+    entry = WUE[provider];
+  }
+  if (entry === undefined) {
+    return {
+      waterL: null,
+      wueTier: null,
+      wueBasis: null,
+      boundary: null,
+      accounting: null,
+      uncertaintyPct: null,
+    };
+  }
+  return {
+    waterL: energyWh / 1000 * entry.value,
+    wueTier: entry.tier,
+    wueBasis: entry.basis,
+    boundary: entry.boundary,
+    accounting: entry.accounting,
+    // The registry states no uncertainty. Publishers report a WUE, not a band
+    // around it; only an explicit wueOverride can carry one.
+    uncertaintyPct: null,
+  };
+}
+
+function normalizeWueProvider(provider: string): string {
+  if (
+    provider === "google"
+    || provider === "vertexai"
+    || provider.startsWith("google.")
+  ) {
+    return "google";
+  }
+  if (
+    provider === "aws"
+    || provider === "bedrock"
+    || provider === "amazon-bedrock"
+    || provider.startsWith("amazon-bedrock.")
+  ) {
+    return "aws";
+  }
+  if (provider === "azure" || provider.startsWith("azure.")) {
+    return "azure";
+  }
+  return provider;
 }
 
 function calculateEmbodiedCarbon(
@@ -764,23 +1032,29 @@ function getCarbonIntensity(region: string | null | undefined): GridIntensity {
 }
 
 function getProviderPue(model: string, providerHint: string): [number, number, string] {
+  // Explicit hint: the caller names the operator, so the only open question is
+  // whether that operator publishes its own figure.
   const provider = providerHint.toLowerCase();
   if (provider in PROVIDER_PUE) {
     return [
       PROVIDER_PUE[provider]!,
-      1,
+      PROVIDER_PUE_TIER[provider] ?? 2,
       PROVIDER_PUE_SOURCES[provider] ?? "vendor report",
     ];
   }
   const inferred = inferProviderFromModel(model);
   if (inferred && inferred in PROVIDER_PUE) {
-    return [
-      PROVIDER_PUE[inferred]!,
-      1,
-      PROVIDER_PUE_SOURCES[inferred] ?? "vendor report",
-    ];
+    let tier = PROVIDER_PUE_TIER[inferred] ?? 2;
+    let source = PROVIDER_PUE_SOURCES[inferred] ?? "vendor report";
+    const lower = model.toLowerCase();
+    if (OPEN_WEIGHT_MODEL_PREFIXES.some((prefix) => lower.startsWith(prefix))) {
+      tier = Math.max(tier, 2);
+      source = `${source}; host assumed from an open-weight model name, `
+        + "which does not identify an operator";
+    }
+    return [PROVIDER_PUE[inferred]!, tier, source];
   }
-  return [DEFAULT_PUE, 3, "industry average"];
+  return [DEFAULT_PUE, 3, "industry average (no operator resolved)"];
 }
 
 function inferProviderFromModel(model: string): string | null {
@@ -793,6 +1067,20 @@ function inferProviderFromModel(model: string): string | null {
   }
   if (["gemini-", "gemma-", "palm-"].some((prefix) => lower.includes(prefix))) {
     return "google";
+  }
+  return null;
+}
+
+function inferWueProviderFromModel(model: string): string | null {
+  const lower = model.toLowerCase();
+  if (["gemini-", "palm-"].some((prefix) => lower.startsWith(prefix))) {
+    return "google";
+  }
+  if (["gpt-", "o1", "o3", "o4", "text-davinci", "text-embedding"].some((prefix) => lower.startsWith(prefix))) {
+    return "openai";
+  }
+  if (lower.startsWith("claude-")) {
+    return "anthropic";
   }
   return null;
 }

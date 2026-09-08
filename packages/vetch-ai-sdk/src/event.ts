@@ -107,6 +107,9 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
     carbon_p95_g: null,
     energy_source: "not_calculated",
     energy_override_source: null,
+    energy_axes_unattributed: [],
+    energy_estimate_kind: "point",
+    energy_completeness: "complete",
     energy_basis: null,
     grid_intensity_gco2e_kwh: null,
     grid_intensity_timestamp: null,
@@ -116,6 +119,11 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
     pue: null,
     pue_tier: null,
     pue_source: null,
+    water_tier: null,
+    water_basis: null,
+    water_boundary: null,
+    water_accounting_kind: null,
+    water_uncertainty_pct: null,
 
     is_stream: args.operation === "stream",
     is_batch: false,
@@ -176,6 +184,10 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
     region?: string;
     priceMultiplier?: number;
     energyOverride?: import("./calculation.js").EnergyOverride | null;
+    wueOverride?: number | null;
+    wueBoundary?: string | null;
+    waterAccountingKind?: string | null;
+    wueUncertaintyPct?: number | null;
   } = {
     provider: modelInfo.provider,
   };
@@ -187,6 +199,18 @@ export async function createVetchEvent(args: EventArgs): Promise<VetchEvent> {
   }
   if (args.options.energyOverride !== undefined) {
     enrichOptions.energyOverride = args.options.energyOverride;
+  }
+  if (args.options.wueOverride !== undefined) {
+    enrichOptions.wueOverride = args.options.wueOverride;
+  }
+  if (args.options.wueBoundary !== undefined) {
+    enrichOptions.wueBoundary = args.options.wueBoundary;
+  }
+  if (args.options.waterAccountingKind !== undefined) {
+    enrichOptions.waterAccountingKind = args.options.waterAccountingKind;
+  }
+  if (args.options.wueUncertaintyPct !== undefined) {
+    enrichOptions.wueUncertaintyPct = args.options.wueUncertaintyPct;
   }
   const enriched = await enrichVetchEvent(event, enrichOptions);
   applyBudgets(enriched, budgets);
