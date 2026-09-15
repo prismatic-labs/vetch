@@ -1,15 +1,22 @@
-"""Apple Silicon energy calibration using powermetrics.
+"""Apple Silicon energy calibration.
 
-Measures actual SoC power draw (CPU + GPU + ANE) during Ollama inference
-via Apple's powermetrics tool. Produces Tier 0 hardware-measured coefficients.
+Measures SoC energy (CPU + GPU + ANE) during Ollama inference and produces
+Tier 0 hardware-measured coefficients. Two samplers:
 
-IMPORTANT: powermetrics requires root. Run with sudo.
+- ``ioreport`` (default when available): the ``Energy Model`` counters of the
+  IOReport framework, a monotonic energy accumulator per subsystem. Counter
+  basis, no root, per-domain split. See ``vetch.ioreport``.
+- ``powermetrics``: trapezoidal integration of the ``Combined Power`` line.
+  Power-sampling basis, requires root, kept as the fallback.
+
+IMPORTANT: only the powermetrics sampler requires root.
 
 Supports VLMs: in addition to wh_per_1k_input and wh_per_1k_output, it
 measures wh_per_image — the energy cost of vision-encoder processing per image.
 
 Usage (CLI, preferred):
-    sudo vetch calibrate-apple-silicon --model moondream --precision apple-native
+    vetch calibrate-apple-silicon --model moondream --precision apple-native
+    sudo vetch calibrate-apple-silicon --sampler powermetrics ...   # fallback
 
 Usage (Python API):
     from vetch.calibrate_metal import calibrate_apple_silicon
@@ -37,6 +44,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from urllib import request as urllib_request
 from urllib.error import URLError
 
+from vetch import ioreport
 from vetch.calibrate_v2 import (
     IDLE_DRIFT_FLAG_PCT,
     IDLE_DRIFT_WARN_PCT,
@@ -560,6 +568,54 @@ def check_power_state() -> dict[str, Any]:
     except Exception:
         pass
     return result
+
+
+# ---------------------------------------------------------------------------
+# Samplers
+# ---------------------------------------------------------------------------
+
+SAMPLER_IOREPORT = "ioreport"
+SAMPLER_POWERMETRICS = "powermetrics"
+SAMPLER_CHOICES = ("auto", SAMPLER_IOREPORT, SAMPLER_POWERMETRICS)
+
+# `energy_source` drives the admission rule in `calibrate_v2.admit_rows`: a
+# source naming power sampling gets the 2 s duration floor, a counter does
+# not. `measurement_basis` is derived from the sampler so the two cannot
+# disagree, as `calibrate_cuda._measurement_basis` does for NVML.
+ENERGY_SOURCE_BY_SAMPLER = {
+    SAMPLER_IOREPORT: "ioreport_energy_counter",
+    SAMPLER_POWERMETRICS: "powermetrics",
+}
+MEASUREMENT_BASIS_BY_SAMPLER = {
+    SAMPLER_IOREPORT: "ioreport_soc_energy",
+    SAMPLER_POWERMETRICS: "powermetrics_estimated_soc_power",
+}
+INTEGRATION_METHOD_BY_SAMPLER = {
+    SAMPLER_IOREPORT: "energy_counter",
+    SAMPLER_POWERMETRICS: "trapezoidal",
+}
+
+
+def resolve_sampler(requested: str) -> str:
+    """Pick the sampler: IOReport when it can be read, else powermetrics.
+
+    ``auto`` falls back rather than failing, per the fail-open rule; an explicit
+    ``ioreport`` request on a machine where it is unavailable is an error, so a
+    record is never silently produced on a different basis from the one asked
+    for.
+    """
+    if requested not in SAMPLER_CHOICES:
+        raise ValueError(f"sampler must be one of {SAMPLER_CHOICES}, got {requested!r}")
+    if requested == SAMPLER_POWERMETRICS:
+        return SAMPLER_POWERMETRICS
+    if ioreport.available():
+        return SAMPLER_IOREPORT
+    if requested == SAMPLER_IOREPORT:
+        raise RuntimeError(
+            "IOReport energy counters are not readable on this machine; "
+            "re-run with --sampler powermetrics (requires sudo)."
+        )
+    return SAMPLER_POWERMETRICS
 
 
 # ---------------------------------------------------------------------------
@@ -1406,6 +1462,7 @@ def calibrate_apple_silicon(
     serving_engine: str = "ollama",
     quick: bool = False,
     allow_degraded_power: bool = False,
+    sampler: str = "auto",
 ) -> tuple[CalibrationResult, Path]:
     """Measure Apple Silicon energy coefficients for an Ollama model.
 
@@ -1442,8 +1499,11 @@ def calibrate_apple_silicon(
     # --- Preflight -----------------------------------------------------------
     assert_apple_silicon()
     _require_numpy_for_calibration()
-    assert_root()
-    warn_if_home_is_root()
+    sampler = resolve_sampler(sampler)
+    if sampler == SAMPLER_POWERMETRICS:
+        assert_root()
+        warn_if_home_is_root()
+    energy_source = ENERGY_SOURCE_BY_SAMPLER[sampler]
     if is_cloud_provider(provider):
         raise ValueError(
             f"provider={provider!r} is a cloud/API vendor and is refused for Tier-0 "
@@ -1575,8 +1635,14 @@ def calibrate_apple_silicon(
     idle_start = idle_end = 0.0
     idle_start2 = idle_end2 = 0.0
 
-    print("Starting powermetrics... (this requires root)")
-    with AppleSiliconMonitor(sample_interval_ms=100) as monitor:
+    monitor: AppleSiliconMonitor | ioreport.IOReportEnergyMonitor
+    if sampler == SAMPLER_IOREPORT:
+        print("Starting IOReport energy counters...")
+        monitor = ioreport.IOReportEnergyMonitor(sample_interval_ms=100)
+    else:
+        print("Starting powermetrics... (this requires root)")
+        monitor = AppleSiliconMonitor(sample_interval_ms=100)
+    with monitor:
         # Wait briefly for monitor to settle and get first samples
         time.sleep(1.0)
 
@@ -1683,6 +1749,8 @@ def calibrate_apple_silicon(
     # and monitor._samples contains the full session's power data.
 
     # --- Sanity check: did we get any power samples at all? ------------------
+    if len(monitor._samples) == 0 and sampler == SAMPLER_IOREPORT:
+        raise RuntimeError("IOReport produced no energy samples.")
     if len(monitor._samples) == 0:
         raise RuntimeError(
             "powermetrics produced no power samples. The 'Combined Power' line was\n"
@@ -1715,7 +1783,7 @@ def calibrate_apple_silicon(
         duration_h = duration_ms / 3_600_000.0
         avg_idle_watts = (idle_watts_before + idle_watts_after) / 2.0
         net_energy_wh = max(0.0, energy_wh - avg_idle_watts * duration_h)
-        run_records.append({
+        record: dict[str, Any] = {
             "n_images": raw["n_images"],
             "text_tokens": raw["text_tokens"],
             "output_tokens": raw["output_tokens"],
@@ -1724,7 +1792,15 @@ def calibrate_apple_silicon(
             "raw_energy_wh": energy_wh,  # pre-clamping, used for gap detection
             "duration_ms": duration_ms,
             "replicate": raw["replicate"],
-        })
+        }
+        if isinstance(monitor, ioreport.IOReportEnergyMonitor):
+            # Gross per-domain energy for the same window. The fit uses the
+            # combined `energy_wh`; the split is what makes an `apple_soc`
+            # figure comparable with a `gpu_board` one after the fact.
+            record["raw_energy_by_domain_wh"] = monitor.integrate_by_domain(
+                raw["t_start"], raw["t_end"]
+            )
+        run_records.append(record)
         if verbose:
             ni = raw["n_images"]
             ti = raw["text_tokens"]
@@ -1798,7 +1874,7 @@ def calibrate_apple_silicon(
     fit = fit_nested_models(
         run_records,
         idle_watts=idle_watts if idle_watts > 0 else None,
-        energy_source="powermetrics",
+        energy_source=energy_source,
         visual_tokens_per_image=fit_visual_tokens,
         idle_relative=idle_relative_uncertainty({
             "idle_watts_before": idle_watts_before,
@@ -1874,8 +1950,8 @@ def calibrate_apple_silicon(
     )
     provenance = measurement_provenance_core(
         samples=len(run_records),
-        energy_source="powermetrics",
-        measurement_basis="powermetrics_estimated_soc_power",
+        energy_source=energy_source,
+        measurement_basis=MEASUREMENT_BASIS_BY_SAMPLER[sampler],
         energy_domain="apple_soc",
         energy_domain_includes=APPLE_SOC_INCLUDES,
         energy_domain_excludes=APPLE_SOC_EXCLUDES,
@@ -1899,8 +1975,13 @@ def calibrate_apple_silicon(
         vetch_version=_vetch_version,
         methodology_version=METHODOLOGY_VERSION,
         extra={
+            "sampler": sampler,
             "sampler_cadence_ms": monitor.info.sample_interval_ms,
-            "integration_method": "trapezoidal",
+            "integration_method": INTEGRATION_METHOD_BY_SAMPLER[sampler],
+            "energy_channels": (
+                monitor.info.channels
+                if isinstance(monitor, ioreport.IOReportEnergyMonitor) else None
+            ),
             "idle_uncertainty_row_share_pct": idle_share_pct,
             "chip_family": hw.chip_family,
             "chip_tier": hw.chip_tier,

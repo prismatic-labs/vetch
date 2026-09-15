@@ -182,6 +182,17 @@ requests and records the aggregate with a `requests` divisor, so the fit sees
 the same per-request design points. `grid_design_id` is `v2-unbalanced` on both
 paths; only the sampler and hardware energy domain differ.
 
+Apple Silicon has a counter basis too. The default sampler reads the
+`Energy Model` group of the IOReport framework, a monotonic energy accumulator
+per subsystem (CPU, GPU, ANE, DRAM), without root. A window's energy is the
+difference of two counter reads, so no duration floor applies
+(`energy_source: ioreport_energy_counter`, `measurement_basis:
+ioreport_soc_energy`), and each row carries `raw_energy_by_domain_wh` so the
+GPU-only share can be read against `gpu_board` records. The published
+coefficients still integrate CPU + GPU + ANE, the `apple_soc` domain, so they
+stay comparable with powermetrics records. `--sampler powermetrics` keeps the
+sampling path, which requires root and the floor.
+
 The prefill isolation arm spans 811 to 12331 input tokens per request, with
 output pinned at 8. It determines the prefill coefficient to ±3.1% versus
 decode's ±4.7% on the same run. Batch 1 tops out at 427 input tokens without

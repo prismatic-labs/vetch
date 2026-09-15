@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Apple Silicon calibration reads the SoC energy counters through IOReport by
+  default (`vetch.ioreport`, `--sampler ioreport`). Counter basis: a window's
+  energy is the difference of two reads, no trapezoid across sampling gaps and
+  no 2 s duration floor. No root. Each row records gross energy per domain
+  (`raw_energy_by_domain_wh`: cpu, gpu, ane, dram) alongside the combined
+  `apple_soc` figure the fit uses. `powermetrics` stays as the fallback and as
+  `--sampler powermetrics`.
+
 ## [0.12.0] - 2026-09-08
 
 ### Added — calibration protocol v2
