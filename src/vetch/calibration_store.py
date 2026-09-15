@@ -895,6 +895,13 @@ def measurement_provenance_core(
                 "requests": r.get("requests", 1),
                 "energy_wh": r["energy_wh"], "raw_energy_wh": r["raw_energy_wh"],
                 "duration_ms": r["duration_ms"], "replicate": r["replicate"],
+                # Gross energy per hardware domain for the same window, when
+                # the sampler can split it (Apple Silicon IOReport counters).
+                # Optional: the fit reads energy_wh, consumers read this.
+                **(
+                    {"raw_energy_by_domain_wh": r["raw_energy_by_domain_wh"]}
+                    if r.get("raw_energy_by_domain_wh") is not None else {}
+                ),
             }
             for r in run_records
         ],

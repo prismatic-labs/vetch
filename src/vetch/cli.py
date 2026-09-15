@@ -669,6 +669,7 @@ def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
             serving_engine=serving_engine,
             quick=getattr(args, "quick", False),
             allow_degraded_power=getattr(args, "allow_degraded_power", False),
+            sampler=getattr(args, "sampler", "auto"),
         )
     except SystemExit:
         raise
@@ -1485,7 +1486,8 @@ def main() -> None:
     # Calibrate Apple Silicon
     cal_as_parser = subparsers.add_parser(
         "calibrate-apple-silicon",
-        help="Calibrate energy on Apple Silicon using powermetrics (requires sudo)",
+        help="Calibrate energy on Apple Silicon (IOReport counters, no sudo; "
+             "or powermetrics with sudo)",
     )
     cal_as_parser.add_argument(
         "--model", default="moondream:latest", help="Ollama model (default: moondream:latest)"
@@ -1521,6 +1523,12 @@ def main() -> None:
         "--allow-degraded-power", dest="allow_degraded_power", action="store_true",
         help="Run even on battery or in Low Power Mode. The record is written "
              "and flagged but never installed as the active calibration.",
+    )
+    cal_as_parser.add_argument(
+        "--sampler", choices=["auto", "ioreport", "powermetrics"], default="auto",
+        help="Energy sampler. 'ioreport' reads the SoC energy counters (counter "
+             "basis, no sudo, per-domain split); 'powermetrics' integrates sampled "
+             "power (requires sudo). 'auto' uses ioreport when readable.",
     )
     cal_as_parser.add_argument("--verbose", action="store_true", help="Print per-run details")
     cal_as_parser.add_argument(
