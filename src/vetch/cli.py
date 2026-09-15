@@ -635,7 +635,10 @@ def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
 
     model = args.model or "moondream:latest"
     provider = args.provider or "self-hosted"
-    base_url = args.base_url or "http://localhost:11434"
+    backend = getattr(args, "backend", "ollama")
+    base_url = args.base_url or (
+        "http://127.0.0.1:8080/v1" if backend == "openai" else "http://localhost:11434"
+    )
     iterations = args.iterations or 1
     verbose = args.verbose
     if not args.precision:
@@ -647,7 +650,14 @@ def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
     precision = args.precision
-    serving_engine = args.serving_engine or "ollama"
+    serving_engine = args.serving_engine or ("ollama" if backend == "ollama" else "")
+    if backend == "openai" and not serving_engine:
+        print(
+            "ERROR: --serving-engine is required with --backend openai (e.g. mlx_lm, "
+            "vllm). An OpenAI-compatible endpoint is an API shape, not a stack.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     from vetch.calibration_store import is_cloud_provider
     if is_cloud_provider(provider):
         print(
@@ -669,6 +679,8 @@ def calibrate_apple_silicon_cmd(args: argparse.Namespace) -> None:
             serving_engine=serving_engine,
             quick=getattr(args, "quick", False),
             allow_degraded_power=getattr(args, "allow_degraded_power", False),
+            sampler=getattr(args, "sampler", "auto"),
+            backend=backend,
         )
     except SystemExit:
         raise
@@ -1485,7 +1497,8 @@ def main() -> None:
     # Calibrate Apple Silicon
     cal_as_parser = subparsers.add_parser(
         "calibrate-apple-silicon",
-        help="Calibrate energy on Apple Silicon using powermetrics (requires sudo)",
+        help="Calibrate energy on Apple Silicon (IOReport counters, no sudo; "
+             "or powermetrics with sudo)",
     )
     cal_as_parser.add_argument(
         "--model", default="moondream:latest", help="Ollama model (default: moondream:latest)"
@@ -1495,7 +1508,15 @@ def main() -> None:
         help="Provider label for the identity (default: self-hosted)",
     )
     cal_as_parser.add_argument(
-        "--base-url", dest="base_url", default="http://localhost:11434", help="Ollama API base URL"
+        "--backend", choices=["ollama", "openai"], default="ollama",
+        help="Model server API. 'openai' is any OpenAI-compatible server, e.g. "
+             "mlx_lm.server for MLX models (start it with --prompt-cache-size 0); "
+             "then --serving-engine is required and --base-url should end in /v1.",
+    )
+    cal_as_parser.add_argument(
+        "--base-url", dest="base_url", default=None,
+        help="Server base URL (default: http://localhost:11434 for ollama, "
+             "http://127.0.0.1:8080/v1 for openai)",
     )
     cal_as_parser.add_argument(
         "--precision", required=True,
@@ -1503,8 +1524,9 @@ def main() -> None:
              "Required so distinct quantizations do not collide.",
     )
     cal_as_parser.add_argument(
-        "--serving-engine", dest="serving_engine", default="ollama",
-        help="Serving engine label (default: ollama)",
+        "--serving-engine", dest="serving_engine", default=None,
+        help="Serving engine label (default: ollama; required with --backend openai, "
+             "e.g. mlx_lm, vllm)",
     )
     cal_as_parser.add_argument(
         "--iterations", type=int, default=1,
@@ -1521,6 +1543,12 @@ def main() -> None:
         "--allow-degraded-power", dest="allow_degraded_power", action="store_true",
         help="Run even on battery or in Low Power Mode. The record is written "
              "and flagged but never installed as the active calibration.",
+    )
+    cal_as_parser.add_argument(
+        "--sampler", choices=["auto", "ioreport", "powermetrics"], default="auto",
+        help="Energy sampler. 'ioreport' reads the SoC energy counters (counter "
+             "basis, no sudo, per-domain split); 'powermetrics' integrates sampled "
+             "power (requires sudo). 'auto' uses ioreport when readable.",
     )
     cal_as_parser.add_argument("--verbose", action="store_true", help="Print per-run details")
     cal_as_parser.add_argument(

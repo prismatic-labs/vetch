@@ -27,7 +27,7 @@ In practice, bundled registry rows are almost all Tier 1 (hosted-API benchmarks)
 
 ### Tier 0: Measured
 
-The only genuinely metered tier. You run the model on your own hardware, and `vetch calibrate` reads GPU power draw through `pynvml` (or `powermetrics` on Apple Silicon) during a real workload. The result is a per-token energy coefficient measured on your silicon, stored in `~/.vetch/calibrations/` and picked up automatically on later runs.
+The only genuinely metered tier. You run the model on your own hardware, and `vetch calibrate` reads GPU energy through `pynvml` (or the SoC energy counters through IOReport on Apple Silicon, with `powermetrics` as the fallback) during a real workload. The result is a per-token energy coefficient measured on your silicon, stored in `~/.vetch/calibrations/` and picked up automatically on later runs.
 
 This tier only exists for self-hosted models you measure yourself. No hosted API can reach it.
 

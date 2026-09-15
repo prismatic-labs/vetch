@@ -1371,3 +1371,277 @@ class TestFitRecordBlocks:
         store.commit_calibration(None, None, {}, **fit_record_blocks(self._fit()))
         assert "coefficient_meta" in seen and "energy_basis" in seen
         assert seen["coefficient_meta"]["published_rung"]
+
+
+# ---------------------------------------------------------------------------
+# Sampler selection (IOReport counters vs powermetrics) — no hardware
+# ---------------------------------------------------------------------------
+
+class TestResolveSampler:
+    def test_auto_prefers_ioreport_when_readable(self) -> None:
+        from vetch.calibrate_metal import resolve_sampler
+        with patch("vetch.ioreport.available", return_value=True):
+            assert resolve_sampler("auto") == "ioreport"
+
+    def test_auto_falls_back_to_powermetrics(self) -> None:
+        from vetch.calibrate_metal import resolve_sampler
+        with patch("vetch.ioreport.available", return_value=False):
+            assert resolve_sampler("auto") == "powermetrics"
+
+    def test_explicit_ioreport_fails_rather_than_switching_basis(self) -> None:
+        import pytest
+
+        from vetch.calibrate_metal import resolve_sampler
+        with patch("vetch.ioreport.available", return_value=False):
+            with pytest.raises(RuntimeError, match="--sampler powermetrics"):
+                resolve_sampler("ioreport")
+
+    def test_explicit_powermetrics_never_probes_ioreport(self) -> None:
+        from vetch.calibrate_metal import resolve_sampler
+        with patch("vetch.ioreport.available", side_effect=AssertionError("probed")):
+            assert resolve_sampler("powermetrics") == "powermetrics"
+
+    def test_unknown_sampler_rejected(self) -> None:
+        import pytest
+
+        from vetch.calibrate_metal import resolve_sampler
+        with pytest.raises(ValueError):
+            resolve_sampler("nvml")
+
+
+class TestSamplerBasisConsistency:
+    """The source string decides the admission floor and must agree with the basis."""
+
+    def _rows(self) -> list[dict[str, Any]]:
+        # One short prefill-style row under the 2 s sampling floor, one long one.
+        return [
+            {"energy_wh": 0.0004, "raw_energy_wh": 0.0005, "duration_ms": 900.0,
+             "output_tokens": 8, "text_tokens": 2048, "n_images": 0, "requests": 1},
+            {"energy_wh": 0.02, "raw_energy_wh": 0.021, "duration_ms": 30000.0,
+             "output_tokens": 1024, "text_tokens": 32, "n_images": 0, "requests": 1},
+        ]
+
+    def test_counter_source_keeps_short_rows(self) -> None:
+        from vetch.calibrate_metal import ENERGY_SOURCE_BY_SAMPLER
+        from vetch.calibrate_v2 import admit_rows
+        admitted, _, _, under_floor = admit_rows(
+            self._rows(), energy_source=ENERGY_SOURCE_BY_SAMPLER["ioreport"]
+        )
+        assert len(admitted) == 2
+        assert under_floor == 0
+
+    def test_powermetrics_source_applies_floor(self) -> None:
+        from vetch.calibrate_metal import ENERGY_SOURCE_BY_SAMPLER
+        from vetch.calibrate_v2 import admit_rows
+        admitted, _, _, under_floor = admit_rows(
+            self._rows(), energy_source=ENERGY_SOURCE_BY_SAMPLER["powermetrics"]
+        )
+        assert len(admitted) == 1
+        assert under_floor == 1
+
+    def test_source_and_basis_pass_the_invariant_check(self) -> None:
+        from vetch.calibrate_metal import (
+            ENERGY_SOURCE_BY_SAMPLER,
+            MEASUREMENT_BASIS_BY_SAMPLER,
+            SAMPLER_CHOICES,
+        )
+        from vetch.calibration_invariants import _check_measurement_basis
+        for sampler in SAMPLER_CHOICES:
+            if sampler == "auto":
+                continue
+            out: list[Any] = []
+            _check_measurement_basis(
+                {"provenance": {
+                    "energy_source": ENERGY_SOURCE_BY_SAMPLER[sampler],
+                    "measurement_basis": MEASUREMENT_BASIS_BY_SAMPLER[sampler],
+                }},
+                out,
+            )
+            assert out == [], f"{sampler}: {out}"
+
+
+class TestCalibrateSamplerWiring:
+    def test_ioreport_path_skips_root_and_records_counter_provenance(self) -> None:
+        """Drive calibrate_apple_silicon to the sampler choice with everything
+        after it stubbed out, and check root is not required on the IOReport path."""
+        import vetch.calibrate_metal as cm
+
+        with (
+            patch.object(cm, "assert_apple_silicon"),
+            patch.object(cm, "_require_numpy_for_calibration"),
+            patch("vetch.ioreport.available", return_value=True),
+            patch.object(cm, "assert_root", side_effect=AssertionError("root demanded")),
+            patch.object(cm, "get_hardware_info", side_effect=RuntimeError("stop here")),
+        ):
+            try:
+                cm.calibrate_apple_silicon(model="m", precision="apple-native")
+            except RuntimeError as e:
+                assert str(e) == "stop here"
+
+    def test_powermetrics_path_still_requires_root(self) -> None:
+        import vetch.calibrate_metal as cm
+
+        with (
+            patch.object(cm, "assert_apple_silicon"),
+            patch.object(cm, "_require_numpy_for_calibration"),
+            patch.object(cm, "assert_root", side_effect=PermissionError("need sudo")),
+        ):
+            try:
+                cm.calibrate_apple_silicon(
+                    model="m", precision="apple-native", sampler="powermetrics"
+                )
+            except PermissionError as e:
+                assert str(e) == "need sudo"
+            else:
+                raise AssertionError("assert_root was not called")
+
+    def test_cli_passes_sampler_through(self) -> None:
+        from vetch import cli
+
+        captured: dict[str, Any] = {}
+
+        def fake(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            raise SystemExit(0)
+
+        with (
+            patch("vetch.calibrate_metal.calibrate_apple_silicon", fake),
+            patch.object(cli.sys, "argv", [
+                "vetch", "calibrate-apple-silicon", "--model", "m",
+                "--precision", "apple-native", "--sampler", "powermetrics",
+            ]),
+        ):
+            try:
+                cli.main()
+            except SystemExit:
+                pass
+        assert captured.get("sampler") == "powermetrics"
+
+
+# ---------------------------------------------------------------------------
+# Backends: Ollama vs any OpenAI-compatible server (mlx_lm.server, vLLM)
+# ---------------------------------------------------------------------------
+
+class TestMakeBackend:
+    def test_ollama_backend_uses_ollama_helpers(self) -> None:
+        import vetch.calibrate_metal as cm
+        b = cm.make_backend("ollama")
+        assert b.generate is cm._ollama_generate
+        assert b.health_check is cm._check_ollama
+        assert b.context_length is cm._ollama_context_length
+        assert b.default_base_url == cm.OLLAMA_DEFAULT_BASE_URL
+        assert b.cached_prompt_tokens() is None
+
+    def test_unknown_backend_rejected(self) -> None:
+        import pytest
+
+        from vetch.calibrate_metal import make_backend
+        with pytest.raises(ValueError):
+            make_backend("vllm")
+
+    def test_openai_backend_reuses_cuda_client_and_drops_num_ctx(self) -> None:
+        import vetch.calibrate_cuda as cc
+        import vetch.calibrate_metal as cm
+
+        calls: list[dict[str, Any]] = []
+
+        def fake_generate(base_url: str, model: str, prompt: str, image_b64: Any = None,
+                          max_tokens: int = 32, **kwargs: Any) -> tuple[int, int]:
+            calls.append({"base_url": base_url, "max_tokens": max_tokens, **kwargs})
+            sink = kwargs.get("usage_sink")
+            if sink is not None:
+                sink.append({"prompt_tokens": 40, "completion_tokens": 8,
+                             "prompt_tokens_details": {"cached_tokens": 3}})
+            return 40, 8
+
+        with patch.object(cc, "_openai_compat_generate", fake_generate):
+            b = cm.make_backend("openai")
+            assert b.generate("http://x/v1", "m", "p", None, 16, num_ctx=8192) == (40, 8)
+            b.generate("http://x/v1", "m", "p", None, 16, num_ctx=8192)
+        assert calls and "num_ctx" not in calls[0]
+        assert calls[0]["max_tokens"] == 16
+        assert b.cached_prompt_tokens() == 6
+
+    def test_cached_tokens_none_when_server_never_reports_them(self) -> None:
+        from vetch.calibrate_metal import Backend
+        b = Backend(name="openai", generate=lambda *a, **k: (1, 1),
+                    health_check=lambda u: "ok", context_length=lambda u, m: None,
+                    default_base_url="http://x/v1",
+                    usage_log=[{"prompt_tokens": 5, "completion_tokens": 1}])
+        assert b.cached_prompt_tokens() is None
+
+
+class TestBackendInjection:
+    def test_probe_prefill_uses_injected_generate(self) -> None:
+        from vetch.calibrate_metal import probe_prefill
+        seen: list[int] = []
+
+        def gen(base_url: str, model: str, prompt: str, image_b64: Any = None,
+                max_tokens: int = 32, num_ctx: Any = None) -> tuple[int, int]:
+            seen.append(max_tokens)
+            return 1100, 8
+
+        probe = probe_prefill("http://x", "m", generate=gen)
+        assert seen == [1, 8]
+        assert probe.token_ratio is not None and probe.token_ratio > 1.0
+
+    def test_context_limit_uses_injected_lookup_under_ceiling(self) -> None:
+        from vetch.calibrate_metal import metal_context_ceiling, resolve_metal_context_limit
+        assert resolve_metal_context_limit("http://x", "m", lambda u, m: 4096) == 4096
+        assert resolve_metal_context_limit("http://x", "m", lambda u, m: None) == (
+            metal_context_ceiling()
+        )
+
+    def test_openai_backend_requires_a_named_engine(self) -> None:
+        import pytest
+
+        import vetch.calibrate_metal as cm
+        with (
+            patch.object(cm, "assert_apple_silicon"),
+            patch.object(cm, "_require_numpy_for_calibration"),
+        ):
+            with pytest.raises(ValueError, match="serving_engine is required"):
+                cm.calibrate_apple_silicon(
+                    model="m", precision="mlx:4bit", backend="openai",
+                )
+            with pytest.raises(ValueError, match="serving_engine is required"):
+                cm.calibrate_apple_silicon(
+                    model="m", precision="mlx:4bit", backend="openai",
+                    serving_engine="ollama",
+                )
+
+    def test_cli_openai_backend_passes_through_and_defaults_base_url(self) -> None:
+        from vetch import cli
+        captured: dict[str, Any] = {}
+
+        def fake(**kwargs: Any) -> Any:
+            captured.update(kwargs)
+            raise SystemExit(0)
+
+        with (
+            patch("vetch.calibrate_metal.calibrate_apple_silicon", fake),
+            patch.object(cli.sys, "argv", [
+                "vetch", "calibrate-apple-silicon", "--backend", "openai",
+                "--serving-engine", "mlx_lm", "--model", "LiquidAI/LFM2.5-8B-A1B-MLX-4bit",
+                "--precision", "mlx:4bit",
+            ]),
+        ):
+            try:
+                cli.main()
+            except SystemExit:
+                pass
+        assert captured["backend"] == "openai"
+        assert captured["serving_engine"] == "mlx_lm"
+        assert captured["base_url"].endswith("/v1")
+
+    def test_cli_openai_backend_refuses_missing_engine(self) -> None:
+        import pytest
+
+        from vetch import cli
+        with patch.object(cli.sys, "argv", [
+            "vetch", "calibrate-apple-silicon", "--backend", "openai",
+            "--model", "m", "--precision", "mlx:4bit",
+        ]):
+            with pytest.raises(SystemExit) as e:
+                cli.main()
+            assert e.value.code == 2

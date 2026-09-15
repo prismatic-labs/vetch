@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Apple Silicon calibration reads the SoC energy counters through IOReport by
+  default (`vetch.ioreport`, `--sampler ioreport`). Counter basis: a window's
+  energy is the difference of two reads, no trapezoid across sampling gaps and
+  no 2 s duration floor. No root. Each row records gross energy per domain
+  (`raw_energy_by_domain_wh`: cpu, gpu, ane, dram) alongside the combined
+  `apple_soc` figure the fit uses. `powermetrics` stays as the fallback and as
+  `--sampler powermetrics`.
+- `vetch calibrate-apple-silicon --backend openai` measures any
+  OpenAI-compatible server on Apple Silicon, which is how MLX models are
+  calibrated (`mlx_lm.server --prompt-cache-size 0`). Reuses the CUDA path's
+  client; `--serving-engine` is required so `mlx_lm` and `vllm` never share an
+  identity. The record carries `cached_prompt_tokens_observed` from the
+  server's own `usage` so prefix caching is reported as observed, not assumed.
+
 ## [0.12.0] - 2026-09-08
 
 ### Added — calibration protocol v2

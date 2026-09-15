@@ -177,10 +177,14 @@ def _openai_compat_generate(
     ignore_eos: bool = False,
     modality: str = "image",
     pin_serving_path: bool = False,
+    usage_sink: list[dict[str, Any]] | None = None,
 ) -> tuple[int, int]:
     """One OpenAI-compatible ``/chat/completions`` call (vLLM, Ollama ``/v1``…).
 
     Returns ``(prompt_tokens, completion_tokens)`` from the response ``usage``.
+    When ``usage_sink`` is given the raw ``usage`` dict is appended to it, so a
+    caller can read ``prompt_tokens_details.cached_tokens`` and confirm whether
+    the server actually served the prompt from a prefix cache.
     Non-text media is sent as a base64 data URI placed BEFORE the text (Gemma
     expects image-first). ``modality`` selects the MIME / content-part shape
     (``image`` / ``audio`` / ``video``). Temperature is pinned to 0 and Gemma's
@@ -249,6 +253,8 @@ def _openai_compat_generate(
         raise RuntimeError(f"OpenAI-compatible request failed: {e}") from e
 
     usage = data.get("usage") or {}
+    if usage_sink is not None:
+        usage_sink.append(dict(usage))
     return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
 
 
