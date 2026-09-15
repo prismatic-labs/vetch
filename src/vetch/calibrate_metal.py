@@ -1598,6 +1598,7 @@ def calibrate_apple_silicon(
         CalibrationIdentity,
         canonical_gpu,
         commit_calibration,
+        default_serving_config,
         is_cloud_provider,
         measurement_provenance_core,
     )
@@ -2131,8 +2132,28 @@ def calibrate_apple_silicon(
     )
     # Carry the nested fit's verdict and energy basis onto the record, as the
     # CUDA writer does.
+    # Serving config is part of the measurement key (protocol section 1), so
+    # the engine and what the server reported about caching belong here, not
+    # only in provenance. Prefix caching is stated only from observation: the
+    # OpenAI backend sees ``cached_tokens`` per request, Ollama reports nothing.
+    cached_observed = engine.cached_prompt_tokens()
+    requests_observed = len(engine.usage_log)
+    prefix_caching: bool | None = None
+    if cached_observed is not None and requests_observed >= 2:
+        prefix_caching = cached_observed > 0
     record_path = commit_calibration(
-        result, identity, provenance, **fit_record_blocks(fit)
+        result, identity, provenance,
+        serving_config=default_serving_config(
+            engine=serving_engine,
+            engine_version=ollama_version,
+            prefix_caching=prefix_caching,
+            engine_specific={
+                "api_backend": backend,
+                "cached_prompt_tokens_observed": cached_observed,
+                "requests_observed": requests_observed,
+            },
+        ),
+        **fit_record_blocks(fit),
     )
     print(f"\nCalibration record written to {record_path}")
     if not calibration_valid:
