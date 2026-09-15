@@ -2045,8 +2045,8 @@ def format_calibration_result_apple(result: CalibrationResult, detail_path: Path
         lines.append(f"  wh_per_image:       {result.wh_per_image:.6f}  Wh / image")
     lines += [
         "",
-        "  Note: powermetrics measures estimated SoC power (CPU + GPU + ANE),",
-        "  not wall-plug power. Coefficients are local-hardware specific.",
+        "  Note: coefficients are SoC energy (CPU + GPU + ANE), not wall-plug",
+        "  power, and are local-hardware specific.",
         "  intercept_wh is fixed energy per inference request (from the LS fit),",
         "  not amortized across tokens — expect higher Wh on tiny prompts.",
         "",

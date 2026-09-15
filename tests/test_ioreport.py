@@ -193,3 +193,50 @@ class TestAvailable:
             patch("vetch.ioreport._Binding", side_effect=boom),
         ):
             assert available() is False
+
+
+class TestRunTablePassthrough:
+    def test_per_domain_energy_survives_into_the_record(self) -> None:
+        """The stored run table is built from a key list; the split must be on it."""
+        import inspect
+
+        from vetch.calibration_store import measurement_provenance_core
+
+        row = {
+            "n_images": 0, "text_tokens": 1000, "output_tokens": 8, "requests": 3,
+            "energy_wh": 0.01, "raw_energy_wh": 0.011, "duration_ms": 5000.0,
+            "replicate": False,
+            "raw_energy_by_domain_wh": {"cpu": 0.002, "gpu": 0.008, "ane": 0.0, "dram": 0.001},
+        }
+        params = inspect.signature(measurement_provenance_core).parameters
+        kwargs: dict[str, Any] = {}
+        for name, p in params.items():
+            if p.default is not inspect.Parameter.empty:
+                continue
+            kwargs[name] = {
+                "samples": 1, "energy_source": "ioreport_energy_counter",
+                "measurement_basis": "ioreport_soc_energy", "energy_domain": "apple_soc",
+                "energy_domain_includes": ["cpu", "gpu", "ane"], "energy_domain_excludes": [],
+                "idle_watts_before": 0.5, "idle_watts_after": 0.5, "idle_drift_pct": 0.0,
+                "run_records": [row], "fit": _FakeFit(),
+            }.get(name)
+        prov = measurement_provenance_core(**kwargs)
+        stored = prov["raw_run_table"][0]
+        assert stored["raw_energy_by_domain_wh"] == row["raw_energy_by_domain_wh"]
+        without = dict(row)
+        del without["raw_energy_by_domain_wh"]
+        kwargs["run_records"] = [without]
+        stored = measurement_provenance_core(**kwargs)["raw_run_table"][0]
+        assert "raw_energy_by_domain_wh" not in stored
+
+
+class _FakeFit:
+    """Enough of a fit for measurement_provenance_core to serialise."""
+
+    r2 = 0.99
+    condition_number = 3.0
+    input_ci95 = output_ci95 = image_ci95 = intercept_ci95 = None
+    residuals_structured = False
+
+    def __getattr__(self, name: str) -> Any:
+        return None
