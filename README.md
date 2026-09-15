@@ -324,7 +324,7 @@ result = calibrate_model("ollama", "llama3.1:8b", workload=my_inference)
 print(format_calibration_result(result))
 ```
 
-**Requirements:** NVIDIA GPU with `pynvml` (`pip install 'vetch[calibrate]'`). On Apple Silicon, use `vetch calibrate-apple-silicon` (reads the SoC energy counters through IOReport, no `sudo`; `--sampler powermetrics` is the root-requiring fallback). Both paths write a schema-2 record under `~/.vetch/calibrations/` (picked up automatically). `vetch validate-calibration file.json` checks identifiability on a laptop with no GPU. See [docs/calibration-protocol-v2.md](docs/calibration-protocol-v2.md). To share a calibration, open a GitHub issue with that JSON (see the CLI result footer). See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md).
+**Requirements:** NVIDIA GPU with `pynvml` (`pip install 'vetch[calibrate]'`). On Apple Silicon, use `vetch calibrate-apple-silicon` (reads the SoC energy counters through IOReport, no `sudo`; `--sampler powermetrics` is the root-requiring fallback). It measures Ollama by default, or any OpenAI-compatible server with `--backend openai`, which covers MLX models through `mlx_lm.server`. Both paths write a schema-2 record under `~/.vetch/calibrations/` (picked up automatically). `vetch validate-calibration file.json` checks identifiability on a laptop with no GPU. See [docs/calibration-protocol-v2.md](docs/calibration-protocol-v2.md). To share a calibration, open a GitHub issue with that JSON (see the CLI result footer). See [QUICKSTART-LOCAL.md](QUICKSTART-LOCAL.md).
 
 ## Supported providers
 

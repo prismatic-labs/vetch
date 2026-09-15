@@ -18,6 +18,12 @@ Usage (CLI, preferred):
     vetch calibrate-apple-silicon --model moondream --precision apple-native
     sudo vetch calibrate-apple-silicon --sampler powermetrics ...   # fallback
 
+Any OpenAI-compatible server works as the model backend, which is how MLX
+models are calibrated (``mlx_lm.server`` on port 8080; start it with
+``--prompt-cache-size 0`` so no prefill is served from cache):
+    vetch calibrate-apple-silicon --backend openai --base-url http://127.0.0.1:8080/v1 \
+        --serving-engine mlx_lm --model LiquidAI/LFM2.5-8B-A1B-MLX-4bit --precision mlx:4bit
+
 Usage (Python API):
     from vetch.calibrate_metal import calibrate_apple_silicon
     result, path = calibrate_apple_silicon(
@@ -917,12 +923,13 @@ def _ollama_generate(
 
 
 def _probe_image_token_accounting(
-    base_url: str, model: str, image_b64: str
+    base_url: str, model: str, image_b64: str, generate: GenerateFn | None = None
 ) -> dict[str, Any]:
-    """Check whether Ollama includes image tokens in prompt_eval_count."""
+    """Check whether the server includes image tokens in its prompt token count."""
+    gen = generate or _ollama_generate
     text_prompt = "What color is the sky?"
-    text_only, _ = _ollama_generate(base_url, model, text_prompt, max_tokens=1)
-    with_image, _ = _ollama_generate(base_url, model, text_prompt, image_b64, max_tokens=1)
+    text_only, _ = gen(base_url, model, text_prompt, max_tokens=1)
+    with_image, _ = gen(base_url, model, text_prompt, image_b64, max_tokens=1)
     delta = with_image - text_only
     accounting = "includes" if delta > 10 else "excludes"
     return {
@@ -940,6 +947,93 @@ def _get_visual_tokens_per_image(model: str) -> tuple[int, str]:
         if key in base:
             return count, "known_constant"
     return 729, "assumed_default"
+
+
+# ---------------------------------------------------------------------------
+# Backends
+# ---------------------------------------------------------------------------
+
+BACKEND_OLLAMA = "ollama"
+BACKEND_OPENAI = "openai"
+BACKEND_CHOICES = (BACKEND_OLLAMA, BACKEND_OPENAI)
+OPENAI_DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
+
+#: ``generate(base_url, model, prompt, image_b64, max_tokens, num_ctx=...)``
+#: returning ``(prompt_tokens, output_tokens)``. Both backends present this
+#: shape; ``num_ctx`` is an Ollama knob the OpenAI shape accepts and ignores.
+GenerateFn = Callable[..., tuple[int, int]]
+
+
+@dataclass
+class Backend:
+    """What the calibration loop needs from a model server, and nothing else."""
+
+    name: str
+    generate: GenerateFn
+    health_check: Callable[[str], str]
+    context_length: Callable[[str, str], int | None]
+    default_base_url: str
+    #: Raw ``usage`` dicts from every request on the OpenAI backend, so the
+    #: record can report cached prefill tokens instead of assuming none.
+    usage_log: list[dict[str, Any]] = field(default_factory=list)
+
+    def cached_prompt_tokens(self) -> int | None:
+        """Sum of ``prompt_tokens_details.cached_tokens`` seen, or None if never reported."""
+        seen = False
+        total = 0
+        for usage in self.usage_log:
+            details = usage.get("prompt_tokens_details")
+            if isinstance(details, dict) and "cached_tokens" in details:
+                seen = True
+                total += int(details.get("cached_tokens") or 0)
+        return total if seen else None
+
+
+def make_backend(name: str) -> Backend:
+    """Build the Ollama or OpenAI-compatible backend.
+
+    The OpenAI shape reuses ``calibrate_cuda``'s client; the only Apple-side
+    differences are that ``num_ctx`` is dropped (the server owns its context
+    budget) and the usage of every request is kept for the cache check.
+    """
+    if name == BACKEND_OLLAMA:
+        return Backend(
+            name=name,
+            generate=_ollama_generate,
+            health_check=_check_ollama,
+            context_length=_ollama_context_length,
+            default_base_url=OLLAMA_DEFAULT_BASE_URL,
+        )
+    if name == BACKEND_OPENAI:
+        from vetch.calibrate_cuda import (
+            _check_openai_server,
+            _openai_compat_generate,
+            server_max_model_len,
+        )
+
+        usage_log: list[dict[str, Any]] = []
+
+        def generate(
+            base_url: str,
+            model: str,
+            prompt: str,
+            image_b64: str | None = None,
+            max_tokens: int = 32,
+            num_ctx: int | None = None,
+        ) -> tuple[int, int]:
+            return _openai_compat_generate(
+                base_url, model, prompt, image_b64, max_tokens, usage_sink=usage_log
+            )
+
+        return Backend(
+            name=name,
+            generate=generate,
+            health_check=_check_openai_server,
+            context_length=lambda base_url, model: server_max_model_len(base_url),
+            default_base_url=OPENAI_DEFAULT_BASE_URL,
+            usage_log=usage_log,
+        )
+    raise ValueError(f"backend must be one of {BACKEND_CHOICES}, got {name!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -1218,7 +1312,8 @@ class PrefillProbe(NamedTuple):
 
 
 def probe_prefill(
-    base_url: str, model: str, num_ctx: int | None = None
+    base_url: str, model: str, num_ctx: int | None = None,
+    generate: GenerateFn | None = None,
 ) -> PrefillProbe:
     """Measure this machine's prefill throughput in tokens/ms, or None.
 
@@ -1243,8 +1338,9 @@ def probe_prefill(
     # look slower. Measured: this reported <=0.25 tok/ms against a true 0.86,
     # which sized every prefill point at requests=1, left those windows under
     # the 2 s power-sampling floor, and had `admit_rows` drop them.
+    gen = generate or _ollama_generate
     try:
-        _ollama_generate(
+        gen(
             base_url, model, _unique_prompt(approx_tokens=64, seed=6),
             max_tokens=1, num_ctx=num_ctx,
         )
@@ -1254,7 +1350,7 @@ def probe_prefill(
     prompt = _unique_prompt(approx_tokens=PREFILL_ARM_MIN_INPUT_TOKENS, seed=7)
     start = time.monotonic() * 1000
     try:
-        measured, _ = _ollama_generate(
+        measured, _ = gen(
             base_url, model, prompt, max_tokens=8, num_ctx=num_ctx,
         )
     except RuntimeError as e:
@@ -1270,10 +1366,13 @@ def probe_prefill(
     )
 
 
-def resolve_metal_context_limit(base_url: str, model: str) -> int:
+def resolve_metal_context_limit(
+    base_url: str, model: str,
+    context_length: Callable[[str, str], int | None] | None = None,
+) -> int:
     """Context budget for this run: the model's own limit, under our ceiling."""
     ceiling = metal_context_ceiling()
-    architecture = _ollama_context_length(base_url, model)
+    architecture = (context_length or _ollama_context_length)(base_url, model)
     if architecture is None:
         return ceiling
     return min(architecture, ceiling)
@@ -1463,8 +1562,15 @@ def calibrate_apple_silicon(
     quick: bool = False,
     allow_degraded_power: bool = False,
     sampler: str = "auto",
+    backend: str = BACKEND_OLLAMA,
 ) -> tuple[CalibrationResult, Path]:
-    """Measure Apple Silicon energy coefficients for an Ollama model.
+    """Measure Apple Silicon energy coefficients for a locally served model.
+
+    ``backend`` is ``"ollama"`` (default) or ``"openai"`` for any
+    OpenAI-compatible server, which is how MLX models are measured through
+    ``mlx_lm.server``. With ``"openai"``, ``serving_engine`` must name the
+    stack (``mlx_lm``, ``vllm``, ...) so distinct engines never share an
+    identity, and ``base_url`` should end in ``/v1``.
 
     Args:
         model: Ollama model name (e.g. "moondream:latest")
@@ -1499,6 +1605,16 @@ def calibrate_apple_silicon(
     # --- Preflight -----------------------------------------------------------
     assert_apple_silicon()
     _require_numpy_for_calibration()
+    engine = make_backend(backend)
+    if backend == BACKEND_OPENAI and (
+        not serving_engine or serving_engine.strip() in ("", BACKEND_OLLAMA)
+    ):
+        raise ValueError(
+            "serving_engine is required with backend='openai' (e.g. 'mlx_lm', "
+            "'vllm'); an OpenAI-compatible endpoint is an API shape, not a stack."
+        )
+    if base_url == OLLAMA_DEFAULT_BASE_URL and backend == BACKEND_OPENAI:
+        base_url = engine.default_base_url
     sampler = resolve_sampler(sampler)
     if sampler == SAMPLER_POWERMETRICS:
         assert_root()
@@ -1515,14 +1631,14 @@ def calibrate_apple_silicon(
     hw = get_hardware_info()
     power_state = check_power_state()
     assert_power_state_usable(power_state, allow_degraded=allow_degraded_power)
-    ollama_version = _check_ollama(base_url)
+    ollama_version = engine.health_check(base_url)
 
     print("Vetch Apple Silicon Calibration")
     print(f"  Model:    {model}")
     print(f"  Chip:     {hw.chip_raw}")
     print(f"  Memory:   {hw.memory_gb} GB")
     print(f"  macOS:    {hw.macos_version}")
-    print(f"  Ollama:   {ollama_version}")
+    print(f"  Server:   {ollama_version} [{backend}]")
     print(
         "  Power:    powermetrics estimated SoC draw (CPU+GPU+ANE), not wall-plug power."
     )
@@ -1548,7 +1664,7 @@ def calibrate_apple_silicon(
     # so an unfiltered grid loses the prefill span without reporting anything.
     from vetch.calibrate_v2 import PREFILL_ARM_MIN_INPUT_TOKENS
 
-    context_limit = resolve_metal_context_limit(base_url, model)
+    context_limit = resolve_metal_context_limit(base_url, model, engine.context_length)
     # ONE num_ctx for probe, warm-up and every measured request. Changing it
     # makes Ollama evict and reload the model -- several GB of unified-memory
     # churn -- so pin the budget itself rather than a per-grid minimum, and pay
@@ -1556,7 +1672,7 @@ def calibrate_apple_silicon(
     grid_num_ctx = context_limit
     print(f"  Context:  budget {context_limit} tokens "
           f"(ceiling {metal_context_ceiling()}); num_ctx pinned at {grid_num_ctx}")
-    probe = probe_prefill(base_url, model, num_ctx=grid_num_ctx)
+    probe = probe_prefill(base_url, model, num_ctx=grid_num_ctx, generate=engine.generate)
     token_scale = probe.token_scale
     if probe.tokens_per_ms:
         print(f"  Prefill:  measured {probe.tokens_per_ms:.2f} tokens/ms; "
@@ -1602,7 +1718,9 @@ def calibrate_apple_silicon(
 
     print("Probing image-token accounting...")
     try:
-        token_probe = _probe_image_token_accounting(base_url, model, image_pool[0])
+        token_probe = _probe_image_token_accounting(
+            base_url, model, image_pool[0], generate=engine.generate
+        )
         print(f"  Image token accounting: {token_probe['image_token_accounting']}")
         delta = token_probe["delta_prompt_eval_count_with_image"]
         print(f"  Delta prompt_eval_count with image: {delta}")
@@ -1655,8 +1773,8 @@ def calibrate_apple_silicon(
         warmup_img = _warmup_image_b64(model_is_vlm, image_pool)
         # Same num_ctx as the grid, so the warm-up loads the model at the size
         # the measured runs will use and no run pays a reload.
-        _ollama_generate(base_url, model, warmup_prompt, warmup_img, max_tokens=10,
-                         num_ctx=grid_num_ctx)
+        engine.generate(base_url, model, warmup_prompt, warmup_img, max_tokens=10,
+                        num_ctx=grid_num_ctx)
         # Idle baseline (after warm-up) — record window; energy computed post-exit
         idle_start, idle_end = measure_idle_window("post-warmup")
 
@@ -1682,7 +1800,7 @@ def calibrate_apple_silicon(
                     token_scale=token_scale,
                 )
                 try:
-                    text_tokens, output_tokens = _ollama_generate(
+                    text_tokens, output_tokens = engine.generate(
                         base_url, model, prompt,
                         image_b64=images[0] if images else None,
                         max_tokens=spec.max_tokens,
@@ -1987,7 +2105,11 @@ def calibrate_apple_silicon(
             "chip_tier": hw.chip_tier,
             "memory_gb": hw.memory_gb,
             "macos_version": hw.macos_version,
-            "api_backend": "ollama",
+            "api_backend": backend,
+            # Prefix caching is a serving axis (protocol section 9). The OpenAI
+            # backend reports cached prefill tokens per request, so the record
+            # states what was observed rather than what was requested.
+            "cached_prompt_tokens_observed": engine.cached_prompt_tokens(),
             "gpu_power_captured": monitor.info.gpu_power_captured,
             "power_state": power_state,
             # Sampler settings that shape the measured workload. Ollama honours
